@@ -1,31 +1,28 @@
 {
-  "name": "multitenant-clinic-bot",
-  "version": "2.0.0",
-  "description": "Production multi-tenant WhatsApp bot for multiple clinics",
-  "main": "bot-multitenant.js",
+  "name": "whatsapp-clinic-bot",
+  "version": "1.0.0",
+  "description": "Multi-clinic WhatsApp appointment booking bot with Twilio and PostgreSQL",
+  "main": "bot.js",
   "scripts": {
-    "start": "node bot-multitenant.js",
-    "dev": "nodemon bot-multitenant.js",
-    "test": "node bot-multitenant.js"
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "test": "node --version"
   },
   "keywords": [
     "whatsapp",
-    "bot",
+    "twilio",
+    "appointment",
     "clinic",
-    "multi-tenant",
-    "saas",
-    "waba"
+    "booking",
+    "postgresql"
   ],
-  "author": "Sourav Roy - Legacylens Automation",
+  "author": "Sourav Roy",
   "license": "MIT",
   "dependencies": {
-    "dotenv": "^16.3.1",
     "express": "^4.18.2",
-    "express-rate-limit": "^8.2.1",
-    "google-auth-library": "^9.4.1",
-    "google-spreadsheet": "^4.1.1",
+    "twilio": "^4.20.0",
     "pg": "^8.11.3",
-    "twilio": "^4.20.0"
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

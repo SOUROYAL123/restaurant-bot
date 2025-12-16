@@ -257,13 +257,11 @@ app.post('/webhook', async (req, res) => {
           console.log(`✅ Doctor notified for appointment ${appointmentId}`);
         } catch (notifyError) {
           console.error(`⚠️ Doctor notification failed:`, notifyError.message);
-          // Continue anyway - patient confirmation is more important
         }
         
         // Send confirmation to patient
         const [year, month, day] = tempData.date.split('-');
-        const confirmationMessage = `
-✅ *Appointment Confirmed!*
+        const confirmationMessage = `✅ *Appointment Confirmed!*
 
 🏥 *Clinic:* ${tempData.clinic_name}
 👤 *Name:* ${tempData.name}
@@ -274,8 +272,7 @@ app.post('/webhook', async (req, res) => {
 
 Thank you! See you soon! 👋
 
-_Type *hi* to book another appointment._
-        `.trim();
+_Type *hi* to book another appointment._`;
         
         await sendWhatsAppMessage(userPhone, confirmationMessage);
         

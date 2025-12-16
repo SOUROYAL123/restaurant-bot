@@ -8,136 +8,226 @@ const { notifyDoctor } = require('./handlers/notifications');
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
 
 const twilioClient = twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// Health check
+// Health check endpoint
 app.get('/', (req, res) => {
-  res.send('✅ WhatsApp Clinic Bot is running');
+  res.json({
+    status: 'online',
+    service: 'WhatsApp Clinic Bot',
+    timestamp: new Date().toISOString()
+  });
 });
 
-// Main webhook
+// Database health check
+app.get('/health', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT NOW()');
+    res.json({
+      status: 'healthy',
+      database: 'connected',
+      timestamp: result.rows[0].now
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      database: 'disconnected',
+      error: error.message
+    });
+  }
+});
+
+// Main webhook handler
 app.post('/webhook', async (req, res) => {
   const { From, Body } = req.body;
   const userPhone = From;
-  const userMessage = Body.trim().toLowerCase();
+  const userMessage = Body.trim();
+  
+  console.log(`📨 Received from ${userPhone}: ${userMessage}`);
   
   try {
     const session = await getSession(userPhone);
     
-    // STEP 1: Clinic Selection
+    // STEP 1: Initial greeting and clinic selection
     if (!session || !session.clinic_id) {
-      if (userMessage === 'hi' || userMessage === 'hello' || userMessage === 'start') {
+      const normalizedMessage = userMessage.toLowerCase();
+      
+      if (normalizedMessage === 'hi' || normalizedMessage === 'hello' || normalizedMessage === 'start') {
         const clinics = await getClinics();
-        let clinicList = '🏥 *Welcome to Appointment Booking*\n\nSelect your clinic:\n\n';
+        
+        if (clinics.length === 0) {
+          await sendWhatsAppMessage(userPhone, '❌ No clinics available at the moment. Please try again later.');
+          return res.sendStatus(200);
+        }
+        
+        let clinicList = '🏥 *Welcome to Appointment Booking*\n\n';
+        clinicList += '📋 Select your clinic:\n\n';
+        
         clinics.forEach((clinic, index) => {
           clinicList += `${index + 1}️⃣ ${clinic.name}\n`;
         });
-        clinicList += '\nReply with the number (e.g., 1)';
+        
+        clinicList += '\n💬 Reply with the number (e.g., 1)';
         
         await sendWhatsAppMessage(userPhone, clinicList);
         return res.sendStatus(200);
       }
       
-      // Handle clinic selection
+      // Handle clinic selection by number
       const clinicNumber = parseInt(userMessage);
-      if (clinicNumber > 0) {
-        const clinics = await getClinics();
-        if (clinicNumber <= clinics.length) {
-          const selectedClinic = clinics[clinicNumber - 1];
-          await setClinicSession(userPhone, selectedClinic.id);
-          
-          await sendWhatsAppMessage(
-            userPhone,
-            `✅ You selected *${selectedClinic.name}*\n\nPlease enter your full name:`
-          );
-          
-          await pool.query(
-            `UPDATE sessions SET current_step = 'awaiting_name', 
-             temp_data = jsonb_build_object('clinic_name', $1)
-             WHERE user_phone = $2`,
-            [selectedClinic.name, userPhone]
-          );
-          
-          return res.sendStatus(200);
-        }
+      
+      if (isNaN(clinicNumber) || clinicNumber < 1) {
+        await sendWhatsAppMessage(
+          userPhone, 
+          '❌ Invalid input. Type *hi* to start booking.'
+        );
+        return res.sendStatus(200);
       }
       
-      await sendWhatsAppMessage(userPhone, '❌ Invalid selection. Type "hi" to start.');
-      return res.sendStatus(200);
-    }
-    
-    // STEP 2: Name Collection
-    if (session.current_step === 'awaiting_name') {
+      const clinics = await getClinics();
+      
+      if (clinicNumber > clinics.length) {
+        await sendWhatsAppMessage(
+          userPhone,
+          `❌ Invalid selection. Please choose between 1 and ${clinics.length}.\n\nType *hi* to see the list again.`
+        );
+        return res.sendStatus(200);
+      }
+      
+      const selectedClinic = clinics[clinicNumber - 1];
+      
+      // This sets clinic_id, current_step='clinic_selected', and temp_data with clinic_name
+      await setClinicSession(userPhone, selectedClinic.id);
+      
+      // Update step to awaiting_name (temp_data already has clinic_name)
       await pool.query(
-        `UPDATE sessions SET current_step = 'awaiting_date',
-         temp_data = temp_data || jsonb_build_object('name', $1)
+        `UPDATE sessions SET current_step = $1, updated_at = NOW()
          WHERE user_phone = $2`,
-        [Body.trim(), userPhone]
+        ['awaiting_name', userPhone]
       );
       
       await sendWhatsAppMessage(
         userPhone,
-        '📅 Please enter appointment date (DD-MM-YYYY):\n\nExample: 20-12-2024'
+        `✅ You selected *${selectedClinic.name}*\n\n👤 Please enter your *full name*:`
       );
+      
       return res.sendStatus(200);
     }
     
-    // STEP 3: Date Collection
+    // STEP 2: Collect patient name
+    if (session.current_step === 'awaiting_name') {
+      const name = userMessage.trim();
+      
+      if (name.length < 2) {
+        await sendWhatsAppMessage(userPhone, '❌ Please enter a valid name (at least 2 characters).');
+        return res.sendStatus(200);
+      }
+      
+      // Update temp_data with name
+      const updatedTempData = {
+        ...session.temp_data,
+        name: name
+      };
+      
+      await pool.query(
+        `UPDATE sessions SET current_step = $1, temp_data = $2, updated_at = NOW()
+         WHERE user_phone = $3`,
+        ['awaiting_date', updatedTempData, userPhone]
+      );
+      
+      await sendWhatsAppMessage(
+        userPhone,
+        `📅 *Enter appointment date*\n\nFormat: DD-MM-YYYY\nExample: 20-12-2024\n\n⚠️ Date must be today or later.`
+      );
+      
+      return res.sendStatus(200);
+    }
+    
+    // STEP 3: Collect appointment date
     if (session.current_step === 'awaiting_date') {
       const dateRegex = /^(\d{2})-(\d{2})-(\d{4})$/;
-      const match = Body.trim().match(dateRegex);
+      const match = userMessage.match(dateRegex);
       
       if (!match) {
-        await sendWhatsAppMessage(userPhone, '❌ Invalid format. Use DD-MM-YYYY (e.g., 20-12-2024)');
+        await sendWhatsAppMessage(
+          userPhone,
+          '❌ Invalid date format.\n\nUse: DD-MM-YYYY\nExample: 20-12-2024'
+        );
         return res.sendStatus(200);
       }
       
       const [_, day, month, year] = match;
       const appointmentDate = `${year}-${month}-${day}`;
       
+      // Validate date is not in the past
+      const selectedDate = new Date(appointmentDate);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      if (selectedDate < today) {
+        await sendWhatsAppMessage(
+          userPhone,
+          '❌ Cannot book appointments in the past.\n\nPlease enter a current or future date.'
+        );
+        return res.sendStatus(200);
+      }
+      
+      // Update temp_data with date
+      const updatedTempData = {
+        ...session.temp_data,
+        date: appointmentDate
+      };
+      
       await pool.query(
-        `UPDATE sessions SET current_step = 'awaiting_slot',
-         temp_data = temp_data || jsonb_build_object('date', $1)
-         WHERE user_phone = $2`,
-        [appointmentDate, userPhone]
+        `UPDATE sessions SET current_step = $1, temp_data = $2, updated_at = NOW()
+         WHERE user_phone = $3`,
+        ['awaiting_slot', updatedTempData, userPhone]
       );
       
       const availableSlots = await getAvailableSlots(session.clinic_id, appointmentDate);
       
       if (availableSlots.length === 0) {
-        await sendWhatsAppMessage(userPhone, '❌ No slots available for this date. Type "hi" to restart.');
+        await sendWhatsAppMessage(
+          userPhone,
+          `❌ *No slots available* for ${day}-${month}-${year}\n\nType *hi* to restart and select a different date.`
+        );
         await pool.query('DELETE FROM sessions WHERE user_phone = $1', [userPhone]);
         return res.sendStatus(200);
       }
       
-      let slotMessage = '⏰ *Available Time Slots:*\n\n';
+      let slotMessage = '⏰ *Available Time Slots*\n\n';
       availableSlots.forEach((slot, index) => {
         slotMessage += `${index + 1}️⃣ ${slot}\n`;
       });
-      slotMessage += '\nReply with the number:';
+      slotMessage += '\n💬 Reply with the slot number:';
       
       await sendWhatsAppMessage(userPhone, slotMessage);
       return res.sendStatus(200);
     }
     
-    // STEP 4: Slot Selection & Booking
+    // STEP 4: Slot selection and booking confirmation
     if (session.current_step === 'awaiting_slot') {
       const slotNumber = parseInt(userMessage);
       const tempData = session.temp_data;
+      
       const availableSlots = await getAvailableSlots(session.clinic_id, tempData.date);
       
-      if (slotNumber < 1 || slotNumber > availableSlots.length) {
-        await sendWhatsAppMessage(userPhone, '❌ Invalid slot. Please select a valid number.');
+      if (isNaN(slotNumber) || slotNumber < 1 || slotNumber > availableSlots.length) {
+        await sendWhatsAppMessage(
+          userPhone,
+          `❌ Invalid slot number. Please select between 1 and ${availableSlots.length}.`
+        );
         return res.sendStatus(200);
       }
       
       const selectedSlot = availableSlots[slotNumber - 1];
       
-      // Save appointment
+      // Save appointment to database
       const appointmentId = await saveAppointment(
         session.clinic_id,
         tempData.name,
@@ -146,7 +236,7 @@ app.post('/webhook', async (req, res) => {
         selectedSlot
       );
       
-      // Notify doctor
+      // Send notification to doctor
       await notifyDoctor(twilioClient, session.clinic_id, {
         appointmentId,
         patientName: tempData.name,
@@ -155,37 +245,67 @@ app.post('/webhook', async (req, res) => {
         slot: selectedSlot
       });
       
-      // Confirm to patient
+      // Send confirmation to patient
       const [year, month, day] = tempData.date.split('-');
-      await sendWhatsAppMessage(
-        userPhone,
-        `✅ *Appointment Confirmed!*\n\n🏥 Clinic: ${tempData.clinic_name}\n📅 Date: ${day}-${month}-${year}\n⏰ Time: ${selectedSlot}\n\nBooking ID: #${appointmentId}\n\nSee you soon! 👋`
-      );
+      const confirmationMessage = `
+✅ *Appointment Confirmed!*
+
+🏥 *Clinic:* ${tempData.clinic_name}
+👤 *Name:* ${tempData.name}
+📅 *Date:* ${day}-${month}-${year}
+⏰ *Time:* ${selectedSlot}
+
+📌 *Booking ID:* #${appointmentId}
+
+Thank you! See you soon! 👋
+
+_Type *hi* to book another appointment._
+      `.trim();
+      
+      await sendWhatsAppMessage(userPhone, confirmationMessage);
       
       // Clear session
       await pool.query('DELETE FROM sessions WHERE user_phone = $1', [userPhone]);
+      
       return res.sendStatus(200);
     }
     
-    await sendWhatsAppMessage(userPhone, 'Type "hi" to start booking.');
+    // Default fallback
+    await sendWhatsAppMessage(
+      userPhone,
+      '❌ Session expired or invalid input.\n\nType *hi* to start booking.'
+    );
     res.sendStatus(200);
     
   } catch (error) {
-    console.error('❌ Error:', error);
-    await sendWhatsAppMessage(userPhone, '❌ Something went wrong. Type "hi" to restart.');
+    console.error('❌ Webhook Error:', error);
+    
+    await sendWhatsAppMessage(
+      userPhone,
+      '❌ Something went wrong. Please type *hi* to restart.'
+    );
+    
     res.sendStatus(500);
   }
 });
 
+// Helper function to send WhatsApp messages
 async function sendWhatsAppMessage(to, body) {
-  await twilioClient.messages.create({
-    from: process.env.TWILIO_WHATSAPP_NUMBER,
-    to: to,
-    body: body
-  });
+  try {
+    await twilioClient.messages.create({
+      from: process.env.TWILIO_WHATSAPP_NUMBER,
+      to: to,
+      body: body
+    });
+    console.log(`✅ Message sent to ${to}`);
+  } catch (error) {
+    console.error(`❌ Failed to send message to ${to}:`, error.message);
+  }
 }
 
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 WhatsApp Clinic Bot running on port ${PORT}`);
+  console.log(`📍 Webhook URL: https://your-app.onrender.com/webhook`);
 });

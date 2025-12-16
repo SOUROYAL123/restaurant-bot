@@ -55,9 +55,13 @@ app.post('/webhook', async (req, res) => {
     
     // STEP 1: Initial greeting and clinic selection
     if (!session || !session.clinic_id) {
-      const normalizedMessage = userMessage.toLowerCase();
+      const normalizedMessage = userMessage.toLowerCase().trim();
       
-      if (normalizedMessage === 'hi' || normalizedMessage === 'hello' || normalizedMessage === 'start') {
+      // Check for greetings
+      const greetings = ['hi', 'hello', 'start', 'hey'];
+      const isGreeting = greetings.includes(normalizedMessage);
+      
+      if (isGreeting) {
         const clinics = await getClinics();
         
         if (clinics.length === 0) {
@@ -84,7 +88,7 @@ app.post('/webhook', async (req, res) => {
       if (isNaN(clinicNumber) || clinicNumber < 1) {
         await sendWhatsAppMessage(
           userPhone, 
-          '❌ Invalid input. Type *hi* to start booking.'
+          '👋 Welcome! Type *hi* to start booking an appointment.'
         );
         return res.sendStatus(200);
       }
@@ -104,7 +108,7 @@ app.post('/webhook', async (req, res) => {
       // This sets clinic_id, current_step='clinic_selected', and temp_data with clinic_name
       await setClinicSession(userPhone, selectedClinic.id);
       
-      // Update step to awaiting_name (temp_data already has clinic_name)
+      // Update step to awaiting_name
       await pool.query(
         `UPDATE sessions SET current_step = $1, updated_at = NOW()
          WHERE user_phone = $2`,
@@ -212,42 +216,53 @@ app.post('/webhook', async (req, res) => {
     
     // STEP 4: Slot selection and booking confirmation
     if (session.current_step === 'awaiting_slot') {
-      const slotNumber = parseInt(userMessage);
-      const tempData = session.temp_data;
-      
-      const availableSlots = await getAvailableSlots(session.clinic_id, tempData.date);
-      
-      if (isNaN(slotNumber) || slotNumber < 1 || slotNumber > availableSlots.length) {
-        await sendWhatsAppMessage(
-          userPhone,
-          `❌ Invalid slot number. Please select between 1 and ${availableSlots.length}.`
+      try {
+        const slotNumber = parseInt(userMessage);
+        const tempData = session.temp_data;
+        
+        const availableSlots = await getAvailableSlots(session.clinic_id, tempData.date);
+        
+        if (isNaN(slotNumber) || slotNumber < 1 || slotNumber > availableSlots.length) {
+          await sendWhatsAppMessage(
+            userPhone,
+            `❌ Invalid slot number. Please select between 1 and ${availableSlots.length}.`
+          );
+          return res.sendStatus(200);
+        }
+        
+        const selectedSlot = availableSlots[slotNumber - 1];
+        
+        console.log(`📝 Booking: ${tempData.name} at ${selectedSlot} on ${tempData.date}`);
+        
+        // Save appointment to database
+        const appointmentId = await saveAppointment(
+          session.clinic_id,
+          tempData.name,
+          userPhone.replace('whatsapp:', ''),
+          tempData.date,
+          selectedSlot
         );
-        return res.sendStatus(200);
-      }
-      
-      const selectedSlot = availableSlots[slotNumber - 1];
-      
-      // Save appointment to database
-      const appointmentId = await saveAppointment(
-        session.clinic_id,
-        tempData.name,
-        userPhone.replace('whatsapp:', ''),
-        tempData.date,
-        selectedSlot
-      );
-      
-      // Send notification to doctor
-      await notifyDoctor(twilioClient, session.clinic_id, {
-        appointmentId,
-        patientName: tempData.name,
-        patientPhone: userPhone.replace('whatsapp:', ''),
-        date: tempData.date,
-        slot: selectedSlot
-      });
-      
-      // Send confirmation to patient
-      const [year, month, day] = tempData.date.split('-');
-      const confirmationMessage = `
+        
+        console.log(`✅ Appointment saved with ID: ${appointmentId}`);
+        
+        // Try to notify doctor (don't break if it fails)
+        try {
+          await notifyDoctor(twilioClient, session.clinic_id, {
+            appointmentId,
+            patientName: tempData.name,
+            patientPhone: userPhone.replace('whatsapp:', ''),
+            date: tempData.date,
+            slot: selectedSlot
+          });
+          console.log(`✅ Doctor notified for appointment ${appointmentId}`);
+        } catch (notifyError) {
+          console.error(`⚠️ Doctor notification failed:`, notifyError.message);
+          // Continue anyway - patient confirmation is more important
+        }
+        
+        // Send confirmation to patient
+        const [year, month, day] = tempData.date.split('-');
+        const confirmationMessage = `
 ✅ *Appointment Confirmed!*
 
 🏥 *Clinic:* ${tempData.clinic_name}
@@ -260,20 +275,35 @@ app.post('/webhook', async (req, res) => {
 Thank you! See you soon! 👋
 
 _Type *hi* to book another appointment._
-      `.trim();
-      
-      await sendWhatsAppMessage(userPhone, confirmationMessage);
-      
-      // Clear session
-      await pool.query('DELETE FROM sessions WHERE user_phone = $1', [userPhone]);
-      
-      return res.sendStatus(200);
+        `.trim();
+        
+        await sendWhatsAppMessage(userPhone, confirmationMessage);
+        
+        console.log(`✅ Confirmation sent to ${userPhone}`);
+        
+        // Clear session
+        await pool.query('DELETE FROM sessions WHERE user_phone = $1', [userPhone]);
+        
+        console.log(`✅ Booking complete - session cleared`);
+        
+        return res.sendStatus(200);
+        
+      } catch (error) {
+        console.error('❌ Error in appointment booking:', error);
+        
+        await sendWhatsAppMessage(
+          userPhone,
+          '❌ Something went wrong. Please type *hi* to restart.'
+        );
+        
+        return res.sendStatus(500);
+      }
     }
     
     // Default fallback
     await sendWhatsAppMessage(
       userPhone,
-      '❌ Session expired or invalid input.\n\nType *hi* to start booking.'
+      '👋 Welcome! Type *hi* to start booking an appointment.'
     );
     res.sendStatus(200);
     

@@ -16,20 +16,20 @@ const twilioClient = twilio(
   process.env.TWILIO_AUTH_TOKEN
 );
 
-// Health check endpoint
+// Health check endpoints (multiple for Render compatibility)
 app.get('/', (req, res) => {
-  res.json({
+  res.status(200).json({
     status: 'online',
     service: 'WhatsApp Clinic Bot',
+    version: '2.0',
     timestamp: new Date().toISOString()
   });
 });
 
-// Database health check
 app.get('/health', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
-    res.json({
+    res.status(200).json({
       status: 'healthy',
       database: 'connected',
       timestamp: result.rows[0].now
@@ -41,6 +41,14 @@ app.get('/health', async (req, res) => {
       error: error.message
     });
   }
+});
+
+app.get('/healthz', (req, res) => {
+  res.status(200).send('OK');
+});
+
+app.get('/ping', (req, res) => {
+  res.status(200).send('pong');
 });
 
 // Main webhook handler
@@ -398,6 +406,68 @@ async function sendWhatsAppMessage(to, body) {
 
 // Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 WhatsApp Clinic Bot running on port ${PORT}`);
+  console.log(`✅ Server started at: ${new Date().toISOString()}`);
 });
+
+// Handle server errors
+server.on('error', (error) => {
+  console.error('❌ Server error:', error);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('⚠️ SIGTERM received, shutting down gracefully...');
+  server.close(() => {
+    console.log('✅ Server closed');
+    process.exit(0);
+  });
+});
+```
+
+---
+
+## **KEY CHANGES:**
+
+1. **Multiple health check endpoints** (lines 18-50):
+   - `/` - JSON status
+   - `/health` - Database check
+   - `/healthz` - Simple OK (Render standard)
+   - `/ping` - Simple pong
+
+2. **Explicit server binding** (line 391):
+   - Binds to `0.0.0.0` (all interfaces)
+   - Helps Render detect the service
+
+3. **Graceful shutdown** (lines 398-407):
+   - Handles SIGTERM properly
+   - Clean server shutdown
+
+---
+
+## **DEPLOY THIS:**
+
+1. Go to: https://github.com/SOUROYAL123/clinis_database_bot-/edit/main/bot.js
+2. Delete everything
+3. Paste the code above
+4. Commit: "Fix Render health check timeout"
+5. Wait 2 minutes for deployment
+
+---
+
+## **AFTER DEPLOYMENT:**
+
+**Test these URLs in browser:**
+```
+https://clinis-database-bot.onrender.com/
+https://clinis-database-bot.onrender.com/health
+https://clinis-database-bot.onrender.com/healthz
+https://clinis-database-bot.onrender.com/ping
+```
+
+All should work!
+
+**Then test WhatsApp:**
+```
+Send "hi" to +917980407413

@@ -3,8 +3,9 @@ const express = require('express');
 const twilio = require('twilio');
 const pool = require('./db');
 const { getClinics, setClinicSession, getSession } = require('./handlers/clinicSelection');
-const { saveAppointment, getAvailableSlots } = require('./handlers/appointmentBooking');
+const { saveAppointment, getAvailableSlots, isBusinessHours } = require('./handlers/appointmentBooking');
 const { notifyDoctor } = require('./handlers/notifications');
+const { isDoctor, handleDoctorCommand } = require('./handlers/doctorCommands');
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -51,6 +52,17 @@ app.post('/webhook', async (req, res) => {
   console.log(`📨 Received from ${userPhone}: ${userMessage}`);
   
   try {
+    // CHECK IF MESSAGE IS FROM DOCTOR (for commands)
+    const doctorCheck = await isDoctor(userPhone);
+    if (doctorCheck) {
+      const commandResponse = await handleDoctorCommand(userPhone, userMessage, twilioClient);
+      if (commandResponse) {
+        await sendWhatsAppMessage(userPhone, commandResponse);
+        return res.sendStatus(200);
+      }
+      // If not a command, continue with normal booking flow
+    }
+    
     const session = await getSession(userPhone);
     
     // STEP 1: Initial greeting and clinic selection
@@ -105,10 +117,8 @@ app.post('/webhook', async (req, res) => {
       
       const selectedClinic = clinics[clinicNumber - 1];
       
-      // This sets clinic_id, current_step='clinic_selected', and temp_data with clinic_name
       await setClinicSession(userPhone, selectedClinic.id);
       
-      // Update step to awaiting_name
       await pool.query(
         `UPDATE sessions SET current_step = $1, updated_at = NOW()
          WHERE user_phone = $2`,
@@ -132,7 +142,6 @@ app.post('/webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
-      // Update temp_data with name
       const updatedTempData = {
         ...session.temp_data,
         name: name
@@ -168,7 +177,6 @@ app.post('/webhook', async (req, res) => {
       const [_, day, month, year] = match;
       const appointmentDate = `${year}-${month}-${day}`;
       
-      // Validate date is not in the past
       const selectedDate = new Date(appointmentDate);
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -181,7 +189,6 @@ app.post('/webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
-      // Update temp_data with date
       const updatedTempData = {
         ...session.temp_data,
         date: appointmentDate
@@ -214,7 +221,7 @@ app.post('/webhook', async (req, res) => {
       return res.sendStatus(200);
     }
     
-    // STEP 4: Slot selection and booking confirmation
+    // STEP 4: Slot selection and booking
     if (session.current_step === 'awaiting_slot') {
       try {
         const slotNumber = parseInt(userMessage);
@@ -232,36 +239,30 @@ app.post('/webhook', async (req, res) => {
         
         const selectedSlot = availableSlots[slotNumber - 1];
         
-        console.log(`📝 Booking: ${tempData.name} at ${selectedSlot} on ${tempData.date}`);
+        // CHECK IF BUSINESS HOURS
+        const autoApprove = await isBusinessHours(session.clinic_id);
+        const appointmentStatus = autoApprove ? 'confirmed' : 'pending';
         
-        // Save appointment to database
+        console.log(`📝 Booking status: ${appointmentStatus} (Auto-approve: ${autoApprove})`);
+        
+        // Save appointment
         const appointmentId = await saveAppointment(
           session.clinic_id,
           tempData.name,
           userPhone.replace('whatsapp:', ''),
           tempData.date,
-          selectedSlot
+          selectedSlot,
+          appointmentStatus
         );
         
-        console.log(`✅ Appointment saved with ID: ${appointmentId}`);
-        
-        // Try to notify doctor (don't break if it fails)
-        try {
-          await notifyDoctor(twilioClient, session.clinic_id, {
-            appointmentId,
-            patientName: tempData.name,
-            patientPhone: userPhone.replace('whatsapp:', ''),
-            date: tempData.date,
-            slot: selectedSlot
-          });
-          console.log(`✅ Doctor notified for appointment ${appointmentId}`);
-        } catch (notifyError) {
-          console.error(`⚠️ Doctor notification failed:`, notifyError.message);
-        }
-        
-        // Send confirmation to patient
+        // Format date
         const [year, month, day] = tempData.date.split('-');
-        const confirmationMessage = `✅ *Appointment Confirmed!*
+        
+        // Send appropriate message to patient
+        if (appointmentStatus === 'confirmed') {
+          // INSTANT CONFIRMATION
+          await sendWhatsAppMessage(userPhone, 
+            `✅ *Appointment CONFIRMED!*
 
 🏥 *Clinic:* ${tempData.clinic_name}
 👤 *Name:* ${tempData.name}
@@ -270,18 +271,83 @@ app.post('/webhook', async (req, res) => {
 
 📌 *Booking ID:* #${appointmentId}
 
-Thank you! See you soon! 👋
+✨ Your appointment is confirmed!
+See you soon! 👋
 
-_Type *hi* to book another appointment._`;
-        
-        await sendWhatsAppMessage(userPhone, confirmationMessage);
-        
-        console.log(`✅ Confirmation sent to ${userPhone}`);
+_Type *hi* to book another appointment._`
+          );
+          
+          // Notify doctor about confirmed appointment
+          try {
+            await notifyDoctor(twilioClient, session.clinic_id, {
+              appointmentId,
+              patientName: tempData.name,
+              patientPhone: userPhone.replace('whatsapp:', ''),
+              date: tempData.date,
+              slot: selectedSlot,
+              status: 'confirmed'
+            });
+          } catch (notifyError) {
+            console.error('⚠️ Doctor notification failed:', notifyError.message);
+          }
+          
+        } else {
+          // PENDING APPROVAL
+          await sendWhatsAppMessage(userPhone,
+            `⏳ *Appointment Request Submitted*
+
+🏥 *Clinic:* ${tempData.clinic_name}
+👤 *Name:* ${tempData.name}
+📅 *Date:* ${day}-${month}-${year}
+⏰ *Time:* ${selectedSlot}
+
+📌 *Request ID:* #${appointmentId}
+
+⏰ Status: *PENDING APPROVAL*
+
+We'll notify you once the doctor confirms!
+Usually within 24 hours.
+
+_Type *hi* to book another appointment._`
+          );
+          
+          // Send approval request to doctor
+          try {
+            const clinicResult = await pool.query(
+              'SELECT doctor_whatsapp FROM clinics WHERE id = $1',
+              [session.clinic_id]
+            );
+            
+            if (clinicResult.rows.length > 0) {
+              await twilioClient.messages.create({
+                from: process.env.TWILIO_WHATSAPP_NUMBER,
+                to: clinicResult.rows[0].doctor_whatsapp,
+                body: `🔔 *NEW APPOINTMENT REQUEST*
+
+📌 *Request ID:* #${appointmentId}
+👤 *Patient:* ${tempData.name}
+📞 *Phone:* ${userPhone.replace('whatsapp:', '')}
+📅 *Date:* ${day}-${month}-${year}
+⏰ *Time:* ${selectedSlot}
+
+⚠️ *Status:* PENDING (needs your approval)
+
+Reply:
+✅ APPROVE ${appointmentId}
+❌ REJECT ${appointmentId}
+
+Request received outside business hours.`
+              });
+            }
+          } catch (notifyError) {
+            console.error('⚠️ Doctor notification failed:', notifyError.message);
+          }
+        }
         
         // Clear session
         await pool.query('DELETE FROM sessions WHERE user_phone = $1', [userPhone]);
         
-        console.log(`✅ Booking complete - session cleared`);
+        console.log(`✅ Booking complete - ID: ${appointmentId}, Status: ${appointmentStatus}`);
         
         return res.sendStatus(200);
         
@@ -334,5 +400,4 @@ async function sendWhatsAppMessage(to, body) {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 WhatsApp Clinic Bot running on port ${PORT}`);
-  console.log(`📍 Webhook URL: https://your-app.onrender.com/webhook`);
 });

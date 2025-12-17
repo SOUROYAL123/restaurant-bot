@@ -58,13 +58,21 @@ app.post('/webhook', async (req, res) => {
   console.log(`📨 Received from ${userPhone}: ${userMessage}`);
   
   try {
+    console.log(`🔍 Checking if ${userPhone} is a doctor...`);
     const doctorCheck = await isDoctor(userPhone);
+    console.log(`🔍 Doctor check result: ${doctorCheck}`);
+    
     if (doctorCheck) {
+      console.log(`✅ User is a doctor, handling command: ${userMessage}`);
       const commandResponse = await handleDoctorCommand(userPhone, userMessage, twilioClient);
+      console.log(`📝 Command response: ${commandResponse ? 'Got response' : 'No response (null)'}`);
+      
       if (commandResponse) {
+        console.log(`💬 Sending doctor response...`);
         await sendWhatsAppMessage(userPhone, commandResponse);
         return res.sendStatus(200);
       }
+      console.log(`⚠️ No command response, continuing to patient flow...`);
     }
     
     const session = await getSession(userPhone);

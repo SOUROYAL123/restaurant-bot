@@ -20,52 +20,15 @@ app.use(express.json());
 // Import handlers
 const appointmentHandler = require('./handlers/appointmentBooking');
 
-// Session storage (in-memory - use Redis for production)
-const userSessions = new Map();
-
-/**
- * Get or create user session
- */
-function getSession(phoneNumber) {
-    if (!userSessions.has(phoneNumber)) {
-        userSessions.set(phoneNumber, {
-            stage: 'initial',
-            language: 'en',
-            data: {},
-            lastActivity: Date.now()
-        });
-    }
-    
-    const session = userSessions.get(phoneNumber);
-    session.lastActivity = Date.now();
-    return session;
-}
-
-/**
- * Update user session
- */
-function updateSession(phoneNumber, updates) {
-    const session = getSession(phoneNumber);
-    Object.assign(session, updates);
-    userSessions.set(phoneNumber, session);
-}
-
-/**
- * Clear old sessions (run periodically)
- */
-function cleanupSessions() {
-    const now = Date.now();
-    const timeout = 30 * 60 * 1000; // 30 minutes
-    
-    for (const [phoneNumber, session] of userSessions.entries()) {
-        if (now - session.lastActivity > timeout) {
-            userSessions.delete(phoneNumber);
-        }
-    }
-}
+// =====================================================
+// SESSION MANAGEMENT - DATABASE-BACKED (NEW)
+// =====================================================
+const sessionManager = require('./utils/sessionManager');
 
 // Cleanup sessions every 10 minutes
-setInterval(cleanupSessions, 10 * 60 * 1000);
+setInterval(async () => {
+    await sessionManager.cleanupSessions();
+}, 10 * 60 * 1000);
 
 /**
  * Get clinic ID from phone number or WABA routing
@@ -122,14 +85,14 @@ function getGreeting(language, customerName) {
  * Process incoming message based on session state
  */
 async function processMessage(message, phoneNumber, clinicId) {
-    const session = getSession(phoneNumber);
+    const session = await sessionManager.getSession(phoneNumber);
     const customer = await getCustomer(phoneNumber, clinicId);
     
     // Update language preference based on message
     const detectedLang = detectLanguage(message);
     if (detectedLang !== session.language) {
         session.language = detectedLang;
-        updateSession(phoneNumber, session);
+        await sessionManager.updateSession(phoneNumber, { language: detectedLang });
         
         // Update customer language preference
         if (customer) {
@@ -144,7 +107,7 @@ async function processMessage(message, phoneNumber, clinicId) {
     // Handle different stages
     switch (session.stage) {
         case 'initial':
-            return handleInitialStage(messageText, session, customer);
+            return handleInitialStage(messageText, session, customer, phoneNumber);
             
         case 'booking_name':
             return await handleBookingName(messageText, phoneNumber, clinicId, session);
@@ -159,19 +122,19 @@ async function processMessage(message, phoneNumber, clinicId) {
             return await handleBookingConfirm(messageText, phoneNumber, clinicId, session);
             
         default:
-            return handleInitialStage(messageText, session, customer);
+            return handleInitialStage(messageText, session, customer, phoneNumber);
     }
 }
 
 /**
  * Handle initial stage - main menu
  */
-function handleInitialStage(message, session, customer) {
+async function handleInitialStage(message, session, customer, phoneNumber) {
     const customerName = customer?.name || null;
     
     // Check for menu options
     if (message === '1' || message.includes('book') || message.includes('appointment')) {
-        updateSession(session.phoneNumber, { stage: 'booking_name' });
+        await sessionManager.updateSession(phoneNumber, { stage: 'booking_name' });
         return getResponse('booking_start', session.language);
     }
     
@@ -205,7 +168,7 @@ async function handleBookingName(message, phoneNumber, clinicId, session) {
     session.data.name = name;
     await syncCustomer(phoneNumber, clinicId, { name });
     
-    updateSession(phoneNumber, { 
+    await sessionManager.updateSession(phoneNumber, { 
         stage: 'booking_date',
         data: session.data 
     });
@@ -225,7 +188,7 @@ async function handleBookingDate(message, phoneNumber, clinicId, session) {
     }
     
     session.data.date = message.trim();
-    updateSession(phoneNumber, { 
+    await sessionManager.updateSession(phoneNumber, { 
         stage: 'booking_time',
         data: session.data 
     });
@@ -244,7 +207,7 @@ async function handleBookingTime(message, phoneNumber, clinicId, session) {
     }
     
     session.data.time = message.trim();
-    updateSession(phoneNumber, { 
+    await sessionManager.updateSession(phoneNumber, { 
         stage: 'booking_confirm',
         data: session.data 
     });
@@ -266,7 +229,7 @@ async function handleBookingConfirm(message, phoneNumber, clinicId, session) {
             );
             
             // Reset session
-            updateSession(phoneNumber, { 
+            await sessionManager.updateSession(phoneNumber, { 
                 stage: 'initial',
                 data: {} 
             });
@@ -281,7 +244,7 @@ async function handleBookingConfirm(message, phoneNumber, clinicId, session) {
         }
     } else {
         // Cancel booking
-        updateSession(phoneNumber, { 
+        await sessionManager.updateSession(phoneNumber, { 
             stage: 'initial',
             data: {} 
         });
@@ -401,9 +364,8 @@ app.post('/webhook', async (req, res) => {
             languagePreference: detectLanguage(Body)
         });
         
-        // Get session
-        const session = getSession(phoneNumber);
-        session.phoneNumber = phoneNumber;
+        // Get session (database-backed)
+        const session = await sessionManager.getSession(phoneNumber);
         
         // Process message and get response
         const response = await processMessage(Body, phoneNumber, clinicId);
@@ -427,10 +389,14 @@ app.post('/webhook', async (req, res) => {
 app.get('/health', async (req, res) => {
     try {
         await db.query('SELECT 1');
+        
+        // Get session stats
+        const sessionStats = await sessionManager.getSessionStats();
+        
         res.json({ 
             status: 'healthy',
             timestamp: new Date().toISOString(),
-            sessions: userSessions.size
+            sessions: sessionStats || { total_sessions: 0 }
         });
     } catch (error) {
         res.status(500).json({ 
@@ -454,11 +420,18 @@ app.get('/api/stats/:clinicId', async (req, res) => {
 });
 
 /**
+ * Analytics routes
+ */
+const analyticsRouter = require('./routes/analytics');
+app.use('/api/analytics', analyticsRouter);
+
+/**
  * Start server
  */
 app.listen(port, () => {
     console.log(`🚀 WhatsApp Bot running on port ${port}`);
     console.log(`📱 Webhook URL: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${port}`}/webhook`);
+    console.log(`💾 Session storage: Database-backed (persistent)`);
 });
 
 // Graceful shutdown

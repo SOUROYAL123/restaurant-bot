@@ -1,377 +1,468 @@
 require('dotenv').config();
 const express = require('express');
 const twilio = require('twilio');
-const pool = require('./db');
-const { getClinics, setClinicSession, getSession } = require('./handlers/clinicSelection');
-const { saveAppointment, getAvailableSlots, isBusinessHours } = require('./handlers/appointmentBooking');
-const { notifyDoctor } = require('./handlers/notifications');
-const { isDoctor, handleDoctorCommand } = require('./handlers/doctorCommands');
-const { getUserLanguage, setUserLanguage, getMessage, isLanguageSelection, getLanguageFromSelection } = require('./handlers/languageHandler');
+const { syncCustomer, logInteraction, getCustomer } = require('./utils/customerSync');
+const db = require('./config/database');
 
 const app = express();
+const port = process.env.PORT || 3000;
+
+// Twilio configuration
+const accountSid = process.env.TWILIO_ACCOUNT_SID;
+const authToken = process.env.TWILIO_AUTH_TOKEN;
+const twilioClient = twilio(accountSid, authToken);
+const twilioWhatsAppNumber = process.env.TWILIO_WHATSAPP_NUMBER;
+
+// Middleware
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
 
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+// Import handlers
+const appointmentHandler = require('./handlers/appointmentBooking');
 
-app.get('/', (req, res) => {
-  res.status(200).json({
-    status: 'online',
-    service: 'WhatsApp Clinic Bot (Multilingual)',
-    version: '2.0',
-    languages: ['en', 'bn', 'hi'],
-    timestamp: new Date().toISOString()
-  });
-});
+// Session storage (in-memory - use Redis for production)
+const userSessions = new Map();
 
-app.get('/health', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT NOW()');
-    res.status(200).json({
-      status: 'healthy',
-      database: 'connected',
-      timestamp: result.rows[0].now
-    });
-  } catch (error) {
-    res.status(500).json({
-      status: 'unhealthy',
-      database: 'disconnected',
-      error: error.message
-    });
-  }
-});
-
-app.get('/healthz', (req, res) => {
-  res.status(200).send('OK');
-});
-
-app.get('/ping', (req, res) => {
-  res.status(200).send('pong');
-});
-
-app.post('/webhook', async (req, res) => {
-  const { From, Body } = req.body;
-  const userPhone = From;
-  const userMessage = Body.trim();
-  
-  console.log(`📨 Received from ${userPhone}: ${userMessage}`);
-  
-  try {
-    // Check if user is a doctor
-    console.log(`🔍 Checking if ${userPhone} is a doctor...`);
-    const doctorCheck = await isDoctor(userPhone);
-    console.log(`🔍 Doctor check result: ${doctorCheck}`);
-    
-    if (doctorCheck) {
-      console.log(`✅ User is a doctor, handling command: ${userMessage}`);
-      const commandResponse = await handleDoctorCommand(userPhone, userMessage, twilioClient);
-      console.log(`📝 Command response: ${commandResponse ? 'Got response' : 'No response (null)'}`);
-      
-      if (commandResponse) {
-        console.log(`💬 Sending doctor response...`);
-        await sendWhatsAppMessage(userPhone, commandResponse);
-        return res.sendStatus(200);
-      }
-      console.log(`⚠️ No command response, continuing to patient flow...`);
-    }
-    
-    // Get user's current language
-    let userLanguage = await getUserLanguage(userPhone);
-    const session = await getSession(userPhone);
-    
-    // Handle greeting and language selection
-    if (!session || !session.clinic_id) {
-      const normalizedMessage = userMessage.toLowerCase().trim();
-      const greetings = ['hi', 'hello', 'start', 'hey'];
-      const isGreeting = greetings.includes(normalizedMessage);
-      
-      // Show language selection on greeting
-      if (isGreeting) {
-        await sendWhatsAppMessage(userPhone, getMessage('en', 'greeting'));
-        return res.sendStatus(200);
-      }
-      
-      // Handle language selection ONLY if user hasn't selected language yet
-      if (!userLanguage && isLanguageSelection(userMessage)) {
-        const selectedLanguage = getLanguageFromSelection(userMessage);
-        await setUserLanguage(userPhone, selectedLanguage);
-        userLanguage = selectedLanguage;
-        
-        // Show clinic list after language selection
-        const clinics = await getClinics();
-        
-        if (clinics.length === 0) {
-          await sendWhatsAppMessage(userPhone, getMessage(userLanguage, 'errorMessage'));
-          return res.sendStatus(200);
-        }
-        
-        let clinicList = getMessage(userLanguage, 'clinicSelection') + '\n\n';
-        
-        clinics.forEach((clinic, index) => {
-          clinicList += `${index + 1}️⃣ ${clinic.name}\n`;
+/**
+ * Get or create user session
+ */
+function getSession(phoneNumber) {
+    if (!userSessions.has(phoneNumber)) {
+        userSessions.set(phoneNumber, {
+            stage: 'initial',
+            language: 'en',
+            data: {},
+            lastActivity: Date.now()
         });
-        
-        clinicList += getMessage(userLanguage, 'replyWithNumber');
-        
-        await sendWhatsAppMessage(userPhone, clinicList);
-        return res.sendStatus(200);
-      }
-      
-      // Handle clinic selection (only process numbers if language is already selected)
-      if (userLanguage) {
-        const clinicNumber = parseInt(userMessage);
-        
-        if (isNaN(clinicNumber) || clinicNumber < 1) {
-          await sendWhatsAppMessage(userPhone, getMessage(userLanguage, 'welcomeMessage'));
-          return res.sendStatus(200);
-        }
-        
-        const clinics = await getClinics();
-        
-        if (clinicNumber > clinics.length) {
-          const message = getMessage(userLanguage, 'invalidSelection', { count: clinics.length }) + 
-                         getMessage(userLanguage, 'typeHiToRestart');
-          await sendWhatsAppMessage(userPhone, message);
-          return res.sendStatus(200);
-        }
-        
-        const selectedClinic = clinics[clinicNumber - 1];
-        
-        await setClinicSession(userPhone, selectedClinic.id);
-        
-        await pool.query(
-          `UPDATE sessions SET current_step = $1, language = $2, updated_at = NOW() WHERE user_phone = $3`,
-          ['awaiting_name', userLanguage, userPhone]
-        );
-        
-        await sendWhatsAppMessage(
-          userPhone, 
-          getMessage(userLanguage, 'clinicSelected', { clinicName: selectedClinic.name })
-        );
-        
-        return res.sendStatus(200);
-      } else {
-        // If no language selected yet, prompt for language selection
-        await sendWhatsAppMessage(userPhone, getMessage('en', 'welcomeMessage'));
-        return res.sendStatus(200);
-      }
     }
     
-    // Use user's language from session if not set
-    if (!userLanguage && session) {
-      userLanguage = session.language || 'en';
-    }
-    
-    // Handle name input
-    if (session.current_step === 'awaiting_name') {
-      const name = userMessage.trim();
-      
-      if (name.length < 2) {
-        await sendWhatsAppMessage(userPhone, getMessage(userLanguage, 'invalidName'));
-        return res.sendStatus(200);
-      }
-      
-      const updatedTempData = { ...session.temp_data, name: name };
-      
-      await pool.query(
-        `UPDATE sessions SET current_step = $1, temp_data = $2, updated_at = NOW() WHERE user_phone = $3`,
-        ['awaiting_date', updatedTempData, userPhone]
-      );
-      
-      await sendWhatsAppMessage(userPhone, getMessage(userLanguage, 'enterDate'));
-      
-      return res.sendStatus(200);
-    }
-    
-    // Handle date input
-    if (session.current_step === 'awaiting_date') {
-      const dateRegex = /^(\d{2})-(\d{2})-(\d{4})$/;
-      const match = userMessage.match(dateRegex);
-      
-      if (!match) {
-        await sendWhatsAppMessage(userPhone, getMessage(userLanguage, 'invalidDateFormat'));
-        return res.sendStatus(200);
-      }
-      
-      const [_, day, month, year] = match;
-      const appointmentDate = `${year}-${month}-${day}`;
-      
-      const selectedDate = new Date(appointmentDate);
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      
-      if (selectedDate < today) {
-        await sendWhatsAppMessage(userPhone, getMessage(userLanguage, 'pastDate'));
-        return res.sendStatus(200);
-      }
-      
-      const updatedTempData = { ...session.temp_data, date: appointmentDate };
-      
-      await pool.query(
-        `UPDATE sessions SET current_step = $1, temp_data = $2, updated_at = NOW() WHERE user_phone = $3`,
-        ['awaiting_slot', updatedTempData, userPhone]
-      );
-      
-      const availableSlots = await getAvailableSlots(session.clinic_id, appointmentDate);
-      
-      if (availableSlots.length === 0) {
-        await sendWhatsAppMessage(
-          userPhone, 
-          getMessage(userLanguage, 'noSlotsAvailable', { date: `${day}-${month}-${year}` })
-        );
-        await pool.query('DELETE FROM sessions WHERE user_phone = $1', [userPhone]);
-        return res.sendStatus(200);
-      }
-      
-      let slotMessage = getMessage(userLanguage, 'availableSlots') + '\n\n';
-      availableSlots.forEach((slot, index) => {
-        slotMessage += `${index + 1}️⃣ ${slot}\n`;
-      });
-      slotMessage += getMessage(userLanguage, 'replyWithSlot');
-      
-      await sendWhatsAppMessage(userPhone, slotMessage);
-      return res.sendStatus(200);
-    }
-    
-    // Handle slot selection
-    if (session.current_step === 'awaiting_slot') {
-      try {
-        const slotNumber = parseInt(userMessage);
-        const tempData = session.temp_data;
-        
-        const availableSlots = await getAvailableSlots(session.clinic_id, tempData.date);
-        
-        if (isNaN(slotNumber) || slotNumber < 1 || slotNumber > availableSlots.length) {
-          await sendWhatsAppMessage(
-            userPhone, 
-            getMessage(userLanguage, 'invalidSlot', { count: availableSlots.length })
-          );
-          return res.sendStatus(200);
-        }
-        
-        const selectedSlot = availableSlots[slotNumber - 1];
-        const autoApprove = await isBusinessHours(session.clinic_id);
-        const appointmentStatus = autoApprove ? 'confirmed' : 'pending';
-        
-        console.log(`📝 Booking status: ${appointmentStatus} (Auto-approve: ${autoApprove})`);
-        
-        const appointmentId = await saveAppointment(
-          session.clinic_id, 
-          tempData.name, 
-          userPhone.replace('whatsapp:', ''), 
-          tempData.date, 
-          selectedSlot, 
-          appointmentStatus
-        );
-        
-        const [year, month, day] = tempData.date.split('-');
-        
-        // Send confirmation message based on status
-        if (appointmentStatus === 'confirmed') {
-          await sendWhatsAppMessage(
-            userPhone, 
-            getMessage(userLanguage, 'appointmentConfirmed', {
-              clinicName: tempData.clinic_name,
-              patientName: tempData.name,
-              date: `${day}-${month}-${year}`,
-              slot: selectedSlot,
-              appointmentId: appointmentId
-            })
-          );
-          
-          try {
-            await notifyDoctor(twilioClient, session.clinic_id, {
-              appointmentId,
-              patientName: tempData.name,
-              patientPhone: userPhone.replace('whatsapp:', ''),
-              date: tempData.date,
-              slot: selectedSlot,
-              status: 'confirmed'
-            });
-          } catch (notifyError) {
-            console.error('⚠️ Doctor notification failed:', notifyError.message);
-          }
-        } else {
-          await sendWhatsAppMessage(
-            userPhone, 
-            getMessage(userLanguage, 'appointmentPending', {
-              clinicName: tempData.clinic_name,
-              patientName: tempData.name,
-              date: `${day}-${month}-${year}`,
-              slot: selectedSlot,
-              appointmentId: appointmentId
-            })
-          );
-          
-          try {
-            const clinicResult = await pool.query('SELECT doctor_whatsapp FROM clinics WHERE id = $1', [session.clinic_id]);
-            
-            if (clinicResult.rows.length > 0) {
-              await twilioClient.messages.create({
-                from: process.env.TWILIO_WHATSAPP_NUMBER,
-                to: clinicResult.rows[0].doctor_whatsapp,
-                body: `🔔 *NEW APPOINTMENT REQUEST*\n\n📌 *Request ID:* #${appointmentId}\n👤 *Patient:* ${tempData.name}\n📞 *Phone:* ${userPhone.replace('whatsapp:', '')}\n📅 *Date:* ${day}-${month}-${year}\n⏰ *Time:* ${selectedSlot}\n\n⚠️ *Status:* PENDING (needs your approval)\n\nReply:\n✅ APPROVE ${appointmentId}\n❌ REJECT ${appointmentId}\n\nRequest received outside business hours.`
-              });
-            }
-          } catch (notifyError) {
-            console.error('⚠️ Doctor notification failed:', notifyError.message);
-          }
-        }
-        
-        await pool.query('DELETE FROM sessions WHERE user_phone = $1', [userPhone]);
-        
-        console.log(`✅ Booking complete - ID: ${appointmentId}, Status: ${appointmentStatus}`);
-        
-        return res.sendStatus(200);
-      } catch (error) {
-        console.error('❌ Error in appointment booking:', error);
-        await sendWhatsAppMessage(userPhone, getMessage(userLanguage, 'errorMessage'));
-        return res.sendStatus(500);
-      }
-    }
-    
-    await sendWhatsAppMessage(userPhone, getMessage(userLanguage || 'en', 'welcomeMessage'));
-    res.sendStatus(200);
-    
-  } catch (error) {
-    console.error('❌ Webhook Error:', error);
-    const userLanguage = await getUserLanguage(userPhone) || 'en';
-    await sendWhatsAppMessage(userPhone, getMessage(userLanguage, 'errorMessage'));
-    res.sendStatus(500);
-  }
-});
-
-async function sendWhatsAppMessage(to, body) {
-  try {
-    await twilioClient.messages.create({
-      from: process.env.TWILIO_WHATSAPP_NUMBER,
-      to: to,
-      body: body
-    });
-    console.log(`✅ Message sent to ${to}`);
-  } catch (error) {
-    console.error(`❌ Failed to send message to ${to}:`, error.message);
-  }
+    const session = userSessions.get(phoneNumber);
+    session.lastActivity = Date.now();
+    return session;
 }
 
-const PORT = process.env.PORT || 3000;
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 WhatsApp Clinic Bot (Multilingual) running on port ${PORT}`);
-  console.log(`🌐 Supported languages: English, Bengali, Hindi`);
-  console.log(`✅ Server started at: ${new Date().toISOString()}`);
+/**
+ * Update user session
+ */
+function updateSession(phoneNumber, updates) {
+    const session = getSession(phoneNumber);
+    Object.assign(session, updates);
+    userSessions.set(phoneNumber, session);
+}
+
+/**
+ * Clear old sessions (run periodically)
+ */
+function cleanupSessions() {
+    const now = Date.now();
+    const timeout = 30 * 60 * 1000; // 30 minutes
+    
+    for (const [phoneNumber, session] of userSessions.entries()) {
+        if (now - session.lastActivity > timeout) {
+            userSessions.delete(phoneNumber);
+        }
+    }
+}
+
+// Cleanup sessions every 10 minutes
+setInterval(cleanupSessions, 10 * 60 * 1000);
+
+/**
+ * Get clinic ID from phone number or WABA routing
+ */
+async function getClinicIdFromPhone(toNumber) {
+    try {
+        // Query database for clinic based on WABA number
+        const result = await db.query(
+            `SELECT id FROM clinics WHERE whatsapp_number = $1`,
+            [toNumber]
+        );
+        
+        if (result.rows.length > 0) {
+            return result.rows[0].id;
+        }
+        
+        // Default clinic ID if not found
+        return 1; // You can set a default or throw error
+    } catch (error) {
+        console.error('Error getting clinic ID:', error);
+        return 1; // Fallback to default clinic
+    }
+}
+
+/**
+ * Detect language from message content
+ */
+function detectLanguage(message) {
+    const bengaliPattern = /[\u0980-\u09FF]/;
+    const hindiPattern = /[\u0900-\u097F]/;
+    
+    if (bengaliPattern.test(message)) {
+        return 'bn';
+    } else if (hindiPattern.test(message)) {
+        return 'hi';
+    }
+    return 'en';
+}
+
+/**
+ * Get greeting message based on language
+ */
+function getGreeting(language, customerName) {
+    const greetings = {
+        en: `Hello${customerName ? ' ' + customerName : ''}! 👋\n\nWelcome to our clinic. How can I help you today?\n\n1️⃣ Book Appointment\n2️⃣ Check Availability\n3️⃣ View Services\n4️⃣ Contact Info\n\nReply with a number or describe your query.`,
+        hi: `नमस्ते${customerName ? ' ' + customerName : ''}! 👋\n\nहमारे क्लिनिक में आपका स्वागत है। मैं आज आपकी कैसे मदद कर सकता हूं?\n\n1️⃣ अपॉइंटमेंट बुक करें\n2️⃣ उपलब्धता जांचें\n3️⃣ सेवाएं देखें\n4️⃣ संपर्क जानकारी\n\nएक नंबर के साथ जवाब दें या अपनी क्वेरी का वर्णन करें।`,
+        bn: `হ্যালো${customerName ? ' ' + customerName : ''}! 👋\n\nআমাদের ক্লিনিকে আপনাকে স্বাগতম। আজ আমি আপনাকে কিভাবে সাহায্য করতে পারি?\n\n1️⃣ অ্যাপয়েন্টমেন্ট বুক করুন\n2️⃣ উপলব্ধতা চেক করুন\n3️⃣ সেবা দেখুন\n4️⃣ যোগাযোগের তথ্য\n\nএকটি নম্বর দিয়ে উত্তর দিন বা আপনার প্রশ্ন বর্ণনা করুন।`
+    };
+    
+    return greetings[language] || greetings.en;
+}
+
+/**
+ * Process incoming message based on session state
+ */
+async function processMessage(message, phoneNumber, clinicId) {
+    const session = getSession(phoneNumber);
+    const customer = await getCustomer(phoneNumber, clinicId);
+    
+    // Update language preference based on message
+    const detectedLang = detectLanguage(message);
+    if (detectedLang !== session.language) {
+        session.language = detectedLang;
+        updateSession(phoneNumber, session);
+        
+        // Update customer language preference
+        if (customer) {
+            await syncCustomer(phoneNumber, clinicId, { 
+                languagePreference: detectedLang 
+            });
+        }
+    }
+    
+    const messageText = message.trim().toLowerCase();
+    
+    // Handle different stages
+    switch (session.stage) {
+        case 'initial':
+            return handleInitialStage(messageText, session, customer);
+            
+        case 'booking_name':
+            return await handleBookingName(messageText, phoneNumber, clinicId, session);
+            
+        case 'booking_date':
+            return await handleBookingDate(messageText, phoneNumber, clinicId, session);
+            
+        case 'booking_time':
+            return await handleBookingTime(messageText, phoneNumber, clinicId, session);
+            
+        case 'booking_confirm':
+            return await handleBookingConfirm(messageText, phoneNumber, clinicId, session);
+            
+        default:
+            return handleInitialStage(messageText, session, customer);
+    }
+}
+
+/**
+ * Handle initial stage - main menu
+ */
+function handleInitialStage(message, session, customer) {
+    const customerName = customer?.name || null;
+    
+    // Check for menu options
+    if (message === '1' || message.includes('book') || message.includes('appointment')) {
+        updateSession(session.phoneNumber, { stage: 'booking_name' });
+        return getResponse('booking_start', session.language);
+    }
+    
+    if (message === '2' || message.includes('availability') || message.includes('check')) {
+        return getResponse('availability', session.language);
+    }
+    
+    if (message === '3' || message.includes('service')) {
+        return getResponse('services', session.language);
+    }
+    
+    if (message === '4' || message.includes('contact')) {
+        return getResponse('contact', session.language);
+    }
+    
+    // Default greeting
+    return getGreeting(session.language, customerName);
+}
+
+/**
+ * Handle booking - collect name
+ */
+async function handleBookingName(message, phoneNumber, clinicId, session) {
+    const name = message.trim();
+    
+    if (name.length < 2) {
+        return getResponse('invalid_name', session.language);
+    }
+    
+    // Save name to session and customer database
+    session.data.name = name;
+    await syncCustomer(phoneNumber, clinicId, { name });
+    
+    updateSession(phoneNumber, { 
+        stage: 'booking_date',
+        data: session.data 
+    });
+    
+    return getResponse('booking_date', session.language, { name });
+}
+
+/**
+ * Handle booking - collect date
+ */
+async function handleBookingDate(message, phoneNumber, clinicId, session) {
+    // Simple date validation (you can enhance this)
+    const datePattern = /\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+    
+    if (!datePattern.test(message)) {
+        return getResponse('invalid_date', session.language);
+    }
+    
+    session.data.date = message.trim();
+    updateSession(phoneNumber, { 
+        stage: 'booking_time',
+        data: session.data 
+    });
+    
+    return getResponse('booking_time', session.language);
+}
+
+/**
+ * Handle booking - collect time
+ */
+async function handleBookingTime(message, phoneNumber, clinicId, session) {
+    const timePattern = /\d{1,2}:\d{2}|\d{1,2}\s*(am|pm)/i;
+    
+    if (!timePattern.test(message)) {
+        return getResponse('invalid_time', session.language);
+    }
+    
+    session.data.time = message.trim();
+    updateSession(phoneNumber, { 
+        stage: 'booking_confirm',
+        data: session.data 
+    });
+    
+    return getResponse('booking_confirm', session.language, session.data);
+}
+
+/**
+ * Handle booking - confirmation
+ */
+async function handleBookingConfirm(message, phoneNumber, clinicId, session) {
+    if (message === 'yes' || message === 'confirm' || message === '1') {
+        try {
+            // Save appointment to database
+            const appointment = await appointmentHandler.bookAppointment(
+                phoneNumber,
+                clinicId,
+                session.data
+            );
+            
+            // Reset session
+            updateSession(phoneNumber, { 
+                stage: 'initial',
+                data: {} 
+            });
+            
+            return getResponse('booking_success', session.language, {
+                ...session.data,
+                appointmentId: appointment.id
+            });
+        } catch (error) {
+            console.error('Booking error:', error);
+            return getResponse('booking_error', session.language);
+        }
+    } else {
+        // Cancel booking
+        updateSession(phoneNumber, { 
+            stage: 'initial',
+            data: {} 
+        });
+        return getResponse('booking_cancelled', session.language);
+    }
+}
+
+/**
+ * Get response templates in multiple languages
+ */
+function getResponse(type, language, data = {}) {
+    const responses = {
+        booking_start: {
+            en: "Great! Let's book your appointment. 📅\n\nPlease tell me your name:",
+            hi: "बढ़िया! आइए अपनी अपॉइंटमेंट बुक करें। 📅\n\nकृपया मुझे अपना नाम बताएं:",
+            bn: "চমৎকার! আপনার অ্যাপয়েন্টমেন্ট বুক করি। 📅\n\nঅনুগ্রহ করে আমাকে আপনার নাম বলুন:"
+        },
+        invalid_name: {
+            en: "Please enter a valid name (at least 2 characters):",
+            hi: "कृपया एक वैध नाम दर्ज करें (कम से कम 2 अक्षर):",
+            bn: "অনুগ্রহ করে একটি বৈধ নাম লিখুন (কমপক্ষে 2 অক্ষর):"
+        },
+        booking_date: {
+            en: `Thank you, ${data.name}! 🙏\n\nWhat date would you like to book?\n(Format: DD/MM/YYYY or DD-MM-YYYY)`,
+            hi: `धन्यवाद, ${data.name}! 🙏\n\nआप किस तारीख को बुक करना चाहेंगे?\n(प्रारूप: DD/MM/YYYY या DD-MM-YYYY)`,
+            bn: `ধন্যবাদ, ${data.name}! 🙏\n\nআপনি কোন তারিখে বুক করতে চান?\n(ফরম্যাট: DD/MM/YYYY অথবা DD-MM-YYYY)`
+        },
+        invalid_date: {
+            en: "Please enter a valid date (Format: DD/MM/YYYY):",
+            hi: "कृपया एक वैध तारीख दर्ज करें (प्रारूप: DD/MM/YYYY):",
+            bn: "অনুগ্রহ করে একটি বৈধ তারিখ লিখুন (ফরম্যাট: DD/MM/YYYY):"
+        },
+        booking_time: {
+            en: "What time works best for you?\n(Format: HH:MM or HH:MM AM/PM)",
+            hi: "आपके लिए कौन सा समय सबसे अच्छा है?\n(प्रारूप: HH:MM या HH:MM AM/PM)",
+            bn: "আপনার জন্য কোন সময় সবচেয়ে ভালো?\n(ফরম্যাট: HH:MM অথবা HH:MM AM/PM)"
+        },
+        invalid_time: {
+            en: "Please enter a valid time (Format: HH:MM or HH:MM AM/PM):",
+            hi: "कृपया एक वैध समय दर्ज करें (प्रारूप: HH:MM या HH:MM AM/PM):",
+            bn: "অনুগ্রহ করে একটি বৈধ সময় লিখুন (ফরম্যাট: HH:MM অথবা HH:MM AM/PM):"
+        },
+        booking_confirm: {
+            en: `📋 Please confirm your appointment:\n\n👤 Name: ${data.name}\n📅 Date: ${data.date}\n🕒 Time: ${data.time}\n\nReply 'YES' to confirm or 'NO' to cancel.`,
+            hi: `📋 कृपया अपनी अपॉइंटमेंट की पुष्टि करें:\n\n👤 नाम: ${data.name}\n📅 तारीख: ${data.date}\n🕒 समय: ${data.time}\n\nपुष्टि करने के लिए 'YES' या रद्द करने के लिए 'NO' का जवाब दें।`,
+            bn: `📋 অনুগ্রহ করে আপনার অ্যাপয়েন্টমেন্ট নিশ্চিত করুন:\n\n👤 নাম: ${data.name}\n📅 তারিখ: ${data.date}\n🕒 সময়: ${data.time}\n\nনিশ্চিত করতে 'YES' বা বাতিল করতে 'NO' উত্তর দিন।`
+        },
+        booking_success: {
+            en: `✅ Appointment confirmed!\n\n📋 Booking ID: #${data.appointmentId}\n👤 Name: ${data.name}\n📅 Date: ${data.date}\n🕒 Time: ${data.time}\n\nWe'll see you then! Reply with 'MENU' to return to main menu.`,
+            hi: `✅ अपॉइंटमेंट की पुष्टि हो गई!\n\n📋 बुकिंग ID: #${data.appointmentId}\n👤 नाम: ${data.name}\n📅 तारीख: ${data.date}\n🕒 समय: ${data.time}\n\nहम आपको तब देखेंगे! मुख्य मेनू पर वापस जाने के लिए 'MENU' का जवाब दें।`,
+            bn: `✅ অ্যাপয়েন্টমেন্ট নিশ্চিত হয়েছে!\n\n📋 বুকিং ID: #${data.appointmentId}\n👤 নাম: ${data.name}\n📅 তারিখ: ${data.date}\n🕒 সময়: ${data.time}\n\nআমরা তখন আপনাকে দেখব! মূল মেনুতে ফিরে যেতে 'MENU' উত্তর দিন।`
+        },
+        booking_cancelled: {
+            en: "❌ Booking cancelled. Reply 'MENU' to return to main menu.",
+            hi: "❌ बुकिंग रद्द। मुख्य मेनू पर वापस जाने के लिए 'MENU' का जवाब दें।",
+            bn: "❌ বুকিং বাতিল। মূল মেনুতে ফিরে যেতে 'MENU' উত্তর দিন।"
+        },
+        booking_error: {
+            en: "❌ Sorry, there was an error booking your appointment. Please try again or contact us directly.",
+            hi: "❌ क्षमा करें, आपकी अपॉइंटमेंट बुक करने में एक त्रुटि थी। कृपया फिर से प्रयास करें या हमसे सीधे संपर्क करें।",
+            bn: "❌ দুঃখিত, আপনার অ্যাপয়েন্টমেন্ট বুক করতে একটি ত্রুটি হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন বা সরাসরি আমাদের সাথে যোগাযোগ করুন।"
+        },
+        availability: {
+            en: "📅 Our clinic is open:\n\nMonday - Friday: 9:00 AM - 6:00 PM\nSaturday: 9:00 AM - 2:00 PM\nSunday: Closed\n\nReply 'MENU' for main menu.",
+            hi: "📅 हमारा क्लिनिक खुला है:\n\nसोमवार - शुक्रवार: सुबह 9:00 बजे - शाम 6:00 बजे\nशनिवार: सुबह 9:00 बजे - दोपहर 2:00 बजे\nरविवार: बंद\n\nमुख्य मेनू के लिए 'MENU' का जवाब दें।",
+            bn: "📅 আমাদের ক্লিনিক খোলা:\n\nসোমবার - শুক্রবার: সকাল 9:00 - সন্ধ্যা 6:00\nশনিবার: সকাল 9:00 - দুপুর 2:00\nরবিবার: বন্ধ\n\nমূল মেনুর জন্য 'MENU' উত্তর দিন।"
+        },
+        services: {
+            en: "🏥 Our Services:\n\n• General Consultation\n• Health Checkups\n• Vaccinations\n• Lab Tests\n• Minor Procedures\n\nReply 'MENU' for main menu.",
+            hi: "🏥 हमारी सेवाएं:\n\n• सामान्य परामर्श\n• स्वास्थ्य जांच\n• टीकाकरण\n• लैब टेस्ट\n• मामूली प्रक्रियाएं\n\nमुख्य मेनू के लिए 'MENU' का जवाब दें।",
+            bn: "🏥 আমাদের সেবাসমূহ:\n\n• সাধারণ পরামর্শ\n• স্বাস্থ্য পরীক্ষা\n• টিকাকরণ\n• ল্যাব পরীক্ষা\n• ছোট প্রক্রিয়া\n\nমূল মেনুর জন্য 'MENU' উত্তর দিন।"
+        },
+        contact: {
+            en: "📞 Contact Us:\n\nPhone: +91-XXXXXXXXXX\nEmail: clinic@example.com\nAddress: 123 Main St, Kolkata\n\nReply 'MENU' for main menu.",
+            hi: "📞 हमसे संपर्क करें:\n\nफोन: +91-XXXXXXXXXX\nईमेल: clinic@example.com\nपता: 123 Main St, कोलकाता\n\nमुख्य मेनू के लिए 'MENU' का जवाब दें।",
+            bn: "📞 যোগাযোগ:\n\nফোন: +91-XXXXXXXXXX\nইমেল: clinic@example.com\nঠিকানা: 123 Main St, কলকাতা\n\nমূল মেনুর জন্য 'MENU' উত্তর দিন।"
+        }
+    };
+    
+    return responses[type]?.[language] || responses[type]?.en || "Invalid response type";
+}
+
+/**
+ * Send WhatsApp message via Twilio
+ */
+async function sendWhatsAppMessage(to, message) {
+    try {
+        await twilioClient.messages.create({
+            from: twilioWhatsAppNumber,
+            to: `whatsapp:${to}`,
+            body: message
+        });
+        console.log(`✅ Message sent to ${to}`);
+    } catch (error) {
+        console.error('❌ Error sending message:', error);
+        throw error;
+    }
+}
+
+/**
+ * Main webhook endpoint
+ */
+app.post('/webhook', async (req, res) => {
+    try {
+        const { From, Body, ProfileName, To } = req.body;
+        const phoneNumber = From.replace('whatsapp:', '');
+        const toNumber = To?.replace('whatsapp:', '') || twilioWhatsAppNumber;
+        
+        console.log(`📩 Received from ${phoneNumber}: ${Body}`);
+        
+        // Get clinic ID from routing
+        const clinicId = await getClinicIdFromPhone(toNumber);
+        
+        // Sync customer (create or update)
+        await syncCustomer(phoneNumber, clinicId, {
+            name: ProfileName,
+            languagePreference: detectLanguage(Body)
+        });
+        
+        // Get session
+        const session = getSession(phoneNumber);
+        session.phoneNumber = phoneNumber;
+        
+        // Process message and get response
+        const response = await processMessage(Body, phoneNumber, clinicId);
+        
+        // Log interaction
+        await logInteraction(phoneNumber, clinicId, session.stage, Body, response);
+        
+        // Send response via Twilio
+        await sendWhatsAppMessage(phoneNumber, response);
+        
+        res.sendStatus(200);
+    } catch (error) {
+        console.error('❌ Webhook error:', error);
+        res.sendStatus(500);
+    }
 });
 
-server.on('error', (error) => {
-  console.error('❌ Server error:', error);
+/**
+ * Health check endpoint
+ */
+app.get('/health', async (req, res) => {
+    try {
+        await db.query('SELECT 1');
+        res.json({ 
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+            sessions: userSessions.size
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            status: 'unhealthy',
+            error: error.message 
+        });
+    }
 });
 
+/**
+ * Get customer stats (admin endpoint)
+ */
+app.get('/api/stats/:clinicId', async (req, res) => {
+    try {
+        const { clinicId } = req.params;
+        const stats = await require('./utils/customerSync').getCustomerStats(clinicId);
+        res.json(stats);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * Start server
+ */
+app.listen(port, () => {
+    console.log(`🚀 WhatsApp Bot running on port ${port}`);
+    console.log(`📱 Webhook URL: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${port}`}/webhook`);
+});
+
+// Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('⚠️ SIGTERM received, shutting down gracefully...');
-  server.close(() => {
-    console.log('✅ Server closed');
+    console.log('👋 SIGTERM received, shutting down gracefully...');
     process.exit(0);
-  });
 });

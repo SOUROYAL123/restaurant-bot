@@ -94,8 +94,8 @@ app.post('/webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
-      // Handle language selection (1, 2, or 3)
-      if (isLanguageSelection(userMessage)) {
+      // Handle language selection ONLY if user hasn't selected language yet
+      if (!userLanguage && isLanguageSelection(userMessage)) {
         const selectedLanguage = getLanguageFromSelection(userMessage);
         await setUserLanguage(userPhone, selectedLanguage);
         userLanguage = selectedLanguage;
@@ -120,39 +120,44 @@ app.post('/webhook', async (req, res) => {
         return res.sendStatus(200);
       }
       
-      // Handle clinic selection
-      const clinicNumber = parseInt(userMessage);
-      
-      if (isNaN(clinicNumber) || clinicNumber < 1) {
-        await sendWhatsAppMessage(userPhone, getMessage(userLanguage || 'en', 'welcomeMessage'));
+      // Handle clinic selection (only process numbers if language is already selected)
+      if (userLanguage) {
+        const clinicNumber = parseInt(userMessage);
+        
+        if (isNaN(clinicNumber) || clinicNumber < 1) {
+          await sendWhatsAppMessage(userPhone, getMessage(userLanguage, 'welcomeMessage'));
+          return res.sendStatus(200);
+        }
+        
+        const clinics = await getClinics();
+        
+        if (clinicNumber > clinics.length) {
+          const message = getMessage(userLanguage, 'invalidSelection', { count: clinics.length }) + 
+                         getMessage(userLanguage, 'typeHiToRestart');
+          await sendWhatsAppMessage(userPhone, message);
+          return res.sendStatus(200);
+        }
+        
+        const selectedClinic = clinics[clinicNumber - 1];
+        
+        await setClinicSession(userPhone, selectedClinic.id);
+        
+        await pool.query(
+          `UPDATE sessions SET current_step = $1, language = $2, updated_at = NOW() WHERE user_phone = $3`,
+          ['awaiting_name', userLanguage, userPhone]
+        );
+        
+        await sendWhatsAppMessage(
+          userPhone, 
+          getMessage(userLanguage, 'clinicSelected', { clinicName: selectedClinic.name })
+        );
+        
+        return res.sendStatus(200);
+      } else {
+        // If no language selected yet, prompt for language selection
+        await sendWhatsAppMessage(userPhone, getMessage('en', 'welcomeMessage'));
         return res.sendStatus(200);
       }
-      
-      const clinics = await getClinics();
-      
-      if (clinicNumber > clinics.length) {
-        const message = getMessage(userLanguage || 'en', 'invalidSelection', { count: clinics.length }) + 
-                       getMessage(userLanguage || 'en', 'typeHiToRestart');
-        await sendWhatsAppMessage(userPhone, message);
-        return res.sendStatus(200);
-      }
-      
-      const selectedClinic = clinics[clinicNumber - 1];
-      
-      await setClinicSession(userPhone, selectedClinic.id);
-      
-      await pool.query(
-        `UPDATE sessions SET current_step = $1, language = $2, updated_at = NOW() WHERE user_phone = $3`,
-        ['awaiting_name', userLanguage || 'en', userPhone]
-      );
-      
-      await sendWhatsAppMessage(
-        userPhone, 
-        getMessage(userLanguage || 'en', 'clinicSelected', { clinicName: selectedClinic.name })
-      );
-      
-      return res.sendStatus(200);
-    }
     
     // Use user's language from session if not set
     if (!userLanguage && session) {

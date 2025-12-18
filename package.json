@@ -7,7 +7,8 @@
     "start": "node bot.js",
     "dev": "nodemon bot.js",
     "init-db": "node scripts/initDatabase.js",
-    "test": "node --version"
+    "seed": "node scripts/seedData.js",
+    "test": "node test-connection.js"
   },
   "keywords": [
     "whatsapp",

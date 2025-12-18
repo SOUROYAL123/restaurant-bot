@@ -2,14 +2,12 @@
   "name": "whatsapp-clinic-bot-multilingual",
   "version": "2.0.0",
   "description": "Multi-clinic WhatsApp appointment booking bot with multilingual support and customer database (English, Bengali, Hindi)",
-  "main": "src/bot.js",
+  "main": "bot.js",
   "scripts": {
-    "start": "node src/bot.js",
-    "dev": "nodemon src/bot.js",
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
     "init-db": "node scripts/initDatabase.js",
-    "test": "node --version",
-    "db:migrate": "node scripts/migrate.js",
-    "db:seed": "node scripts/seedData.js"
+    "test": "node --version"
   },
   "keywords": [
     "whatsapp",
@@ -47,3 +45,22 @@
     "npm": ">=9.0.0"
   }
 }
+```
+
+## Your GitHub Repo Structure Should Be:
+```
+clinis_database_bot-/
+├── src/
+│   ├── bot.js              ← Main entry point
+│   ├── config/
+│   │   └── database.js
+│   ├── handlers/
+│   │   └── appointmentBooking.js
+│   └── utils/
+│       └── customerSync.js
+├── scripts/
+│   ├── initDatabase.js
+│   └── schema.sql
+├── package.json            ← Root level
+├── .env.example
+└── README.md

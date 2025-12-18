@@ -1,29 +1,23 @@
 require('dotenv').config();
-const db = require('../src/config/database');
+const db = require('../config/database');
+const fs = require('fs');
+const path = require('path');
 
-async function seedData() {
+async function initializeDatabase() {
     try {
-        console.log('🔄 Seeding test data...');
+        console.log('🔄 Initializing database...');
         
-        // Insert test clinic
-        await db.query(`
-            INSERT INTO clinics (name, whatsapp_number, address, email, phone)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (whatsapp_number) DO NOTHING
-        `, [
-            'Test Clinic',
-            '+14155238886',
-            '123 Main St, Kolkata, West Bengal',
-            'test@clinic.com',
-            '+91-9876543210'
-        ]);
+        const schemaPath = path.join(__dirname, 'schema.sql');
+        const schema = fs.readFileSync(schemaPath, 'utf8');
         
-        console.log('✅ Test data seeded successfully');
+        await db.query(schema);
+        
+        console.log('✅ Database initialized successfully');
         process.exit(0);
     } catch (error) {
-        console.error('❌ Seeding failed:', error);
+        console.error('❌ Database initialization failed:', error);
         process.exit(1);
     }
 }
 
-seedData();
+initializeDatabase();

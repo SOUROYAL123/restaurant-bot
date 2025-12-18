@@ -11,7 +11,7 @@ const port = process.env.PORT || 3000;
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioClient = twilio(accountSid, authToken);
-const twilioWhatsAppNumber = process.env.TWILIO_WHATSAPP_NUMBER;
+const twilioWhatsAppNumber = process.env.TWILIO_WHATSAPP_NUMBER || process.env.WABA_NUMBER;
 
 // Middleware
 app.use(express.urlencoded({ extended: false }));
@@ -217,7 +217,7 @@ async function handleBookingName(message, phoneNumber, clinicId, session) {
  * Handle booking - collect date
  */
 async function handleBookingDate(message, phoneNumber, clinicId, session) {
-    // Simple date validation (you can enhance this)
+    // Simple date validation
     const datePattern = /\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
     
     if (!datePattern.test(message)) {
@@ -355,9 +355,9 @@ function getResponse(type, language, data = {}) {
             bn: "🏥 আমাদের সেবাসমূহ:\n\n• সাধারণ পরামর্শ\n• স্বাস্থ্য পরীক্ষা\n• টিকাকরণ\n• ল্যাব পরীক্ষা\n• ছোট প্রক্রিয়া\n\nমূল মেনুর জন্য 'MENU' উত্তর দিন।"
         },
         contact: {
-            en: "📞 Contact Us:\n\nPhone: +91-XXXXXXXXXX\nEmail: clinic@example.com\nAddress: 123 Main St, Kolkata\n\nReply 'MENU' for main menu.",
-            hi: "📞 हमसे संपर्क करें:\n\nफोन: +91-XXXXXXXXXX\nईमेल: clinic@example.com\nपता: 123 Main St, कोलकाता\n\nमुख्य मेनू के लिए 'MENU' का जवाब दें।",
-            bn: "📞 যোগাযোগ:\n\nফোন: +91-XXXXXXXXXX\nইমেল: clinic@example.com\nঠিকানা: 123 Main St, কলকাতা\n\nমূল মেনুর জন্য 'MENU' উত্তর দিন।"
+            en: "📞 Contact Us:\n\nPhone: +91-7980407413\nEmail: clinic@example.com\nAddress: 123 Main St, Kolkata\n\nReply 'MENU' for main menu.",
+            hi: "📞 हमसे संपर्क करें:\n\nफोन: +91-7980407413\nईमेल: clinic@example.com\nपता: 123 Main St, कोलकाता\n\nमुख्य मेनू के लिए 'MENU' का जवाब दें।",
+            bn: "📞 যোগাযোগ:\n\nফোন: +91-7980407413\nইমেল: clinic@example.com\nঠিকানা: 123 Main St, কলকাতা\n\nমূল মেনুর জন্য 'MENU' উত্তর দিন।"
         }
     };
     
@@ -388,7 +388,7 @@ app.post('/webhook', async (req, res) => {
     try {
         const { From, Body, ProfileName, To } = req.body;
         const phoneNumber = From.replace('whatsapp:', '');
-        const toNumber = To?.replace('whatsapp:', '') || twilioWhatsAppNumber;
+        const toNumber = To?.replace('whatsapp:', '') || twilioWhatsAppNumber.replace('whatsapp:', '');
         
         console.log(`📩 Received from ${phoneNumber}: ${Body}`);
         

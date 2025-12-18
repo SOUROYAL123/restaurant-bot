@@ -1,7 +1,7 @@
 {
-  "name": "whatsapp-clinic-bot",
-  "version": "1.0.0",
-  "description": "Multi-clinic WhatsApp appointment booking bot with Twilio and PostgreSQL",
+  "name": "whatsapp-clinic-bot-multilingual",
+  "version": "2.0.0",
+  "description": "Multi-clinic WhatsApp appointment booking bot with multilingual support (English, Bengali, Hindi)",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
@@ -14,9 +14,12 @@
     "appointment",
     "clinic",
     "booking",
-    "postgresql"
+    "postgresql",
+    "multilingual",
+    "bengali",
+    "hindi"
   ],
-  "author": "Sourav Roy",
+  "author": "Sourav Roy - Legacylens Automation",
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",

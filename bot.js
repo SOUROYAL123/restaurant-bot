@@ -158,6 +158,7 @@ app.post('/webhook', async (req, res) => {
         await sendWhatsAppMessage(userPhone, getMessage('en', 'welcomeMessage'));
         return res.sendStatus(200);
       }
+    }
     
     // Use user's language from session if not set
     if (!userLanguage && session) {

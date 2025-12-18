@@ -102,31 +102,74 @@ async function getClinicStatus(clinicId) {
   }
 }
 
+// HELPER FUNCTION: Format date safely
+function formatDate(dateInput) {
+  try {
+    let day, month, year;
+    
+    if (typeof dateInput === 'string') {
+      [year, month, day] = dateInput.split('-');
+    } else if (dateInput instanceof Date) {
+      year = dateInput.getFullYear();
+      month = String(dateInput.getMonth() + 1).padStart(2, '0');
+      day = String(dateInput.getDate()).padStart(2, '0');
+    } else {
+      throw new Error('Invalid date format');
+    }
+    
+    return { day, month, year };
+  } catch (error) {
+    console.error('❌ Date formatting error:', error);
+    return null;
+  }
+}
+
 async function approveAppointment(appointmentId, twilioClient) {
   try {
+    console.log(`🔍 Approving appointment ${appointmentId}...`);
+    
     const appointment = await getAppointment(appointmentId);
     
     if (!appointment) {
+      console.error(`❌ Appointment ${appointmentId} not found`);
       return `❌ Appointment #${appointmentId} not found.`;
     }
+    
+    console.log(`✅ Found appointment:`, appointment);
     
     if (appointment.status !== 'pending') {
       return `⚠️ Appointment #${appointmentId} is already ${appointment.status}.`;
     }
     
-    await updateAppointmentStatus(appointmentId, 'confirmed');
+    // Format date safely
+    const dateInfo = formatDate(appointment.appointment_date);
+    if (!dateInfo) {
+      return `❌ Error: Invalid date format in appointment #${appointmentId}`;
+    }
     
-    const [year, month, day] = appointment.appointment_date.split('-');
-    await twilioClient.messages.create({
-      from: process.env.TWILIO_WHATSAPP_NUMBER,
-      to: `whatsapp:${appointment.patient_phone}`,
-      body: `🎉 *Appointment CONFIRMED!*\n\n🏥 *Clinic:* ${appointment.clinic_name}\n👤 *Name:* ${appointment.patient_name}\n📅 *Date:* ${day}-${month}-${year}\n⏰ *Time:* ${appointment.appointment_slot}\n📌 *Booking ID:* #${appointmentId}\n\n✨ Your appointment has been approved!\nSee you soon! 👋`
-    });
+    const { day, month, year } = dateInfo;
+    
+    // Update status
+    await updateAppointmentStatus(appointmentId, 'confirmed');
+    console.log(`✅ Appointment ${appointmentId} status updated to confirmed`);
+    
+    // Notify patient
+    try {
+      await twilioClient.messages.create({
+        from: process.env.TWILIO_WHATSAPP_NUMBER,
+        to: `whatsapp:${appointment.patient_phone}`,
+        body: `🎉 *Appointment CONFIRMED!*\n\n🏥 *Clinic:* ${appointment.clinic_name}\n👤 *Name:* ${appointment.patient_name}\n📅 *Date:* ${day}-${month}-${year}\n⏰ *Time:* ${appointment.appointment_slot}\n📌 *Booking ID:* #${appointmentId}\n\n✨ Your appointment has been approved!\nSee you soon! 👋`
+      });
+      console.log(`✅ Patient notification sent to ${appointment.patient_phone}`);
+    } catch (notifyError) {
+      console.error('⚠️ Failed to notify patient:', notifyError);
+    }
     
     return `✅ *Appointment #${appointmentId} APPROVED*\n\nPatient: ${appointment.patient_name}\nDate: ${day}-${month}-${year}\nTime: ${appointment.appointment_slot}\n\nPatient has been notified.`;
+    
   } catch (error) {
-    console.error('❌ Error approving appointment:', error);
-    return `❌ Error approving appointment #${appointmentId}`;
+    console.error(`❌ Error approving appointment ${appointmentId}:`, error);
+    return `❌ Error approving appointment #${appointmentId}: ${error.message}`;
   }
 }
 
@@ -142,19 +185,30 @@ async function rejectAppointment(appointmentId, twilioClient) {
       return `⚠️ Appointment #${appointmentId} is already ${appointment.status}.`;
     }
     
+    const dateInfo = formatDate(appointment.appointment_date);
+    if (!dateInfo) {
+      return `❌ Error: Invalid date format`;
+    }
+    
+    const { day, month, year } = dateInfo;
+    
     await updateAppointmentStatus(appointmentId, 'rejected');
     
-    const [year, month, day] = appointment.appointment_date.split('-');
-    await twilioClient.messages.create({
-      from: process.env.TWILIO_WHATSAPP_NUMBER,
-      to: `whatsapp:${appointment.patient_phone}`,
-      body: `😔 *Appointment Request Not Approved*\n\n📌 *Request ID:* #${appointmentId}\n🏥 *Clinic:* ${appointment.clinic_name}\n📅 *Date:* ${day}-${month}-${year}\n⏰ *Time:* ${appointment.appointment_slot}\n\nThe requested slot is not available.\nType "hi" to book a different time.`
-    });
+    try {
+      await twilioClient.messages.create({
+        from: process.env.TWILIO_WHATSAPP_NUMBER,
+        to: `whatsapp:${appointment.patient_phone}`,
+        body: `😔 *Appointment Request Not Approved*\n\n📌 *Request ID:* #${appointmentId}\n🏥 *Clinic:* ${appointment.clinic_name}\n📅 *Date:* ${day}-${month}-${year}\n⏰ *Time:* ${appointment.appointment_slot}\n\nThe requested slot is not available.\nType "hi" to book a different time.`
+      });
+    } catch (notifyError) {
+      console.error('⚠️ Failed to notify patient:', notifyError);
+    }
     
     return `❌ *Appointment #${appointmentId} REJECTED*\n\nPatient: ${appointment.patient_name}\nDate: ${day}-${month}-${year}\n\nPatient has been notified. Slot is now available.`;
+    
   } catch (error) {
     console.error('❌ Error rejecting appointment:', error);
-    return `❌ Error rejecting appointment #${appointmentId}`;
+    return `❌ Error rejecting appointment #${appointmentId}: ${error.message}`;
   }
 }
 
@@ -170,19 +224,30 @@ async function cancelAppointment(appointmentId, twilioClient) {
       return `⚠️ Appointment #${appointmentId} is already cancelled.`;
     }
     
+    const dateInfo = formatDate(appointment.appointment_date);
+    if (!dateInfo) {
+      return `❌ Error: Invalid date format`;
+    }
+    
+    const { day, month, year } = dateInfo;
+    
     await updateAppointmentStatus(appointmentId, 'cancelled');
     
-    const [year, month, day] = appointment.appointment_date.split('-');
-    await twilioClient.messages.create({
-      from: process.env.TWILIO_WHATSAPP_NUMBER,
-      to: `whatsapp:${appointment.patient_phone}`,
-      body: `⚠️ *Appointment Cancelled*\n\n📌 *Booking ID:* #${appointmentId}\n🏥 *Clinic:* ${appointment.clinic_name}\n📅 *Date:* ${day}-${month}-${year}\n⏰ *Time:* ${appointment.appointment_slot}\n\nYour appointment has been cancelled by the clinic.\nPlease contact them or book a new slot.\n\nType "hi" to make a new booking.`
-    });
+    try {
+      await twilioClient.messages.create({
+        from: process.env.TWILIO_WHATSAPP_NUMBER,
+        to: `whatsapp:${appointment.patient_phone}`,
+        body: `⚠️ *Appointment Cancelled*\n\n📌 *Booking ID:* #${appointmentId}\n🏥 *Clinic:* ${appointment.clinic_name}\n📅 *Date:* ${day}-${month}-${year}\n⏰ *Time:* ${appointment.appointment_slot}\n\nYour appointment has been cancelled by the clinic.\nPlease contact them or book a new slot.\n\nType "hi" to make a new booking.`
+      });
+    } catch (notifyError) {
+      console.error('⚠️ Failed to notify patient:', notifyError);
+    }
     
     return `✅ *Appointment #${appointmentId} CANCELLED*\n\nPatient: ${appointment.patient_name}\nDate: ${day}-${month}-${year}\n\nPatient has been notified. Slot is now available.`;
+    
   } catch (error) {
     console.error('❌ Error cancelling appointment:', error);
-    return `❌ Error cancelling appointment #${appointmentId}`;
+    return `❌ Error cancelling appointment #${appointmentId}: ${error.message}`;
   }
 }
 

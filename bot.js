@@ -1,33 +1,22 @@
-/**
- * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT - COMPLETE VERSION
- * Multi-feature clinic management system
- * ═══════════════════════════════════════════════════════════
- */
-
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const twilio = require('twilio');
 const db = require('./config/database');
 
-// Handlers
 const { handleAppointmentBooking } = require('./handlers/appointmentBooking');
 const DoctorCommandsHandler = require('./handlers/doctorCommands');
 const PatientCommandsHandler = require('./handlers/patientCommands');
 const DoctorSelection = require('./handlers/doctorSelection');
 const SlotManager = require('./handlers/slotManager');
 const QueueSystem = require('./handlers/queueSystem');
-const RecurringAppointments = require('./handlers/recurringAppointments');
 
-// Utils
 const { updateSession, getSession, clearSession } = require('./utils/sessionManager');
 const { syncCustomer } = require('./utils/customerSync');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Twilio setup
 const twilioClient = twilio(
     process.env.TWILIO_ACCOUNT_SID,
     process.env.TWILIO_AUTH_TOKEN
@@ -36,11 +25,6 @@ const twilioClient = twilio(
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-/**
- * ═══════════════════════════════════════════════════════════
- * MAIN WHATSAPP WEBHOOK
- * ═══════════════════════════════════════════════════════════
- */
 app.post('/webhook', async (req, res) => {
     try {
         const { Body, From, To } = req.body;
@@ -50,7 +34,6 @@ app.post('/webhook', async (req, res) => {
         
         console.log(`📨 Message from ${userPhone}: ${messageBody}`);
         
-        // STEP 1: Check if sender is a DOCTOR
         const doctorInfo = await DoctorCommandsHandler.isDoctor(userPhone);
         
         if (doctorInfo) {
@@ -70,7 +53,6 @@ app.post('/webhook', async (req, res) => {
             return;
         }
         
-        // STEP 2: Get clinic ID from bot number
         const clinicResult = await db.query(
             `SELECT id FROM clinics WHERE doctor_whatsapp = $1 LIMIT 1`,
             [botNumber]
@@ -84,7 +66,6 @@ app.post('/webhook', async (req, res) => {
         
         const clinicId = clinicResult.rows[0].id;
         
-        // STEP 3: Check if message is a PATIENT COMMAND
         if (PatientCommandsHandler.isPatientCommand(messageBody)) {
             console.log('📋 Patient command detected');
             
@@ -98,7 +79,6 @@ app.post('/webhook', async (req, res) => {
                 await sendWhatsAppMessage(userPhone, result.message);
             }
             
-            // Handle reschedule flow
             if (result && result.nextStage) {
                 await updateSession(userPhone, clinicId, result.nextStage, result.tempData || {});
             }
@@ -107,7 +87,6 @@ app.post('/webhook', async (req, res) => {
             return;
         }
         
-        // STEP 4: Check for QUEUE/TOKEN commands
         if (messageBody.toUpperCase() === 'GET TOKEN' || messageBody.toUpperCase() === 'TOKEN') {
             await handleTokenRequest(userPhone, clinicId);
             res.sendStatus(200);
@@ -120,47 +99,37 @@ app.post('/webhook', async (req, res) => {
             return;
         }
         
-        // STEP 5: Get or create session
         let session = await getSession(userPhone, clinicId);
         
         if (!session) {
             session = await createSession(userPhone, clinicId);
         }
         
-        // STEP 6: Sync customer data
         await syncCustomer(userPhone, clinicId, session.language || 'en');
         
-        // STEP 7: Route based on current stage
         const stage = session.current_step;
         
         console.log(`📍 Current stage: ${stage}`);
         
-        // Main menu or greeting
         if (stage === 'main_menu' || messageBody.toUpperCase() === 'HI' || 
             messageBody.toUpperCase() === 'HELLO' || messageBody === '0') {
             await handleMainMenu(userPhone, clinicId, session);
         }
-        // Doctor selection stage
+        else if (stage === 'main_menu' && ['1', '2', '3', '4'].includes(messageBody.trim())) {
+            await handleMenuOption(userPhone, clinicId, messageBody);
+        }
         else if (stage === 'select_doctor') {
             await handleDoctorSelectionStage(userPhone, clinicId, session, messageBody);
         }
-        // Booking flow stages
         else if (stage.startsWith('booking_')) {
             await handleBookingFlow(userPhone, clinicId, session, messageBody);
         }
-        // Reschedule flow stages
         else if (stage.startsWith('reschedule_')) {
             await handleRescheduleFlow(userPhone, clinicId, session, messageBody);
         }
-        // Slot suggestion flow
-        else if (stage === 'view_slots') {
-            await handleSlotSelection(userPhone, clinicId, session, messageBody);
-        }
-        // Help
         else if (messageBody.toUpperCase() === 'HELP') {
             await handleHelp(userPhone, clinicId);
         }
-        // Unknown - show menu
         else {
             await handleMainMenu(userPhone, clinicId, session);
         }
@@ -173,14 +142,8 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-/**
- * ═══════════════════════════════════════════════════════════
- * MAIN MENU HANDLER
- * ═══════════════════════════════════════════════════════════
- */
 async function handleMainMenu(userPhone, clinicId, session) {
     try {
-        // Get clinic info
         const clinic = await db.query(
             `SELECT name, doctor_name FROM clinics WHERE id = $1`,
             [clinicId]
@@ -188,7 +151,6 @@ async function handleMainMenu(userPhone, clinicId, session) {
         
         const clinicInfo = clinic.rows[0];
         
-        // Check if returning customer
         const customer = await db.query(
             `SELECT name, total_appointments FROM customers 
              WHERE phone = $1 AND clinic_id = $2 LIMIT 1`,
@@ -225,24 +187,17 @@ async function handleMainMenu(userPhone, clinicId, session) {
     }
 }
 
-/**
- * ═══════════════════════════════════════════════════════════
- * MENU OPTION ROUTER
- * ═══════════════════════════════════════════════════════════
- */
 async function handleMenuOption(userPhone, clinicId, selection) {
     try {
         const option = selection.trim();
         
         if (option === '1') {
-            // Book Appointment - Check if multi-doctor
             const hasMultiple = await DoctorSelection.hasMultipleDoctors(clinicId);
             
             if (hasMultiple) {
                 const result = await DoctorSelection.showDoctorMenu(clinicId);
                 
                 if (result.autoSelect) {
-                    // Single doctor - skip selection
                     await updateSession(userPhone, clinicId, 'booking_start', {
                         doctor_id: result.doctorId
                     });
@@ -256,14 +211,12 @@ async function handleMenuOption(userPhone, clinicId, selection) {
                     
                     await updateSession(userPhone, clinicId, bookingResult.nextStage, bookingResult.tempData);
                 } else {
-                    // Multiple doctors - show selection
                     await sendWhatsAppMessage(userPhone, result.message);
                     await updateSession(userPhone, clinicId, 'select_doctor', {
                         doctors: result.doctors
                     });
                 }
             } else {
-                // No multi-doctor - start booking
                 const defaultDoctor = await DoctorSelection.getDefaultDoctor(clinicId);
                 await updateSession(userPhone, clinicId, 'booking_start', {
                     doctor_id: defaultDoctor
@@ -280,16 +233,13 @@ async function handleMenuOption(userPhone, clinicId, selection) {
             }
         }
         else if (option === '2') {
-            // View Appointments
             const result = await PatientCommandsHandler.handleViewAppointments(userPhone, clinicId);
             await sendWhatsAppMessage(userPhone, result.message);
         }
         else if (option === '3') {
-            // Get Token
             await handleTokenRequest(userPhone, clinicId);
         }
         else if (option === '4') {
-            // Contact Us
             const clinic = await db.query(
                 `SELECT name, doctor_name, doctor_whatsapp, address, city 
                  FROM clinics WHERE id = $1`,
@@ -318,11 +268,6 @@ async function handleMenuOption(userPhone, clinicId, selection) {
     }
 }
 
-/**
- * ═══════════════════════════════════════════════════════════
- * DOCTOR SELECTION STAGE
- * ═══════════════════════════════════════════════════════════
- */
 async function handleDoctorSelectionStage(userPhone, clinicId, session, messageBody) {
     try {
         const tempData = session.temp_data || {};
@@ -341,7 +286,6 @@ async function handleDoctorSelectionStage(userPhone, clinicId, session, messageB
         
         await sendWhatsAppMessage(userPhone, result.message);
         
-        // Move to booking with selected doctor
         await updateSession(userPhone, clinicId, result.nextStage, {
             doctor_id: result.doctorId,
             doctor_name: result.doctorName
@@ -352,14 +296,8 @@ async function handleDoctorSelectionStage(userPhone, clinicId, session, messageB
     }
 }
 
-/**
- * ═══════════════════════════════════════════════════════════
- * BOOKING FLOW HANDLER
- * ═══════════════════════════════════════════════════════════
- */
 async function handleBookingFlow(userPhone, clinicId, session, messageBody) {
     try {
-        // Check if user wants to go back to menu
         if (messageBody.trim() === '1' || messageBody.trim() === '2' || 
             messageBody.trim() === '3' || messageBody.trim() === '4') {
             await handleMenuOption(userPhone, clinicId, messageBody);
@@ -379,18 +317,12 @@ async function handleBookingFlow(userPhone, clinicId, session, messageBody) {
     }
 }
 
-/**
- * ═══════════════════════════════════════════════════════════
- * RESCHEDULE FLOW HANDLER
- * ═══════════════════════════════════════════════════════════
- */
 async function handleRescheduleFlow(userPhone, clinicId, session, messageBody) {
     try {
         const stage = session.current_step;
         const tempData = session.temp_data || {};
         
         if (stage === 'reschedule_date') {
-            // Parse date
             const { parseDate } = require('./handlers/appointmentBooking');
             const parsedDate = parseDate(messageBody);
             
@@ -399,7 +331,6 @@ async function handleRescheduleFlow(userPhone, clinicId, session, messageBody) {
                 return;
             }
             
-            // Show available slots
             const doctorId = tempData.doctor_id || null;
             const slots = await SlotManager.suggestSlots(clinicId, parsedDate.date, doctorId);
             
@@ -412,7 +343,6 @@ async function handleRescheduleFlow(userPhone, clinicId, session, messageBody) {
             });
         }
         else if (stage === 'reschedule_time') {
-            // Parse time
             const { parseTime } = require('./handlers/appointmentBooking');
             const parsedTime = parseTime(messageBody);
             
@@ -421,7 +351,6 @@ async function handleRescheduleFlow(userPhone, clinicId, session, messageBody) {
                 return;
             }
             
-            // Update appointment
             await db.query(
                 `UPDATE appointments 
                  SET appointment_date = $1, 
@@ -450,14 +379,8 @@ async function handleRescheduleFlow(userPhone, clinicId, session, messageBody) {
     }
 }
 
-/**
- * ═══════════════════════════════════════════════════════════
- * TOKEN REQUEST HANDLER
- * ═══════════════════════════════════════════════════════════
- */
 async function handleTokenRequest(userPhone, clinicId) {
     try {
-        // Get customer name
         const customer = await db.query(
             `SELECT name FROM customers WHERE phone = $1 AND clinic_id = $2 LIMIT 1`,
             [userPhone, clinicId]
@@ -465,7 +388,6 @@ async function handleTokenRequest(userPhone, clinicId) {
         
         const patientName = customer.rows.length > 0 ? customer.rows[0].name : null;
         
-        // Issue token
         const tokenInfo = await QueueSystem.issueToken(clinicId, userPhone, patientName);
         
         if (!tokenInfo.success) {
@@ -473,10 +395,8 @@ async function handleTokenRequest(userPhone, clinicId) {
             return;
         }
         
-        // Get current status
         const status = await QueueSystem.getTokenStatus(clinicId);
         
-        // Format message
         const message = QueueSystem.formatTokenMessage(tokenInfo, status);
         
         await sendWhatsAppMessage(userPhone, message);
@@ -486,11 +406,6 @@ async function handleTokenRequest(userPhone, clinicId) {
     }
 }
 
-/**
- * ═══════════════════════════════════════════════════════════
- * TOKEN STATUS HANDLER
- * ═══════════════════════════════════════════════════════════
- */
 async function handleTokenStatus(userPhone, clinicId) {
     try {
         const tokenInfo = await QueueSystem.checkMyToken(clinicId, userPhone);
@@ -531,11 +446,6 @@ async function handleTokenStatus(userPhone, clinicId) {
     }
 }
 
-/**
- * ═══════════════════════════════════════════════════════════
- * HELP COMMAND
- * ═══════════════════════════════════════════════════════════
- */
 async function handleHelp(userPhone, clinicId) {
     try {
         const message = `💡 *Help & Commands*\n\n` +
@@ -565,12 +475,6 @@ async function handleHelp(userPhone, clinicId) {
     }
 }
 
-/**
- * ═══════════════════════════════════════════════════════════
- * HELPER FUNCTIONS
- * ═══════════════════════════════════════════════════════════
- */
-
 async function createSession(userPhone, clinicId) {
     await db.query(
         `INSERT INTO sessions (user_phone, clinic_id, current_step, temp_data, language, updated_at, last_activity)
@@ -598,11 +502,6 @@ async function sendWhatsAppMessage(phoneNumber, message) {
     }
 }
 
-/**
- * ═══════════════════════════════════════════════════════════
- * VOICE WEBHOOK (Missed Call Feature)
- * ═══════════════════════════════════════════════════════════
- */
 app.post('/voice', async (req, res) => {
     try {
         const { From, To } = req.body;
@@ -611,13 +510,11 @@ app.post('/voice', async (req, res) => {
         
         console.log(`📞 Missed call from ${callerNumber} to ${missedCallNumber}`);
         
-        // Hang up immediately
         const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Hangup/>
 </Response>`;
         
-        // Send SMS with WhatsApp link
         sendMissedCallSMS(callerNumber, missedCallNumber).catch(err => {
             console.error('SMS error:', err.message);
         });
@@ -653,12 +550,6 @@ async function sendMissedCallSMS(callerNumber, missedCallNumber) {
         console.error('SMS error:', error.message);
     }
 }
-
-/**
- * ═══════════════════════════════════════════════════════════
- * HEALTH CHECK & ANALYTICS
- * ═══════════════════════════════════════════════════════════
- */
 
 app.get('/health', (req, res) => {
     res.json({
@@ -698,46 +589,11 @@ app.get('/api/analytics', async (req, res) => {
     }
 });
 
-/**
- * ═══════════════════════════════════════════════════════════
- * START SERVER
- * ═══════════════════════════════════════════════════════════
- */
-
 app.listen(PORT, () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📱 Webhook: https://your-domain.com/webhook`);
     console.log(`📞 Voice: https://your-domain.com/voice`);
-    console.log(`✅ Multi-doctor selection enabled`);
-    console.log(`✅ Queue system enabled`);
     console.log(`✅ All features active`);
 });
 
-// Export for testing
 module.exports = app;
-```
-
----
-
-## **📋 DEPLOYMENT CHECKLIST**
-
-### **1. File Structure Verification**
-```
-project/
-├── bot.js (UPDATED - above)
-├── package.json
-├── .env
-├── config/
-│   └── database.js
-├── handlers/
-│   ├── appointmentBooking.js (from earlier)
-│   ├── doctorCommands.js (from earlier)
-│   ├── patientCommands.js (Feature 1)
-│   ├── doctorSelection.js (Feature 7 - above)
-│   ├── slotManager.js (Feature 4 - from earlier)
-│   ├── queueSystem.js (Feature 5 - from earlier)
-│   └── recurringAppointments.js (Feature 6 - from earlier)
-└── utils/
-    ├── twilioClient.js
-    ├── sessionManager.js
-    └── customerSync.js

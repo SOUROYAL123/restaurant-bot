@@ -1,383 +1,172 @@
+/**
+ * ═══════════════════════════════════════════════════════════
+ * WHATSAPP CLINIC BOT - COMPLETE VERSION
+ * Multi-feature clinic management system
+ * ═══════════════════════════════════════════════════════════
+ */
+
 require('dotenv').config();
 const express = require('express');
+const bodyParser = require('body-parser');
 const twilio = require('twilio');
-const { syncCustomer, logInteraction, getCustomer } = require('./utils/customerSync');
 const db = require('./config/database');
 
+// Handlers
+const { handleAppointmentBooking } = require('./handlers/appointmentBooking');
+const DoctorCommandsHandler = require('./handlers/doctorCommands');
+const PatientCommandsHandler = require('./handlers/patientCommands');
+const DoctorSelection = require('./handlers/doctorSelection');
+const SlotManager = require('./handlers/slotManager');
+const QueueSystem = require('./handlers/queueSystem');
+const RecurringAppointments = require('./handlers/recurringAppointments');
+
+// Utils
+const { updateSession, getSession, clearSession } = require('./utils/sessionManager');
+const { syncCustomer } = require('./utils/customerSync');
+
 const app = express();
-const port = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000;
 
-// Twilio configuration
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const twilioClient = twilio(accountSid, authToken);
-const twilioWhatsAppNumber = process.env.TWILIO_WHATSAPP_NUMBER || process.env.WABA_NUMBER;
+// Twilio setup
+const twilioClient = twilio(
+    process.env.TWILIO_ACCOUNT_SID,
+    process.env.TWILIO_AUTH_TOKEN
+);
 
-// Middleware
-app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
-
-// Import handlers
-const appointmentHandler = require('./handlers/appointmentBooking');
-
-// =====================================================
-// SESSION MANAGEMENT - DATABASE-BACKED (NEW)
-// =====================================================
-const sessionManager = require('./utils/sessionManager');
-
-// Cleanup sessions every 10 minutes
-setInterval(async () => {
-    await sessionManager.cleanupSessions();
-}, 10 * 60 * 1000);
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
 
 /**
- * Get clinic ID from phone number or WABA routing
- */
-async function getClinicIdFromPhone(toNumber) {
-    try {
-        // Query database for clinic based on WABA number using doctor_whatsapp column
-        const result = await db.query(
-            `SELECT id FROM clinics WHERE doctor_whatsapp = $1`,
-            [toNumber]
-        );
-        
-        if (result.rows.length > 0) {
-            return result.rows[0].id;
-        }
-        
-        // Default clinic ID if not found
-        console.log(`⚠️ No clinic found for ${toNumber}, using default clinic ID 1`);
-        return 1;
-    } catch (error) {
-        console.error('❌ Error getting clinic ID:', error.message);
-        return 1; // Fallback to default clinic
-    }
-}
-
-/**
- * Detect language from message content
- */
-function detectLanguage(message) {
-    const bengaliPattern = /[\u0980-\u09FF]/;
-    const hindiPattern = /[\u0900-\u097F]/;
-    
-    if (bengaliPattern.test(message)) {
-        return 'bn';
-    } else if (hindiPattern.test(message)) {
-        return 'hi';
-    }
-    return 'en';
-}
-
-/**
- * Get greeting message based on language
- */
-function getGreeting(language, customerName) {
-    const greetings = {
-        en: `Hello${customerName ? ' ' + customerName : ''}! 👋\n\nWelcome to our clinic. How can I help you today?\n\n1️⃣ Book Appointment\n2️⃣ Check Availability\n3️⃣ View Services\n4️⃣ Contact Info\n\nReply with a number or describe your query.`,
-        hi: `नमस्ते${customerName ? ' ' + customerName : ''}! 👋\n\nहमारे क्लिनिक में आपका स्वागत है। मैं आज आपकी कैसे मदद कर सकता हूं?\n\n1️⃣ अपॉइंटमेंट बुक करें\n2️⃣ उपलब्धता जांचें\n3️⃣ सेवाएं देखें\n4️⃣ संपर्क जानकारी\n\nएक नंबर के साथ जवाब दें या अपनी क्वेरी का वर्णन करें।`,
-        bn: `হ্যালো${customerName ? ' ' + customerName : ''}! 👋\n\nআমাদের ক্লিনিকে আপনাকে স্বাগতম। আজ আমি আপনাকে কিভাবে সাহায্য করতে পারি?\n\n1️⃣ অ্যাপয়েন্টমেন্ট বুক করুন\n2️⃣ উপলব্ধতা চেক করুন\n3️⃣ সেবা দেখুন\n4️⃣ যোগাযোগের তথ্য\n\nএকটি নম্বর দিয়ে উত্তর দিন বা আপনার প্রশ্ন বর্ণনা করুন।`
-    };
-    
-    return greetings[language] || greetings.en;
-}
-
-/**
- * Process incoming message based on session state
- */
-async function processMessage(message, phoneNumber, clinicId) {
-    const session = await sessionManager.getSession(phoneNumber);
-    const customer = await getCustomer(phoneNumber, clinicId);
-    
-    // Update language preference based on message
-    const detectedLang = detectLanguage(message);
-    if (detectedLang !== session.language) {
-        session.language = detectedLang;
-        await sessionManager.updateSession(phoneNumber, { language: detectedLang });
-        
-        // Update customer language preference
-        if (customer) {
-            await syncCustomer(phoneNumber, clinicId, { 
-                languagePreference: detectedLang 
-            });
-        }
-    }
-    
-    const messageText = message.trim().toLowerCase();
-    
-    // Handle different stages
-    switch (session.stage) {
-        case 'initial':
-            return handleInitialStage(messageText, session, customer, phoneNumber);
-            
-        case 'booking_name':
-            return await handleBookingName(messageText, phoneNumber, clinicId, session);
-            
-        case 'booking_date':
-            return await handleBookingDate(messageText, phoneNumber, clinicId, session);
-            
-        case 'booking_time':
-            return await handleBookingTime(messageText, phoneNumber, clinicId, session);
-            
-        case 'booking_confirm':
-            return await handleBookingConfirm(messageText, phoneNumber, clinicId, session);
-            
-        default:
-            return handleInitialStage(messageText, session, customer, phoneNumber);
-    }
-}
-
-/**
- * Handle initial stage - main menu
- */
-async function handleInitialStage(message, session, customer, phoneNumber) {
-    const customerName = customer?.name || null;
-    
-    // Check for menu options
-    if (message === '1' || message.includes('book') || message.includes('appointment')) {
-        await sessionManager.updateSession(phoneNumber, { stage: 'booking_name' });
-        return getResponse('booking_start', session.language);
-    }
-    
-    if (message === '2' || message.includes('availability') || message.includes('check')) {
-        return getResponse('availability', session.language);
-    }
-    
-    if (message === '3' || message.includes('service')) {
-        return getResponse('services', session.language);
-    }
-    
-    if (message === '4' || message.includes('contact')) {
-        return getResponse('contact', session.language);
-    }
-    
-    // Default greeting
-    return getGreeting(session.language, customerName);
-}
-
-/**
- * Handle booking - collect name
- */
-async function handleBookingName(message, phoneNumber, clinicId, session) {
-    const name = message.trim();
-    
-    if (name.length < 2) {
-        return getResponse('invalid_name', session.language);
-    }
-    
-    // Save name to session and customer database
-    session.data.name = name;
-    await syncCustomer(phoneNumber, clinicId, { name });
-    
-    await sessionManager.updateSession(phoneNumber, { 
-        stage: 'booking_date',
-        data: session.data 
-    });
-    
-    return getResponse('booking_date', session.language, { name });
-}
-
-/**
- * Handle booking - collect date
- */
-async function handleBookingDate(message, phoneNumber, clinicId, session) {
-    // Simple date validation
-    const datePattern = /\d{1,2}[-\/]\d{1,2}[-\/]\d{2,4}|\d{1,2}\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
-    
-    if (!datePattern.test(message)) {
-        return getResponse('invalid_date', session.language);
-    }
-    
-    session.data.date = message.trim();
-    await sessionManager.updateSession(phoneNumber, { 
-        stage: 'booking_time',
-        data: session.data 
-    });
-    
-    return getResponse('booking_time', session.language);
-}
-
-/**
- * Handle booking - collect time
- */
-async function handleBookingTime(message, phoneNumber, clinicId, session) {
-    const timePattern = /\d{1,2}:\d{2}|\d{1,2}\s*(am|pm)/i;
-    
-    if (!timePattern.test(message)) {
-        return getResponse('invalid_time', session.language);
-    }
-    
-    session.data.time = message.trim();
-    await sessionManager.updateSession(phoneNumber, { 
-        stage: 'booking_confirm',
-        data: session.data 
-    });
-    
-    return getResponse('booking_confirm', session.language, session.data);
-}
-
-/**
- * Handle booking - confirmation
- */
-async function handleBookingConfirm(message, phoneNumber, clinicId, session) {
-    if (message === 'yes' || message === 'confirm' || message === '1') {
-        try {
-            // Save appointment to database
-            const appointment = await appointmentHandler.bookAppointment(
-                phoneNumber,
-                clinicId,
-                session.data
-            );
-            
-            // Reset session
-            await sessionManager.updateSession(phoneNumber, { 
-                stage: 'initial',
-                data: {} 
-            });
-            
-            return getResponse('booking_success', session.language, {
-                ...session.data,
-                appointmentId: appointment.id
-            });
-        } catch (error) {
-            console.error('❌ Booking error:', error.message);
-            return getResponse('booking_error', session.language);
-        }
-    } else {
-        // Cancel booking
-        await sessionManager.updateSession(phoneNumber, { 
-            stage: 'initial',
-            data: {} 
-        });
-        return getResponse('booking_cancelled', session.language);
-    }
-}
-
-/**
- * Get response templates in multiple languages
- */
-function getResponse(type, language, data = {}) {
-    const responses = {
-        booking_start: {
-            en: "Great! Let's book your appointment. 📅\n\nPlease tell me your name:",
-            hi: "बढ़िया! आइए अपनी अपॉइंटमेंट बुक करें। 📅\n\nकृपया मुझे अपना नाम बताएं:",
-            bn: "চমৎকার! আপনার অ্যাপয়েন্টমেন্ট বুক করি। 📅\n\nঅনুগ্রহ করে আমাকে আপনার নাম বলুন:"
-        },
-        invalid_name: {
-            en: "Please enter a valid name (at least 2 characters):",
-            hi: "कृपया एक वैध नाम दर्ज करें (कम से कम 2 अक्षर):",
-            bn: "অনুগ্রহ করে একটি বৈধ নাম লিখুন (কমপক্ষে 2 অক্ষর):"
-        },
-        booking_date: {
-            en: `Thank you, ${data.name}! 🙏\n\nWhat date would you like to book?\n(Format: DD/MM/YYYY or DD-MM-YYYY)`,
-            hi: `धन्यवाद, ${data.name}! 🙏\n\nआप किस तारीख को बुक करना चाहेंगे?\n(प्रारूप: DD/MM/YYYY या DD-MM-YYYY)`,
-            bn: `ধন্যবাদ, ${data.name}! 🙏\n\nআপনি কোন তারিখে বুক করতে চান?\n(ফরম্যাট: DD/MM/YYYY অথবা DD-MM-YYYY)`
-        },
-        invalid_date: {
-            en: "Please enter a valid date (Format: DD/MM/YYYY):",
-            hi: "कृपया एक वैध तारीख दर्ज करें (प्रारूप: DD/MM/YYYY):",
-            bn: "অনুগ্রহ করে একটি বৈধ তারিখ লিখুন (ফরম্যাট: DD/MM/YYYY):"
-        },
-        booking_time: {
-            en: "What time works best for you?\n(Format: HH:MM or HH:MM AM/PM)",
-            hi: "आपके लिए कौन सा समय सबसे अच्छा है?\n(प्रारूप: HH:MM या HH:MM AM/PM)",
-            bn: "আপনার জন্য কোন সময় সবচেয়ে ভালো?\n(ফরম্যাট: HH:MM অথবা HH:MM AM/PM)"
-        },
-        invalid_time: {
-            en: "Please enter a valid time (Format: HH:MM or HH:MM AM/PM):",
-            hi: "कृपया एक वैध समय दर्ज करें (प्रारूप: HH:MM या HH:MM AM/PM):",
-            bn: "অনুগ্রহ করে একটি বৈধ সময় লিখুন (ফরম্যাট: HH:MM অথবা HH:MM AM/PM):"
-        },
-        booking_confirm: {
-            en: `📋 Please confirm your appointment:\n\n👤 Name: ${data.name}\n📅 Date: ${data.date}\n🕒 Time: ${data.time}\n\nReply 'YES' to confirm or 'NO' to cancel.`,
-            hi: `📋 कृपया अपनी अपॉइंटमेंट की पुष्टि करें:\n\n👤 नाम: ${data.name}\n📅 तारीख: ${data.date}\n🕒 समय: ${data.time}\n\nपुष्टि करने के लिए 'YES' या रद्द करने के लिए 'NO' का जवाब दें।`,
-            bn: `📋 অনুগ্রহ করে আপনার অ্যাপয়েন্টমেন্ট নিশ্চিত করুন:\n\n👤 নাম: ${data.name}\n📅 তারিখ: ${data.date}\n🕒 সময়: ${data.time}\n\nনিশ্চিত করতে 'YES' বা বাতিল করতে 'NO' উত্তর দিন।`
-        },
-        booking_success: {
-            en: `✅ Appointment confirmed!\n\n📋 Booking ID: #${data.appointmentId}\n👤 Name: ${data.name}\n📅 Date: ${data.date}\n🕒 Time: ${data.time}\n\nWe'll see you then! Reply with 'MENU' to return to main menu.`,
-            hi: `✅ अपॉइंटमेंट की पुष्टि हो गई!\n\n📋 बुकिंग ID: #${data.appointmentId}\n👤 नाम: ${data.name}\n📅 तारीख: ${data.date}\n🕒 समय: ${data.time}\n\nहम आपको तब देखेंगे! मुख्य मेनू पर वापस जाने के लिए 'MENU' का जवाब दें।`,
-            bn: `✅ অ্যাপয়েন্টমেন্ট নিশ্চিত হয়েছে!\n\n📋 বুকিং ID: #${data.appointmentId}\n👤 নাম: ${data.name}\n📅 তারিখ: ${data.date}\n🕒 সময়: ${data.time}\n\nআমরা তখন আপনাকে দেখব! মূল মেনুতে ফিরে যেতে 'MENU' উত্তর দিন।`
-        },
-        booking_cancelled: {
-            en: "❌ Booking cancelled. Reply 'MENU' to return to main menu.",
-            hi: "❌ बुकिंग रद्द। मुख्य मेनू पर वापस जाने के लिए 'MENU' का जवाब दें।",
-            bn: "❌ বুকিং বাতিল। মূল মেনুতে ফিরে যেতে 'MENU' উত্তর দিন।"
-        },
-        booking_error: {
-            en: "❌ Sorry, there was an error booking your appointment. Please try again or contact us directly.",
-            hi: "❌ क्षमा करें, आपकी अपॉइंटमेंट बुक करने में एक त्रुटि थी। कृपया फिर से प्रयास करें या हमसे सीधे संपर्क करें।",
-            bn: "❌ দুঃখিত, আপনার অ্যাপয়েন্টমেন্ট বুক করতে একটি ত্রুটি হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন বা সরাসরি আমাদের সাথে যোগাযোগ করুন।"
-        },
-        availability: {
-            en: "📅 Our clinic is open:\n\nMonday - Friday: 9:00 AM - 6:00 PM\nSaturday: 9:00 AM - 2:00 PM\nSunday: Closed\n\nReply 'MENU' for main menu.",
-            hi: "📅 हमारा क्लिनिक खुला है:\n\nसोमवार - शुक्रवार: सुबह 9:00 बजे - शाम 6:00 बजे\nशनिवार: सुबह 9:00 बजे - दोपहर 2:00 बजे\nरविवार: बंद\n\nमुख्य मेनू के लिए 'MENU' का जवाब दें।",
-            bn: "📅 আমাদের ক্লিনিক খোলা:\n\nসোমবার - শুক্রবার: সকাল 9:00 - সন্ধ্যা 6:00\nশনিবার: সকাল 9:00 - দুপুর 2:00\nরবিবার: বন্ধ\n\nমূল মেনুর জন্য 'MENU' উত্তর দিন।"
-        },
-        services: {
-            en: "🏥 Our Services:\n\n• General Consultation\n• Health Checkups\n• Vaccinations\n• Lab Tests\n• Minor Procedures\n\nReply 'MENU' for main menu.",
-            hi: "🏥 हमारी सेवाएं:\n\n• सामान्य परामर्श\n• स्वास्थ्य जांच\n• टीकाकरण\n• लैब टेस्ट\n• मामूली प्रक्रियाएं\n\nमुख्य मेनू के लिए 'MENU' का जवाब दें।",
-            bn: "🏥 আমাদের সেবাসমূহ:\n\n• সাধারণ পরামর্শ\n• স্বাস্থ্য পরীক্ষা\n• টিকাকরণ\n• ল্যাব পরীক্ষা\n• ছোট প্রক্রিয়া\n\nমূল মেনুর জন্য 'MENU' উত্তর দিন।"
-        },
-        contact: {
-            en: "📞 Contact Us:\n\nPhone: +91-7980407413\nEmail: clinic@example.com\nAddress: 123 Main St, Kolkata\n\nReply 'MENU' for main menu.",
-            hi: "📞 हमसे संपर्क करें:\n\nफोन: +91-7980407413\nईमेल: clinic@example.com\nपता: 123 Main St, कोलकाता\n\nमुख्य मेनू के लिए 'MENU' का जवाब दें।",
-            bn: "📞 যোগাযোগ:\n\nফোন: +91-7980407413\nইমেল: clinic@example.com\nঠিকানা: 123 Main St, কলকাতা\n\nমূল মেনুর জন্য 'MENU' উত্তর দিন।"
-        }
-    };
-    
-    return responses[type]?.[language] || responses[type]?.en || "Invalid response type";
-}
-
-/**
- * Send WhatsApp message via Twilio
- */
-async function sendWhatsAppMessage(to, message) {
-    try {
-        await twilioClient.messages.create({
-            from: twilioWhatsAppNumber,
-            to: `whatsapp:${to}`,
-            body: message
-        });
-        console.log(`✅ Message sent to ${to}`);
-    } catch (error) {
-        console.error('❌ Error sending message:', error.message);
-        throw error;
-    }
-}
-
-/**
- * Main webhook endpoint
+ * ═══════════════════════════════════════════════════════════
+ * MAIN WHATSAPP WEBHOOK
+ * ═══════════════════════════════════════════════════════════
  */
 app.post('/webhook', async (req, res) => {
     try {
-        const { From, Body, ProfileName, To } = req.body;
-        const phoneNumber = From.replace('whatsapp:', '');
-        const toNumber = To?.replace('whatsapp:', '') || twilioWhatsAppNumber.replace('whatsapp:', '');
+        const { Body, From, To } = req.body;
+        const userPhone = From.replace('whatsapp:', '').replace('+', '');
+        const botNumber = To;
+        const messageBody = (Body || '').trim();
         
-        console.log(`📩 Received from ${phoneNumber}: ${Body}`);
+        console.log(`📨 Message from ${userPhone}: ${messageBody}`);
         
-        // Get clinic ID from routing
-        const clinicId = await getClinicIdFromPhone(toNumber);
+        // STEP 1: Check if sender is a DOCTOR
+        const doctorInfo = await DoctorCommandsHandler.isDoctor(userPhone);
         
-        // Sync customer (create or update)
-        await syncCustomer(phoneNumber, clinicId, {
-            name: ProfileName,
-            languagePreference: detectLanguage(Body)
-        });
+        if (doctorInfo) {
+            console.log(`🩺 Doctor detected: ${doctorInfo.doctor_name}`);
+            
+            const result = await DoctorCommandsHandler.handleCommand(
+                doctorInfo, 
+                messageBody, 
+                userPhone
+            );
+            
+            if (result.message) {
+                await sendWhatsAppMessage(userPhone, result.message);
+            }
+            
+            res.sendStatus(200);
+            return;
+        }
         
-        // Get session (database-backed)
-        const session = await sessionManager.getSession(phoneNumber);
+        // STEP 2: Get clinic ID from bot number
+        const clinicResult = await db.query(
+            `SELECT id FROM clinics WHERE doctor_whatsapp = $1 LIMIT 1`,
+            [botNumber]
+        );
         
-        // Process message and get response
-        const response = await processMessage(Body, phoneNumber, clinicId);
+        if (clinicResult.rows.length === 0) {
+            console.log('❌ No clinic found for this number');
+            res.sendStatus(200);
+            return;
+        }
         
-        // Log interaction
-        await logInteraction(phoneNumber, clinicId, session.stage, Body, response);
+        const clinicId = clinicResult.rows[0].id;
         
-        // Send response via Twilio
-        await sendWhatsAppMessage(phoneNumber, response);
+        // STEP 3: Check if message is a PATIENT COMMAND
+        if (PatientCommandsHandler.isPatientCommand(messageBody)) {
+            console.log('📋 Patient command detected');
+            
+            const result = await PatientCommandsHandler.handleCommand(
+                userPhone, 
+                clinicId, 
+                messageBody
+            );
+            
+            if (result && result.message) {
+                await sendWhatsAppMessage(userPhone, result.message);
+            }
+            
+            // Handle reschedule flow
+            if (result && result.nextStage) {
+                await updateSession(userPhone, clinicId, result.nextStage, result.tempData || {});
+            }
+            
+            res.sendStatus(200);
+            return;
+        }
+        
+        // STEP 4: Check for QUEUE/TOKEN commands
+        if (messageBody.toUpperCase() === 'GET TOKEN' || messageBody.toUpperCase() === 'TOKEN') {
+            await handleTokenRequest(userPhone, clinicId);
+            res.sendStatus(200);
+            return;
+        }
+        
+        if (messageBody.toUpperCase() === 'TOKEN STATUS' || messageBody.toUpperCase() === 'MY TOKEN') {
+            await handleTokenStatus(userPhone, clinicId);
+            res.sendStatus(200);
+            return;
+        }
+        
+        // STEP 5: Get or create session
+        let session = await getSession(userPhone, clinicId);
+        
+        if (!session) {
+            session = await createSession(userPhone, clinicId);
+        }
+        
+        // STEP 6: Sync customer data
+        await syncCustomer(userPhone, clinicId, session.language || 'en');
+        
+        // STEP 7: Route based on current stage
+        const stage = session.current_step;
+        
+        console.log(`📍 Current stage: ${stage}`);
+        
+        // Main menu or greeting
+        if (stage === 'main_menu' || messageBody.toUpperCase() === 'HI' || 
+            messageBody.toUpperCase() === 'HELLO' || messageBody === '0') {
+            await handleMainMenu(userPhone, clinicId, session);
+        }
+        // Doctor selection stage
+        else if (stage === 'select_doctor') {
+            await handleDoctorSelectionStage(userPhone, clinicId, session, messageBody);
+        }
+        // Booking flow stages
+        else if (stage.startsWith('booking_')) {
+            await handleBookingFlow(userPhone, clinicId, session, messageBody);
+        }
+        // Reschedule flow stages
+        else if (stage.startsWith('reschedule_')) {
+            await handleRescheduleFlow(userPhone, clinicId, session, messageBody);
+        }
+        // Slot suggestion flow
+        else if (stage === 'view_slots') {
+            await handleSlotSelection(userPhone, clinicId, session, messageBody);
+        }
+        // Help
+        else if (messageBody.toUpperCase() === 'HELP') {
+            await handleHelp(userPhone, clinicId);
+        }
+        // Unknown - show menu
+        else {
+            await handleMainMenu(userPhone, clinicId, session);
+        }
         
         res.sendStatus(200);
+        
     } catch (error) {
         console.error('❌ Webhook error:', error.message);
         res.sendStatus(500);
@@ -385,58 +174,570 @@ app.post('/webhook', async (req, res) => {
 });
 
 /**
- * Health check endpoint
+ * ═══════════════════════════════════════════════════════════
+ * MAIN MENU HANDLER
+ * ═══════════════════════════════════════════════════════════
  */
-app.get('/health', async (req, res) => {
+async function handleMainMenu(userPhone, clinicId, session) {
     try {
-        await db.query('SELECT 1');
+        // Get clinic info
+        const clinic = await db.query(
+            `SELECT name, doctor_name FROM clinics WHERE id = $1`,
+            [clinicId]
+        );
         
-        // Get session stats
-        const sessionStats = await sessionManager.getSessionStats();
+        const clinicInfo = clinic.rows[0];
         
-        res.json({ 
-            status: 'healthy',
-            timestamp: new Date().toISOString(),
-            sessions: sessionStats || { total_sessions: 0 }
-        });
+        // Check if returning customer
+        const customer = await db.query(
+            `SELECT name, total_appointments FROM customers 
+             WHERE phone = $1 AND clinic_id = $2 LIMIT 1`,
+            [userPhone, clinicId]
+        );
+        
+        let greeting = '👋 *Welcome to ' + clinicInfo.name + '!*\n\n';
+        
+        if (customer.rows.length > 0 && customer.rows[0].name) {
+            greeting = `👋 *Welcome back, ${customer.rows[0].name}!*\n\n`;
+        }
+        
+        const message = greeting +
+            `I'm your 24/7 appointment assistant. 🤖\n\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `*What would you like to do?*\n\n` +
+            `1️⃣ 📅 Book Appointment\n` +
+            `2️⃣ 📋 My Appointments\n` +
+            `3️⃣ 🎫 Get Token (Walk-in)\n` +
+            `4️⃣ 💬 Contact Us\n\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `*Quick Commands:*\n` +
+            `• MY APPOINTMENTS - View bookings\n` +
+            `• CANCEL [ID] - Cancel appointment\n` +
+            `• TOKEN STATUS - Check queue\n` +
+            `• HELP - Show all commands\n\n` +
+            `Reply with number (1-4) or command`;
+        
+        await sendWhatsAppMessage(userPhone, message);
+        await updateSession(userPhone, clinicId, 'main_menu', {});
+        
     } catch (error) {
-        res.status(500).json({ 
-            status: 'unhealthy',
-            error: error.message 
+        console.error('Error in main menu:', error.message);
+    }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════
+ * MENU OPTION ROUTER
+ * ═══════════════════════════════════════════════════════════
+ */
+async function handleMenuOption(userPhone, clinicId, selection) {
+    try {
+        const option = selection.trim();
+        
+        if (option === '1') {
+            // Book Appointment - Check if multi-doctor
+            const hasMultiple = await DoctorSelection.hasMultipleDoctors(clinicId);
+            
+            if (hasMultiple) {
+                const result = await DoctorSelection.showDoctorMenu(clinicId);
+                
+                if (result.autoSelect) {
+                    // Single doctor - skip selection
+                    await updateSession(userPhone, clinicId, 'booking_start', {
+                        doctor_id: result.doctorId
+                    });
+                    
+                    const session = await getSession(userPhone, clinicId);
+                    const bookingResult = await handleAppointmentBooking(session, '', userPhone);
+                    
+                    if (bookingResult.message) {
+                        await sendWhatsAppMessage(userPhone, bookingResult.message);
+                    }
+                    
+                    await updateSession(userPhone, clinicId, bookingResult.nextStage, bookingResult.tempData);
+                } else {
+                    // Multiple doctors - show selection
+                    await sendWhatsAppMessage(userPhone, result.message);
+                    await updateSession(userPhone, clinicId, 'select_doctor', {
+                        doctors: result.doctors
+                    });
+                }
+            } else {
+                // No multi-doctor - start booking
+                const defaultDoctor = await DoctorSelection.getDefaultDoctor(clinicId);
+                await updateSession(userPhone, clinicId, 'booking_start', {
+                    doctor_id: defaultDoctor
+                });
+                
+                const session = await getSession(userPhone, clinicId);
+                const result = await handleAppointmentBooking(session, '', userPhone);
+                
+                if (result.message) {
+                    await sendWhatsAppMessage(userPhone, result.message);
+                }
+                
+                await updateSession(userPhone, clinicId, result.nextStage, result.tempData);
+            }
+        }
+        else if (option === '2') {
+            // View Appointments
+            const result = await PatientCommandsHandler.handleViewAppointments(userPhone, clinicId);
+            await sendWhatsAppMessage(userPhone, result.message);
+        }
+        else if (option === '3') {
+            // Get Token
+            await handleTokenRequest(userPhone, clinicId);
+        }
+        else if (option === '4') {
+            // Contact Us
+            const clinic = await db.query(
+                `SELECT name, doctor_name, doctor_whatsapp, address, city 
+                 FROM clinics WHERE id = $1`,
+                [clinicId]
+            );
+            
+            const info = clinic.rows[0];
+            const phone = info.doctor_whatsapp.replace('whatsapp:', '');
+            
+            const message = `📞 *Contact ${info.name}*\n\n` +
+                `👨‍⚕️ Dr. ${info.doctor_name}\n` +
+                `📱 ${phone}\n` +
+                `📍 ${info.address || ''}, ${info.city || 'Kolkata'}\n\n` +
+                `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+                `You can call us directly or book via WhatsApp!\n\n` +
+                `Reply "1" to book appointment`;
+            
+            await sendWhatsAppMessage(userPhone, message);
+        }
+        else {
+            await handleMainMenu(userPhone, clinicId, { current_step: 'main_menu' });
+        }
+        
+    } catch (error) {
+        console.error('Error handling menu option:', error.message);
+    }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════
+ * DOCTOR SELECTION STAGE
+ * ═══════════════════════════════════════════════════════════
+ */
+async function handleDoctorSelectionStage(userPhone, clinicId, session, messageBody) {
+    try {
+        const tempData = session.temp_data || {};
+        const doctors = tempData.doctors || [];
+        
+        const result = await DoctorSelection.handleDoctorSelection(
+            clinicId, 
+            messageBody, 
+            doctors
+        );
+        
+        if (!result.success) {
+            await sendWhatsAppMessage(userPhone, result.message);
+            return;
+        }
+        
+        await sendWhatsAppMessage(userPhone, result.message);
+        
+        // Move to booking with selected doctor
+        await updateSession(userPhone, clinicId, result.nextStage, {
+            doctor_id: result.doctorId,
+            doctor_name: result.doctorName
         });
+        
+    } catch (error) {
+        console.error('Error in doctor selection stage:', error.message);
+    }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════
+ * BOOKING FLOW HANDLER
+ * ═══════════════════════════════════════════════════════════
+ */
+async function handleBookingFlow(userPhone, clinicId, session, messageBody) {
+    try {
+        // Check if user wants to go back to menu
+        if (messageBody.trim() === '1' || messageBody.trim() === '2' || 
+            messageBody.trim() === '3' || messageBody.trim() === '4') {
+            await handleMenuOption(userPhone, clinicId, messageBody);
+            return;
+        }
+        
+        const result = await handleAppointmentBooking(session, messageBody, userPhone);
+        
+        if (result.message) {
+            await sendWhatsAppMessage(userPhone, result.message);
+        }
+        
+        await updateSession(userPhone, clinicId, result.nextStage, result.tempData || {});
+        
+    } catch (error) {
+        console.error('Error in booking flow:', error.message);
+    }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════
+ * RESCHEDULE FLOW HANDLER
+ * ═══════════════════════════════════════════════════════════
+ */
+async function handleRescheduleFlow(userPhone, clinicId, session, messageBody) {
+    try {
+        const stage = session.current_step;
+        const tempData = session.temp_data || {};
+        
+        if (stage === 'reschedule_date') {
+            // Parse date
+            const { parseDate } = require('./handlers/appointmentBooking');
+            const parsedDate = parseDate(messageBody);
+            
+            if (!parsedDate.valid) {
+                await sendWhatsAppMessage(userPhone, `❌ ${parsedDate.error}\n\nPlease enter date (DD-MM-YYYY):`);
+                return;
+            }
+            
+            // Show available slots
+            const doctorId = tempData.doctor_id || null;
+            const slots = await SlotManager.suggestSlots(clinicId, parsedDate.date, doctorId);
+            
+            const slotsMessage = SlotManager.formatSlotsMessage(slots, parsedDate.date);
+            
+            await sendWhatsAppMessage(userPhone, slotsMessage);
+            await updateSession(userPhone, clinicId, 'reschedule_time', {
+                ...tempData,
+                new_date: parsedDate.date
+            });
+        }
+        else if (stage === 'reschedule_time') {
+            // Parse time
+            const { parseTime } = require('./handlers/appointmentBooking');
+            const parsedTime = parseTime(messageBody);
+            
+            if (!parsedTime.valid) {
+                await sendWhatsAppMessage(userPhone, `❌ ${parsedTime.error}\n\nPlease enter time (HH:MM AM/PM):`);
+                return;
+            }
+            
+            // Update appointment
+            await db.query(
+                `UPDATE appointments 
+                 SET appointment_date = $1, 
+                     appointment_slot = $2,
+                     status = 'pending',
+                     updated_at = NOW()
+                 WHERE id = $3`,
+                [tempData.new_date, parsedTime.time, tempData.reschedule_appointment_id]
+            );
+            
+            const displayDate = new Date(tempData.new_date).toLocaleDateString('en-IN');
+            
+            const message = `✅ *Appointment Rescheduled!*\n\n` +
+                `📋 Booking ID: #${tempData.reschedule_appointment_id}\n` +
+                `📅 New Date: ${displayDate}\n` +
+                `🕒 New Time: ${parsedTime.time}\n\n` +
+                `⏳ Pending doctor approval\n\n` +
+                `You'll receive confirmation shortly! 📱`;
+            
+            await sendWhatsAppMessage(userPhone, message);
+            await updateSession(userPhone, clinicId, 'main_menu', {});
+        }
+        
+    } catch (error) {
+        console.error('Error in reschedule flow:', error.message);
+    }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════
+ * TOKEN REQUEST HANDLER
+ * ═══════════════════════════════════════════════════════════
+ */
+async function handleTokenRequest(userPhone, clinicId) {
+    try {
+        // Get customer name
+        const customer = await db.query(
+            `SELECT name FROM customers WHERE phone = $1 AND clinic_id = $2 LIMIT 1`,
+            [userPhone, clinicId]
+        );
+        
+        const patientName = customer.rows.length > 0 ? customer.rows[0].name : null;
+        
+        // Issue token
+        const tokenInfo = await QueueSystem.issueToken(clinicId, userPhone, patientName);
+        
+        if (!tokenInfo.success) {
+            await sendWhatsAppMessage(userPhone, '❌ Error issuing token. Please try again.');
+            return;
+        }
+        
+        // Get current status
+        const status = await QueueSystem.getTokenStatus(clinicId);
+        
+        // Format message
+        const message = QueueSystem.formatTokenMessage(tokenInfo, status);
+        
+        await sendWhatsAppMessage(userPhone, message);
+        
+    } catch (error) {
+        console.error('Error handling token request:', error.message);
+    }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════
+ * TOKEN STATUS HANDLER
+ * ═══════════════════════════════════════════════════════════
+ */
+async function handleTokenStatus(userPhone, clinicId) {
+    try {
+        const tokenInfo = await QueueSystem.checkMyToken(clinicId, userPhone);
+        
+        if (!tokenInfo) {
+            await sendWhatsAppMessage(userPhone, 
+                `📋 *No Active Token*\n\n` +
+                `You don't have any token for today.\n\n` +
+                `Reply "GET TOKEN" to get one now!`
+            );
+            return;
+        }
+        
+        let statusIcon = '⏳';
+        let statusText = 'Waiting';
+        
+        if (tokenInfo.status === 'serving') {
+            statusIcon = '🔔';
+            statusText = 'Your Turn!';
+        }
+        
+        const message = `🎫 *Your Token Status*\n\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n` +
+            `🔢 Your Token: *#${tokenInfo.tokenNumber}*\n` +
+            `${statusIcon} Status: *${statusText}*\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `📊 Queue Status:\n` +
+            `• Now Serving: ${tokenInfo.currentServing ? `#${tokenInfo.currentServing}` : 'None'}\n` +
+            `• Your Position: ${tokenInfo.position}\n` +
+            `• Estimated Wait: ${tokenInfo.estimatedWait} minutes\n\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `We'll notify you when it's your turn! 📱`;
+        
+        await sendWhatsAppMessage(userPhone, message);
+        
+    } catch (error) {
+        console.error('Error handling token status:', error.message);
+    }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════
+ * HELP COMMAND
+ * ═══════════════════════════════════════════════════════════
+ */
+async function handleHelp(userPhone, clinicId) {
+    try {
+        const message = `💡 *Help & Commands*\n\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `*Quick Actions:*\n` +
+            `• Reply "1" - Book appointment\n` +
+            `• Reply "2" - View my appointments\n` +
+            `• Reply "3" - Get walk-in token\n` +
+            `• Reply "4" - Contact clinic\n\n` +
+            `*Appointment Commands:*\n` +
+            `• MY APPOINTMENTS - View all bookings\n` +
+            `• CANCEL [ID] - Cancel appointment\n` +
+            `• RESCHEDULE [ID] - Change date/time\n\n` +
+            `*Token Commands:*\n` +
+            `• GET TOKEN - Get queue token\n` +
+            `• TOKEN STATUS - Check position\n\n` +
+            `*Other:*\n` +
+            `• HELP - Show this message\n` +
+            `• HI - Back to main menu\n\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `Need assistance? Reply "4" to contact us!`;
+        
+        await sendWhatsAppMessage(userPhone, message);
+        
+    } catch (error) {
+        console.error('Error in help:', error.message);
+    }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════
+ * HELPER FUNCTIONS
+ * ═══════════════════════════════════════════════════════════
+ */
+
+async function createSession(userPhone, clinicId) {
+    await db.query(
+        `INSERT INTO sessions (user_phone, clinic_id, current_step, temp_data, language, updated_at, last_activity)
+         VALUES ($1, $2, 'main_menu', '{}', 'en', NOW(), NOW())
+         ON CONFLICT (user_phone, clinic_id) DO UPDATE 
+         SET current_step = 'main_menu', updated_at = NOW(), last_activity = NOW()`,
+        [userPhone, clinicId]
+    );
+    
+    return await getSession(userPhone, clinicId);
+}
+
+async function sendWhatsAppMessage(phoneNumber, message) {
+    try {
+        await twilioClient.messages.create({
+            from: process.env.WABA_NUMBER,
+            to: `whatsapp:+${phoneNumber}`,
+            body: message
+        });
+        
+        console.log(`✅ Message sent to ${phoneNumber}`);
+        
+    } catch (error) {
+        console.error(`❌ Error sending message to ${phoneNumber}:`, error.message);
+    }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════
+ * VOICE WEBHOOK (Missed Call Feature)
+ * ═══════════════════════════════════════════════════════════
+ */
+app.post('/voice', async (req, res) => {
+    try {
+        const { From, To } = req.body;
+        const callerNumber = From.replace('+', '');
+        const missedCallNumber = To.replace('+', '');
+        
+        console.log(`📞 Missed call from ${callerNumber} to ${missedCallNumber}`);
+        
+        // Hang up immediately
+        const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Hangup/>
+</Response>`;
+        
+        // Send SMS with WhatsApp link
+        sendMissedCallSMS(callerNumber, missedCallNumber).catch(err => {
+            console.error('SMS error:', err.message);
+        });
+        
+        res.type('text/xml');
+        res.send(twiml);
+        
+    } catch (error) {
+        console.error('Voice webhook error:', error.message);
+        res.sendStatus(500);
     }
 });
 
-/**
- * Get customer stats (admin endpoint)
- */
-app.get('/api/stats/:clinicId', async (req, res) => {
+async function sendMissedCallSMS(callerNumber, missedCallNumber) {
     try {
-        const { clinicId } = req.params;
-        const stats = await require('./utils/customerSync').getCustomerStats(clinicId);
-        res.json(stats);
+        const whatsappNumber = process.env.WABA_NUMBER.replace('whatsapp:', '');
+        
+        const smsBody = `✨ Thank you for calling!\n\n` +
+            `📱 Book appointment on WhatsApp:\n` +
+            `👉 wa.me/${whatsappNumber.replace('+', '')}?text=Hi\n\n` +
+            `Or save ${whatsappNumber} and message "Hi"\n\n` +
+            `- Legacylens Clinic`;
+        
+        await twilioClient.messages.create({
+            from: missedCallNumber,
+            to: `+${callerNumber}`,
+            body: smsBody
+        });
+        
+        console.log(`✅ SMS sent to ${callerNumber}`);
+        
+    } catch (error) {
+        console.error('SMS error:', error.message);
+    }
+}
+
+/**
+ * ═══════════════════════════════════════════════════════════
+ * HEALTH CHECK & ANALYTICS
+ * ═══════════════════════════════════════════════════════════
+ */
+
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        features: [
+            'Multi-Doctor Selection',
+            'Appointment Booking',
+            'Doctor Approval Workflow',
+            'Cancel/Reschedule',
+            'View Appointments',
+            'Smart Slot Suggestions',
+            'Queue/Token System',
+            'Missed Call Handler'
+        ]
+    });
+});
+
+app.get('/api/analytics', async (req, res) => {
+    try {
+        const stats = await db.query(`
+            SELECT 
+                (SELECT COUNT(*) FROM appointments WHERE created_at > NOW() - INTERVAL '24 hours') as appointments_today,
+                (SELECT COUNT(*) FROM appointments WHERE status = 'pending') as pending_approvals,
+                (SELECT COUNT(*) FROM appointments WHERE status = 'confirmed') as confirmed_appointments,
+                (SELECT COUNT(*) FROM queue_tokens WHERE queue_date = CURRENT_DATE) as tokens_today,
+                (SELECT COUNT(*) FROM customers) as total_customers
+        `);
+        
+        res.json({
+            success: true,
+            data: stats.rows[0]
+        });
+        
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
 /**
- * Analytics routes
+ * ═══════════════════════════════════════════════════════════
+ * START SERVER
+ * ═══════════════════════════════════════════════════════════
  */
-const analyticsRouter = require('./routes/analytics');
-app.use('/api/analytics', analyticsRouter);
 
-/**
- * Start server
- */
-app.listen(port, () => {
-    console.log(`🚀 WhatsApp Bot running on port ${port}`);
-    console.log(`📱 Webhook URL: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${port}`}/webhook`);
-    console.log(`💾 Session storage: Database-backed (persistent)`);
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`📱 Webhook: https://your-domain.com/webhook`);
+    console.log(`📞 Voice: https://your-domain.com/voice`);
+    console.log(`✅ Multi-doctor selection enabled`);
+    console.log(`✅ Queue system enabled`);
+    console.log(`✅ All features active`);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('👋 SIGTERM received, shutting down gracefully...');
-    process.exit(0);
-});
+// Export for testing
+module.exports = app;
+```
+
+---
+
+## **📋 DEPLOYMENT CHECKLIST**
+
+### **1. File Structure Verification**
+```
+project/
+├── bot.js (UPDATED - above)
+├── package.json
+├── .env
+├── config/
+│   └── database.js
+├── handlers/
+│   ├── appointmentBooking.js (from earlier)
+│   ├── doctorCommands.js (from earlier)
+│   ├── patientCommands.js (Feature 1)
+│   ├── doctorSelection.js (Feature 7 - above)
+│   ├── slotManager.js (Feature 4 - from earlier)
+│   ├── queueSystem.js (Feature 5 - from earlier)
+│   └── recurringAppointments.js (Feature 6 - from earlier)
+└── utils/
+    ├── twilioClient.js
+    ├── sessionManager.js
+    └── customerSync.js

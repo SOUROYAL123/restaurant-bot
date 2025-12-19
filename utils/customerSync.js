@@ -8,13 +8,13 @@ async function syncCustomer(phoneNumber, clinicId, customerData = {}) {
         const { name, languagePreference } = customerData;
         
         const result = await db.query(
-            `INSERT INTO customers (phone_number, clinic_id, name, language_preference, last_interaction)
-             VALUES ($1, $2, $3, $4, NOW())
-             ON CONFLICT (phone_number, clinic_id) 
+            `INSERT INTO customers (phone, clinic_id, name, preferred_language, last_contact_date, first_contact_date)
+             VALUES ($1, $2, $3, $4, NOW(), NOW())
+             ON CONFLICT (phone, clinic_id) 
              DO UPDATE SET 
                 name = COALESCE($3, customers.name),
-                language_preference = COALESCE($4, customers.language_preference),
-                last_interaction = NOW(),
+                preferred_language = COALESCE($4, customers.preferred_language),
+                last_contact_date = NOW(),
                 updated_at = NOW()
              RETURNING *`,
             [phoneNumber, clinicId, name, languagePreference]
@@ -22,8 +22,8 @@ async function syncCustomer(phoneNumber, clinicId, customerData = {}) {
         
         return result.rows[0];
     } catch (error) {
-        console.error('Customer sync error:', error);
-        throw error;
+        console.error('❌ Customer sync error:', error.message);
+        return null;
     }
 }
 
@@ -34,13 +34,13 @@ async function getCustomer(phoneNumber, clinicId) {
     try {
         const result = await db.query(
             `SELECT * FROM customers 
-             WHERE phone_number = $1 AND clinic_id = $2`,
+             WHERE phone = $1 AND clinic_id = $2`,
             [phoneNumber, clinicId]
         );
         return result.rows[0] || null;
     } catch (error) {
-        console.error('Get customer error:', error);
-        throw error;
+        console.error('❌ Get customer error:', error.message);
+        return null;
     }
 }
 
@@ -53,12 +53,11 @@ async function incrementAppointments(phoneNumber, clinicId) {
             `UPDATE customers 
              SET total_appointments = total_appointments + 1,
                  updated_at = NOW()
-             WHERE phone_number = $1 AND clinic_id = $2`,
+             WHERE phone = $1 AND clinic_id = $2`,
             [phoneNumber, clinicId]
         );
     } catch (error) {
-        console.error('Increment appointments error:', error);
-        throw error;
+        console.error('❌ Increment appointments error:', error.message);
     }
 }
 
@@ -74,8 +73,7 @@ async function logInteraction(phoneNumber, clinicId, messageType, messageContent
             [phoneNumber, clinicId, messageType, messageContent, botResponse]
         );
     } catch (error) {
-        console.error('Log interaction error:', error);
-        // Don't throw - logging shouldn't break the flow
+        console.error('❌ Log interaction error:', error.message);
     }
 }
 
@@ -93,7 +91,7 @@ async function getCustomerHistory(phoneNumber, clinicId, limit = 10) {
         );
         return result.rows;
     } catch (error) {
-        console.error('Get customer history error:', error);
+        console.error('❌ Get customer history error:', error.message);
         return [];
     }
 }
@@ -106,13 +104,13 @@ async function getClinicCustomers(clinicId, limit = 100, offset = 0) {
         const result = await db.query(
             `SELECT * FROM customers 
              WHERE clinic_id = $1
-             ORDER BY last_interaction DESC
+             ORDER BY last_contact_date DESC
              LIMIT $2 OFFSET $3`,
             [clinicId, limit, offset]
         );
         return result.rows;
     } catch (error) {
-        console.error('Get clinic customers error:', error);
+        console.error('❌ Get clinic customers error:', error.message);
         return [];
     }
 }
@@ -125,8 +123,8 @@ async function getCustomerStats(clinicId) {
         const result = await db.query(
             `SELECT 
                 COUNT(*) as total_customers,
-                COUNT(CASE WHEN last_interaction > NOW() - INTERVAL '7 days' THEN 1 END) as active_last_week,
-                COUNT(CASE WHEN last_interaction > NOW() - INTERVAL '30 days' THEN 1 END) as active_last_month,
+                COUNT(CASE WHEN last_contact_date > NOW() - INTERVAL '7 days' THEN 1 END) as active_last_week,
+                COUNT(CASE WHEN last_contact_date > NOW() - INTERVAL '30 days' THEN 1 END) as active_last_month,
                 SUM(total_appointments) as total_appointments,
                 AVG(total_appointments) as avg_appointments_per_customer
              FROM customers 
@@ -135,7 +133,7 @@ async function getCustomerStats(clinicId) {
         );
         return result.rows[0];
     } catch (error) {
-        console.error('Get customer stats error:', error);
+        console.error('❌ Get customer stats error:', error.message);
         return null;
     }
 }

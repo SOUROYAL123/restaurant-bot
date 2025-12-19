@@ -1,257 +1,621 @@
-const pool = require('../db');
-const { updateAppointmentStatus, getAppointment } = require('./appointmentBooking');
+const db = require('../config/database');
+const { sendWhatsAppMessage } = require('../utils/twilioClient');
 
-async function isDoctorAndGetClinicId(phoneNumber) {
-  try {
-    const result = await pool.query('SELECT id FROM clinics WHERE doctor_whatsapp = $1', [phoneNumber]);
-    return result.rows.length > 0 ? result.rows[0].id : null;
-  } catch (error) {
-    console.error('❌ Error checking if doctor:', error);
-    return null;
-  }
+/**
+ * ═══════════════════════════════════════════════════════════
+ * DOCTOR COMMANDS HANDLER
+ * Handles all doctor WhatsApp commands
+ * ═══════════════════════════════════════════════════════════
+ */
+
+class DoctorCommandsHandler {
+    
+    /**
+     * Check if message is from a doctor
+     */
+    static async isDoctor(phoneNumber) {
+        try {
+            const result = await db.query(
+                `SELECT id, name, doctor_name, doctor_whatsapp, notification_language 
+                 FROM clinics 
+                 WHERE doctor_whatsapp = $1 AND status = 'active'
+                 LIMIT 1`,
+                [`whatsapp:${phoneNumber}`]
+            );
+            
+            return result.rows.length > 0 ? result.rows[0] : null;
+        } catch (error) {
+            console.error('Error checking doctor:', error.message);
+            return null;
+        }
+    }
+    
+    /**
+     * Main command router
+     */
+    static async handleCommand(doctorInfo, messageBody, fromNumber) {
+        try {
+            const command = messageBody.trim().toUpperCase();
+            
+            // Log command
+            await this.logDoctorAction(doctorInfo.id, fromNumber, command);
+            
+            // Route to appropriate handler
+            if (command.startsWith('APPROVE ')) {
+                return await this.handleApprove(doctorInfo, command, fromNumber);
+            } 
+            else if (command.startsWith('REJECT ')) {
+                return await this.handleReject(doctorInfo, command, fromNumber);
+            }
+            else if (command === 'TODAY' || command === 'TODAY\'S APPOINTMENTS') {
+                return await this.handleToday(doctorInfo, fromNumber);
+            }
+            else if (command === 'PENDING' || command === 'PENDING APPROVALS') {
+                return await this.handlePending(doctorInfo, fromNumber);
+            }
+            else if (command === 'TOMORROW' || command === 'TOMORROW\'S APPOINTMENTS') {
+                return await this.handleTomorrow(doctorInfo, fromNumber);
+            }
+            else if (command === 'STATS' || command === 'STATISTICS') {
+                return await this.handleStats(doctorInfo, fromNumber);
+            }
+            else if (command === 'HELP' || command === 'COMMANDS') {
+                return await this.handleHelp(doctorInfo, fromNumber);
+            }
+            else {
+                return await this.handleInvalidCommand(doctorInfo, fromNumber);
+            }
+            
+        } catch (error) {
+            console.error('Error handling doctor command:', error.message);
+            return {
+                success: false,
+                message: '❌ Error processing command. Please try again.'
+            };
+        }
+    }
+    
+    /**
+     * APPROVE appointment
+     */
+    static async handleApprove(doctorInfo, command, fromNumber) {
+        try {
+            // Extract appointment ID
+            const appointmentId = command.replace('APPROVE', '').trim();
+            
+            if (!appointmentId || isNaN(appointmentId)) {
+                return {
+                    success: false,
+                    message: '❌ Invalid format. Use: APPROVE 12'
+                };
+            }
+            
+            // Get appointment details
+            const appointment = await db.query(
+                `SELECT a.*, c.name as customer_name, c.phone as customer_phone
+                 FROM appointments a
+                 LEFT JOIN customers c ON a.customer_id = c.id
+                 WHERE a.id = $1 AND a.clinic_id = $2`,
+                [appointmentId, doctorInfo.id]
+            );
+            
+            if (appointment.rows.length === 0) {
+                return {
+                    success: false,
+                    message: `❌ Appointment #${appointmentId} not found.`
+                };
+            }
+            
+            const appt = appointment.rows[0];
+            
+            // Check if already approved
+            if (appt.status === 'confirmed') {
+                return {
+                    success: false,
+                    message: `⚠️ Appointment #${appointmentId} is already confirmed.`
+                };
+            }
+            
+            // Update status to confirmed
+            await db.query(
+                `UPDATE appointments 
+                 SET status = 'confirmed',
+                     confirmed_at = NOW(),
+                     doctor_action = 'approved',
+                     doctor_action_at = NOW()
+                 WHERE id = $1`,
+                [appointmentId]
+            );
+            
+            // Log action
+            await this.logDoctorAction(
+                doctorInfo.id, 
+                fromNumber, 
+                command, 
+                appointmentId, 
+                'Appointment approved'
+            );
+            
+            // Notify patient
+            await this.notifyPatientApproval(appt, doctorInfo);
+            
+            // Format date/time
+            const apptDate = new Date(appt.appointment_date).toLocaleDateString('en-IN');
+            const apptTime = appt.appointment_slot;
+            
+            return {
+                success: true,
+                message: `✅ *Appointment Approved!*
+
+📋 Booking ID: #${appointmentId}
+👤 Patient: ${appt.patient_name}
+📞 Phone: ${appt.patient_phone}
+📅 Date: ${apptDate}
+🕒 Time: ${apptTime}
+
+Patient has been notified! ✅`
+            };
+            
+        } catch (error) {
+            console.error('Error approving appointment:', error.message);
+            return {
+                success: false,
+                message: '❌ Error approving appointment. Please try again.'
+            };
+        }
+    }
+    
+    /**
+     * REJECT appointment
+     */
+    static async handleReject(doctorInfo, command, fromNumber) {
+        try {
+            // Extract appointment ID
+            const appointmentId = command.replace('REJECT', '').trim();
+            
+            if (!appointmentId || isNaN(appointmentId)) {
+                return {
+                    success: false,
+                    message: '❌ Invalid format. Use: REJECT 12'
+                };
+            }
+            
+            // Get appointment details
+            const appointment = await db.query(
+                `SELECT a.*, c.name as customer_name, c.phone as customer_phone
+                 FROM appointments a
+                 LEFT JOIN customers c ON a.customer_id = c.id
+                 WHERE a.id = $1 AND a.clinic_id = $2`,
+                [appointmentId, doctorInfo.id]
+            );
+            
+            if (appointment.rows.length === 0) {
+                return {
+                    success: false,
+                    message: `❌ Appointment #${appointmentId} not found.`
+                };
+            }
+            
+            const appt = appointment.rows[0];
+            
+            // Update status to rejected
+            await db.query(
+                `UPDATE appointments 
+                 SET status = 'rejected',
+                     doctor_action = 'rejected',
+                     doctor_action_at = NOW()
+                 WHERE id = $1`,
+                [appointmentId]
+            );
+            
+            // Log action
+            await this.logDoctorAction(
+                doctorInfo.id, 
+                fromNumber, 
+                command, 
+                appointmentId, 
+                'Appointment rejected'
+            );
+            
+            // Notify patient
+            await this.notifyPatientRejection(appt, doctorInfo);
+            
+            return {
+                success: true,
+                message: `❌ *Appointment Rejected*
+
+📋 Booking ID: #${appointmentId}
+👤 Patient: ${appt.patient_name}
+📞 Phone: ${appt.patient_phone}
+
+Patient has been notified to reschedule. 📱`
+            };
+            
+        } catch (error) {
+            console.error('Error rejecting appointment:', error.message);
+            return {
+                success: false,
+                message: '❌ Error rejecting appointment. Please try again.'
+            };
+        }
+    }
+    
+    /**
+     * Show TODAY's appointments
+     */
+    static async handleToday(doctorInfo, fromNumber) {
+        try {
+            const today = new Date().toISOString().split('T')[0];
+            
+            const appointments = await db.query(
+                `SELECT a.*, c.name as customer_name
+                 FROM appointments a
+                 LEFT JOIN customers c ON a.customer_id = c.id
+                 WHERE a.clinic_id = $1 
+                 AND a.appointment_date = $2
+                 AND a.status IN ('pending', 'confirmed')
+                 ORDER BY a.appointment_slot`,
+                [doctorInfo.id, today]
+            );
+            
+            if (appointments.rows.length === 0) {
+                return {
+                    success: true,
+                    message: `📅 *Today's Schedule*\n\n✨ No appointments today!\n\nYou have a free day. 🎉`
+                };
+            }
+            
+            let message = `📅 *Today's Schedule*\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+            
+            const pending = appointments.rows.filter(a => a.status === 'pending');
+            const confirmed = appointments.rows.filter(a => a.status === 'confirmed');
+            
+            if (confirmed.length > 0) {
+                message += `✅ *Confirmed (${confirmed.length}):*\n\n`;
+                confirmed.forEach((appt, index) => {
+                    message += `${index + 1}. 🕒 ${appt.appointment_slot}\n`;
+                    message += `   👤 ${appt.patient_name} (#${appt.id})\n`;
+                    message += `   📞 ${appt.patient_phone}\n\n`;
+                });
+            }
+            
+            if (pending.length > 0) {
+                message += `⏳ *Pending Approval (${pending.length}):*\n\n`;
+                pending.forEach((appt, index) => {
+                    message += `${index + 1}. 🕒 ${appt.appointment_slot}\n`;
+                    message += `   👤 ${appt.patient_name} (#${appt.id})\n`;
+                    message += `   📞 ${appt.patient_phone}\n`;
+                    message += `   ➡️ Reply: APPROVE ${appt.id}\n\n`;
+                });
+            }
+            
+            message += `━━━━━━━━━━━━━━━━━━━━━\n`;
+            message += `Total: ${appointments.rows.length} appointments`;
+            
+            return {
+                success: true,
+                message: message
+            };
+            
+        } catch (error) {
+            console.error('Error fetching today\'s appointments:', error.message);
+            return {
+                success: false,
+                message: '❌ Error fetching schedule. Please try again.'
+            };
+        }
+    }
+    
+    /**
+     * Show PENDING approvals
+     */
+    static async handlePending(doctorInfo, fromNumber) {
+        try {
+            const appointments = await db.query(
+                `SELECT a.*, c.name as customer_name
+                 FROM appointments a
+                 LEFT JOIN customers c ON a.customer_id = c.id
+                 WHERE a.clinic_id = $1 
+                 AND a.status = 'pending'
+                 AND a.appointment_date >= CURRENT_DATE
+                 ORDER BY a.appointment_date, a.appointment_slot
+                 LIMIT 20`,
+                [doctorInfo.id]
+            );
+            
+            if (appointments.rows.length === 0) {
+                return {
+                    success: true,
+                    message: `✨ *No Pending Approvals*\n\nAll caught up! 🎉`
+                };
+            }
+            
+            let message = `⏳ *Pending Approvals (${appointments.rows.length})*\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+            
+            appointments.rows.forEach((appt, index) => {
+                const date = new Date(appt.appointment_date).toLocaleDateString('en-IN', {
+                    day: '2-digit',
+                    month: 'short'
+                });
+                
+                message += `${index + 1}. 📋 #${appt.id}\n`;
+                message += `   👤 ${appt.patient_name}\n`;
+                message += `   📞 ${appt.patient_phone}\n`;
+                message += `   📅 ${date} | 🕒 ${appt.appointment_slot}\n`;
+                message += `   ✅ APPROVE ${appt.id} | ❌ REJECT ${appt.id}\n\n`;
+            });
+            
+            message += `━━━━━━━━━━━━━━━━━━━━━\n`;
+            message += `Reply with command to take action.`;
+            
+            return {
+                success: true,
+                message: message
+            };
+            
+        } catch (error) {
+            console.error('Error fetching pending appointments:', error.message);
+            return {
+                success: false,
+                message: '❌ Error fetching pending approvals. Please try again.'
+            };
+        }
+    }
+    
+    /**
+     * Show TOMORROW's appointments
+     */
+    static async handleTomorrow(doctorInfo, fromNumber) {
+        try {
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            const tomorrowDate = tomorrow.toISOString().split('T')[0];
+            
+            const appointments = await db.query(
+                `SELECT a.*, c.name as customer_name
+                 FROM appointments a
+                 LEFT JOIN customers c ON a.customer_id = c.id
+                 WHERE a.clinic_id = $1 
+                 AND a.appointment_date = $2
+                 AND a.status IN ('pending', 'confirmed')
+                 ORDER BY a.appointment_slot`,
+                [doctorInfo.id, tomorrowDate]
+            );
+            
+            if (appointments.rows.length === 0) {
+                return {
+                    success: true,
+                    message: `📅 *Tomorrow's Schedule*\n\n✨ No appointments tomorrow!`
+                };
+            }
+            
+            let message = `📅 *Tomorrow's Schedule*\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+            
+            appointments.rows.forEach((appt, index) => {
+                const statusIcon = appt.status === 'confirmed' ? '✅' : '⏳';
+                message += `${index + 1}. ${statusIcon} ${appt.appointment_slot}\n`;
+                message += `   👤 ${appt.patient_name} (#${appt.id})\n`;
+                message += `   📞 ${appt.patient_phone}\n\n`;
+            });
+            
+            message += `━━━━━━━━━━━━━━━━━━━━━\n`;
+            message += `Total: ${appointments.rows.length} appointments`;
+            
+            return {
+                success: true,
+                message: message
+            };
+            
+        } catch (error) {
+            console.error('Error fetching tomorrow\'s appointments:', error.message);
+            return {
+                success: false,
+                message: '❌ Error fetching schedule. Please try again.'
+            };
+        }
+    }
+    
+    /**
+     * Show STATISTICS
+     */
+    static async handleStats(doctorInfo, fromNumber) {
+        try {
+            const stats = await db.query(
+                `SELECT 
+                    COUNT(*) FILTER (WHERE status = 'pending') as pending_count,
+                    COUNT(*) FILTER (WHERE status = 'confirmed') as confirmed_count,
+                    COUNT(*) FILTER (WHERE status = 'completed') as completed_count,
+                    COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled_count,
+                    COUNT(*) FILTER (WHERE status = 'rejected') as rejected_count,
+                    COUNT(*) FILTER (WHERE appointment_date = CURRENT_DATE) as today_count,
+                    COUNT(*) FILTER (WHERE appointment_date = CURRENT_DATE + INTERVAL '1 day') as tomorrow_count,
+                    COUNT(*) FILTER (WHERE appointment_date >= CURRENT_DATE) as upcoming_count
+                 FROM appointments
+                 WHERE clinic_id = $1`,
+                [doctorInfo.id]
+            );
+            
+            const s = stats.rows[0];
+            
+            let message = `📊 *Clinic Statistics*\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+            message += `⏳ Pending Approval: ${s.pending_count}\n`;
+            message += `✅ Confirmed: ${s.confirmed_count}\n`;
+            message += `✔️ Completed: ${s.completed_count}\n`;
+            message += `❌ Cancelled: ${s.cancelled_count}\n`;
+            message += `🚫 Rejected: ${s.rejected_count}\n\n`;
+            message += `📅 Today: ${s.today_count} appointments\n`;
+            message += `📅 Tomorrow: ${s.tomorrow_count} appointments\n`;
+            message += `📅 Upcoming: ${s.upcoming_count} appointments\n\n`;
+            message += `━━━━━━━━━━━━━━━━━━━━━`;
+            
+            return {
+                success: true,
+                message: message
+            };
+            
+        } catch (error) {
+            console.error('Error fetching stats:', error.message);
+            return {
+                success: false,
+                message: '❌ Error fetching statistics. Please try again.'
+            };
+        }
+    }
+    
+    /**
+     * Show HELP/Commands
+     */
+    static async handleHelp(doctorInfo, fromNumber) {
+        const message = `🩺 *Doctor Commands*\n`;
+        const helpMessage = `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `📋 *Appointment Management:*\n` +
+            `• APPROVE [ID] - Approve appointment\n` +
+            `• REJECT [ID] - Reject appointment\n` +
+            `• PENDING - View pending approvals\n\n` +
+            `📅 *Schedule:*\n` +
+            `• TODAY - Today's appointments\n` +
+            `• TOMORROW - Tomorrow's schedule\n\n` +
+            `📊 *Analytics:*\n` +
+            `• STATS - View statistics\n\n` +
+            `❓ *Help:*\n` +
+            `• HELP - Show this message\n\n` +
+            `━━━━━━━━━━━━━━━━━━━━━\n` +
+            `Example: APPROVE 12`;
+        
+        return {
+            success: true,
+            message: message + helpMessage
+        };
+    }
+    
+    /**
+     * Invalid command handler
+     */
+    static async handleInvalidCommand(doctorInfo, fromNumber) {
+        return {
+            success: false,
+            message: `❓ *Invalid Command*\n\nReply "HELP" to see available commands.\n\nCommon commands:\n• PENDING\n• TODAY\n• APPROVE [ID]\n• REJECT [ID]`
+        };
+    }
+    
+    /**
+     * Notify patient about approval
+     */
+    static async notifyPatientApproval(appointment, doctorInfo) {
+        try {
+            const date = new Date(appointment.appointment_date).toLocaleDateString('en-IN', {
+                day: '2-digit',
+                month: 'long',
+                year: 'numeric'
+            });
+            
+            const message = `✅ *Appointment Confirmed!*\n\n` +
+                `📋 Booking ID: #${appointment.id}\n` +
+                `👨‍⚕️ Doctor: ${doctorInfo.doctor_name}\n` +
+                `📅 Date: ${date}\n` +
+                `🕒 Time: ${appointment.appointment_slot}\n` +
+                `📍 ${doctorInfo.name}\n\n` +
+                `Your appointment has been approved!\n` +
+                `See you at the clinic! 🏥\n\n` +
+                `━━━━━━━━━━━━━━━━━━━━━\n` +
+                `Need to cancel? Reply: CANCEL ${appointment.id}`;
+            
+            await sendWhatsAppMessage(appointment.patient_phone, message);
+            
+            console.log(`✅ Approval notification sent to ${appointment.patient_phone}`);
+            
+        } catch (error) {
+            console.error('Error notifying patient approval:', error.message);
+        }
+    }
+    
+    /**
+     * Notify patient about rejection
+     */
+    static async notifyPatientRejection(appointment, doctorInfo) {
+        try {
+            const message = `⚠️ *Appointment Not Available*\n\n` +
+                `📋 Booking ID: #${appointment.id}\n` +
+                `📅 Requested Date: ${new Date(appointment.appointment_date).toLocaleDateString('en-IN')}\n` +
+                `🕒 Requested Time: ${appointment.appointment_slot}\n\n` +
+                `Unfortunately, this slot is no longer available.\n\n` +
+                `📱 *Rebook Now:*\n` +
+                `Reply "1" to see available slots\n\n` +
+                `We apologize for the inconvenience! 🙏`;
+            
+            await sendWhatsAppMessage(appointment.patient_phone, message);
+            
+            console.log(`✅ Rejection notification sent to ${appointment.patient_phone}`);
+            
+        } catch (error) {
+            console.error('Error notifying patient rejection:', error.message);
+        }
+    }
+    
+    /**
+     * Notify doctor about new appointment
+     */
+    static async notifyDoctorNewAppointment(appointment, doctorInfo) {
+        try {
+            const date = new Date(appointment.appointment_date).toLocaleDateString('en-IN', {
+                day: '2-digit',
+                month: 'long',
+                year: 'numeric'
+            });
+            
+            const message = `🔔 *New Appointment Request*\n\n` +
+                `📋 Request ID: #${appointment.id}\n` +
+                `👤 Patient: ${appointment.patient_name}\n` +
+                `📞 Phone: ${appointment.patient_phone}\n` +
+                `📅 Date: ${date}\n` +
+                `🕒 Time: ${appointment.appointment_slot}\n\n` +
+                `━━━━━━━━━━━━━━━━━━━━━\n` +
+                `⏳ *Status:* Pending Your Approval\n\n` +
+                `✅ To approve: Reply *APPROVE ${appointment.id}*\n` +
+                `❌ To reject: Reply *REJECT ${appointment.id}*\n\n` +
+                `View all pending: Reply *PENDING*`;
+            
+            // Send to doctor's WhatsApp
+            const doctorPhone = doctorInfo.doctor_whatsapp.replace('whatsapp:', '');
+            await sendWhatsAppMessage(doctorPhone, message);
+            
+            // Update notification status
+            await db.query(
+                `UPDATE appointments 
+                 SET doctor_notified = true, doctor_notified_at = NOW()
+                 WHERE id = $1`,
+                [appointment.id]
+            );
+            
+            console.log(`✅ Doctor notification sent for appointment #${appointment.id}`);
+            
+            return true;
+            
+        } catch (error) {
+            console.error('Error notifying doctor:', error.message);
+            return false;
+        }
+    }
+    
+    /**
+     * Log doctor action
+     */
+    static async logDoctorAction(doctorId, doctorPhone, commandText, appointmentId = null, actionTaken = null) {
+        try {
+            await db.query(
+                `INSERT INTO doctor_actions 
+                 (doctor_id, doctor_phone, command_type, appointment_id, command_text, action_taken, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+                [doctorId, doctorPhone, commandText.split(' ')[0], appointmentId, commandText, actionTaken]
+            );
+        } catch (error) {
+            console.error('Error logging doctor action:', error.message);
+        }
+    }
 }
 
-async function isDoctor(phoneNumber) {
-  const clinicId = await isDoctorAndGetClinicId(phoneNumber);
-  return clinicId !== null;
-}
-
-async function handleDoctorCommand(phoneNumber, message, twilioClient) {
-  const normalizedMessage = message.trim().toUpperCase();
-  const clinicId = await isDoctorAndGetClinicId(phoneNumber);
-  
-  if (!clinicId) return null;
-  
-  if (normalizedMessage === 'AUTO ON') {
-    return await enableAutoApproval(clinicId);
-  }
-  
-  if (normalizedMessage === 'AUTO OFF') {
-    return await disableAutoApproval(clinicId);
-  }
-  
-  if (normalizedMessage === 'STATUS') {
-    return await getClinicStatus(clinicId);
-  }
-  
-  const approveMatch = normalizedMessage.match(/^APPROVE\s+(\d+)$/);
-  if (approveMatch) {
-    const appointmentId = parseInt(approveMatch[1]);
-    return await approveAppointment(appointmentId, twilioClient);
-  }
-  
-  const rejectMatch = normalizedMessage.match(/^REJECT\s+(\d+)$/);
-  if (rejectMatch) {
-    const appointmentId = parseInt(rejectMatch[1]);
-    return await rejectAppointment(appointmentId, twilioClient);
-  }
-  
-  const cancelMatch = normalizedMessage.match(/^CANCEL\s+(\d+)$/);
-  if (cancelMatch) {
-    const appointmentId = parseInt(cancelMatch[1]);
-    return await cancelAppointment(appointmentId, twilioClient);
-  }
-  
-  return null;
-}
-
-async function enableAutoApproval(clinicId) {
-  try {
-    await pool.query('UPDATE clinics SET auto_approve = true WHERE id = $1', [clinicId]);
-    return `✅ *Auto-Approval ENABLED*\n\nNew bookings during business hours will be confirmed instantly.\n\nBookings outside business hours will still need approval.\n\nTo disable: Reply "AUTO OFF"\nTo check status: Reply "STATUS"`;
-  } catch (error) {
-    console.error('❌ Error enabling auto-approval:', error);
-    return '❌ Error updating settings.';
-  }
-}
-
-async function disableAutoApproval(clinicId) {
-  try {
-    await pool.query('UPDATE clinics SET auto_approve = false WHERE id = $1', [clinicId]);
-    return `⚠️ *Auto-Approval DISABLED*\n\nALL new bookings will need your approval, regardless of time.\n\nYou'll receive approval requests for every booking.\n\nTo enable: Reply "AUTO ON"\nTo check status: Reply "STATUS"`;
-  } catch (error) {
-    console.error('❌ Error disabling auto-approval:', error);
-    return '❌ Error updating settings.';
-  }
-}
-
-async function getClinicStatus(clinicId) {
-  try {
-    const result = await pool.query('SELECT name, auto_approve, business_hours_start, business_hours_end FROM clinics WHERE id = $1', [clinicId]);
-    
-    if (result.rows.length === 0) {
-      return '❌ Clinic not found.';
-    }
-    
-    const clinic = result.rows[0];
-    
-    const pendingResult = await pool.query('SELECT COUNT(*) as count FROM appointments WHERE clinic_id = $1 AND status = $2', [clinicId, 'pending']);
-    const pendingCount = pendingResult.rows[0].count;
-    
-    const todayResult = await pool.query('SELECT COUNT(*) as count FROM appointments WHERE clinic_id = $1 AND status = $2 AND appointment_date = CURRENT_DATE', [clinicId, 'confirmed']);
-    const todayCount = todayResult.rows[0].count;
-    
-    const startTime = clinic.business_hours_start.substring(0, 5);
-    const endTime = clinic.business_hours_end.substring(0, 5);
-    const autoStatus = clinic.auto_approve ? '✅ ENABLED' : '❌ DISABLED';
-    
-    return `📊 *Clinic Status*\n\n🏥 *${clinic.name}*\n\n*Auto-Approval:* ${autoStatus}\n*Business Hours:* ${startTime} - ${endTime}\n\n*Appointments:*\n📅 Today: ${todayCount} confirmed\n⏳ Pending: ${pendingCount}\n\n${clinic.auto_approve ? 'Bookings during business hours = Auto-confirmed\nBookings outside hours = Need approval' : 'ALL bookings need your approval'}\n\n*Commands:*\n• AUTO ON - Enable auto-approval\n• AUTO OFF - Disable auto-approval\n• APPROVE [ID] - Approve pending\n• REJECT [ID] - Reject pending\n• CANCEL [ID] - Cancel booking`;
-  } catch (error) {
-    console.error('❌ Error getting clinic status:', error);
-    return '❌ Error retrieving status.';
-  }
-}
-
-// HELPER FUNCTION: Format date safely
-function formatDate(dateInput) {
-  try {
-    let day, month, year;
-    
-    if (typeof dateInput === 'string') {
-      [year, month, day] = dateInput.split('-');
-    } else if (dateInput instanceof Date) {
-      year = dateInput.getFullYear();
-      month = String(dateInput.getMonth() + 1).padStart(2, '0');
-      day = String(dateInput.getDate()).padStart(2, '0');
-    } else {
-      throw new Error('Invalid date format');
-    }
-    
-    return { day, month, year };
-  } catch (error) {
-    console.error('❌ Date formatting error:', error);
-    return null;
-  }
-}
-
-async function approveAppointment(appointmentId, twilioClient) {
-  try {
-    console.log(`🔍 Approving appointment ${appointmentId}...`);
-    
-    const appointment = await getAppointment(appointmentId);
-    
-    if (!appointment) {
-      console.error(`❌ Appointment ${appointmentId} not found`);
-      return `❌ Appointment #${appointmentId} not found.`;
-    }
-    
-    console.log(`✅ Found appointment:`, appointment);
-    
-    if (appointment.status !== 'pending') {
-      return `⚠️ Appointment #${appointmentId} is already ${appointment.status}.`;
-    }
-    
-    // Format date safely
-    const dateInfo = formatDate(appointment.appointment_date);
-    if (!dateInfo) {
-      return `❌ Error: Invalid date format in appointment #${appointmentId}`;
-    }
-    
-    const { day, month, year } = dateInfo;
-    
-    // Update status
-    await updateAppointmentStatus(appointmentId, 'confirmed');
-    console.log(`✅ Appointment ${appointmentId} status updated to confirmed`);
-    
-    // Notify patient
-    try {
-      await twilioClient.messages.create({
-        from: process.env.TWILIO_WHATSAPP_NUMBER,
-        to: `whatsapp:${appointment.patient_phone}`,
-        body: `🎉 *Appointment CONFIRMED!*\n\n🏥 *Clinic:* ${appointment.clinic_name}\n👤 *Name:* ${appointment.patient_name}\n📅 *Date:* ${day}-${month}-${year}\n⏰ *Time:* ${appointment.appointment_slot}\n📌 *Booking ID:* #${appointmentId}\n\n✨ Your appointment has been approved!\nSee you soon! 👋`
-      });
-      console.log(`✅ Patient notification sent to ${appointment.patient_phone}`);
-    } catch (notifyError) {
-      console.error('⚠️ Failed to notify patient:', notifyError);
-    }
-    
-    return `✅ *Appointment #${appointmentId} APPROVED*\n\nPatient: ${appointment.patient_name}\nDate: ${day}-${month}-${year}\nTime: ${appointment.appointment_slot}\n\nPatient has been notified.`;
-    
-  } catch (error) {
-    console.error(`❌ Error approving appointment ${appointmentId}:`, error);
-    return `❌ Error approving appointment #${appointmentId}: ${error.message}`;
-  }
-}
-
-async function rejectAppointment(appointmentId, twilioClient) {
-  try {
-    const appointment = await getAppointment(appointmentId);
-    
-    if (!appointment) {
-      return `❌ Appointment #${appointmentId} not found.`;
-    }
-    
-    if (appointment.status !== 'pending') {
-      return `⚠️ Appointment #${appointmentId} is already ${appointment.status}.`;
-    }
-    
-    const dateInfo = formatDate(appointment.appointment_date);
-    if (!dateInfo) {
-      return `❌ Error: Invalid date format`;
-    }
-    
-    const { day, month, year } = dateInfo;
-    
-    await updateAppointmentStatus(appointmentId, 'rejected');
-    
-    try {
-      await twilioClient.messages.create({
-        from: process.env.TWILIO_WHATSAPP_NUMBER,
-        to: `whatsapp:${appointment.patient_phone}`,
-        body: `😔 *Appointment Request Not Approved*\n\n📌 *Request ID:* #${appointmentId}\n🏥 *Clinic:* ${appointment.clinic_name}\n📅 *Date:* ${day}-${month}-${year}\n⏰ *Time:* ${appointment.appointment_slot}\n\nThe requested slot is not available.\nType "hi" to book a different time.`
-      });
-    } catch (notifyError) {
-      console.error('⚠️ Failed to notify patient:', notifyError);
-    }
-    
-    return `❌ *Appointment #${appointmentId} REJECTED*\n\nPatient: ${appointment.patient_name}\nDate: ${day}-${month}-${year}\n\nPatient has been notified. Slot is now available.`;
-    
-  } catch (error) {
-    console.error('❌ Error rejecting appointment:', error);
-    return `❌ Error rejecting appointment #${appointmentId}: ${error.message}`;
-  }
-}
-
-async function cancelAppointment(appointmentId, twilioClient) {
-  try {
-    const appointment = await getAppointment(appointmentId);
-    
-    if (!appointment) {
-      return `❌ Appointment #${appointmentId} not found.`;
-    }
-    
-    if (appointment.status === 'cancelled') {
-      return `⚠️ Appointment #${appointmentId} is already cancelled.`;
-    }
-    
-    const dateInfo = formatDate(appointment.appointment_date);
-    if (!dateInfo) {
-      return `❌ Error: Invalid date format`;
-    }
-    
-    const { day, month, year } = dateInfo;
-    
-    await updateAppointmentStatus(appointmentId, 'cancelled');
-    
-    try {
-      await twilioClient.messages.create({
-        from: process.env.TWILIO_WHATSAPP_NUMBER,
-        to: `whatsapp:${appointment.patient_phone}`,
-        body: `⚠️ *Appointment Cancelled*\n\n📌 *Booking ID:* #${appointmentId}\n🏥 *Clinic:* ${appointment.clinic_name}\n📅 *Date:* ${day}-${month}-${year}\n⏰ *Time:* ${appointment.appointment_slot}\n\nYour appointment has been cancelled by the clinic.\nPlease contact them or book a new slot.\n\nType "hi" to make a new booking.`
-      });
-    } catch (notifyError) {
-      console.error('⚠️ Failed to notify patient:', notifyError);
-    }
-    
-    return `✅ *Appointment #${appointmentId} CANCELLED*\n\nPatient: ${appointment.patient_name}\nDate: ${day}-${month}-${year}\n\nPatient has been notified. Slot is now available.`;
-    
-  } catch (error) {
-    console.error('❌ Error cancelling appointment:', error);
-    return `❌ Error cancelling appointment #${appointmentId}: ${error.message}`;
-  }
-}
-
-module.exports = {
-  isDoctor,
-  handleDoctorCommand
-};
+module.exports = DoctorCommandsHandler;

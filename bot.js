@@ -35,9 +35,9 @@ setInterval(async () => {
  */
 async function getClinicIdFromPhone(toNumber) {
     try {
-        // Query database for clinic based on WABA number
+        // Query database for clinic based on WABA number using doctor_whatsapp column
         const result = await db.query(
-            `SELECT id FROM clinics WHERE whatsapp_number = $1`,
+            `SELECT id FROM clinics WHERE doctor_whatsapp = $1`,
             [toNumber]
         );
         
@@ -46,9 +46,10 @@ async function getClinicIdFromPhone(toNumber) {
         }
         
         // Default clinic ID if not found
-        return 1; // You can set a default or throw error
+        console.log(`⚠️ No clinic found for ${toNumber}, using default clinic ID 1`);
+        return 1;
     } catch (error) {
-        console.error('Error getting clinic ID:', error);
+        console.error('❌ Error getting clinic ID:', error.message);
         return 1; // Fallback to default clinic
     }
 }
@@ -239,7 +240,7 @@ async function handleBookingConfirm(message, phoneNumber, clinicId, session) {
                 appointmentId: appointment.id
             });
         } catch (error) {
-            console.error('Booking error:', error);
+            console.error('❌ Booking error:', error.message);
             return getResponse('booking_error', session.language);
         }
     } else {
@@ -339,7 +340,7 @@ async function sendWhatsAppMessage(to, message) {
         });
         console.log(`✅ Message sent to ${to}`);
     } catch (error) {
-        console.error('❌ Error sending message:', error);
+        console.error('❌ Error sending message:', error.message);
         throw error;
     }
 }
@@ -378,7 +379,7 @@ app.post('/webhook', async (req, res) => {
         
         res.sendStatus(200);
     } catch (error) {
-        console.error('❌ Webhook error:', error);
+        console.error('❌ Webhook error:', error.message);
         res.sendStatus(500);
     }
 });

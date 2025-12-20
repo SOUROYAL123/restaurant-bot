@@ -1,16 +1,10 @@
-const { Pool } = require('pg');
-require('dotenv').config();
+// config/database.js
+const { neon } = require('@neondatabase/serverless');
 
-const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+if (!process.env.DATABASE_URL) {
+    throw new Error('DATABASE_URL environment variable is required');
+}
 
-pool.on('error', (err) => {
-    console.error('Unexpected database error:', err);
-});
+const sql = neon(process.env.DATABASE_URL);
 
-module.exports = {
-    query: (text, params) => pool.query(text, params),
-    pool
-};
+module.exports = sql;

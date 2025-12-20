@@ -35,8 +35,6 @@ app.post('/webhook', async (req, res) => {
         console.log('=== DEBUG INFO ===');
         console.log('From:', From);
         console.log('To:', To);
-        console.log('Expected:', 'whatsapp:+917980407413');
-        console.log('Match:', To === 'whatsapp:+917980407413');
         console.log('Body:', Body);
         console.log('==================');
         // ========================================
@@ -47,6 +45,7 @@ app.post('/webhook', async (req, res) => {
         
         console.log(`📨 Message from ${userPhone}: ${messageBody}`);
         
+        // Check if sender is a doctor
         const doctorInfo = await DoctorCommandsHandler.isDoctor(userPhone);
         
         if (doctorInfo) {
@@ -66,9 +65,7 @@ app.post('/webhook', async (req, res) => {
             return;
         }
         
-        // ========================================
-        // DEBUG: Check clinic lookup
-        // ========================================
+        // Lookup clinic by bot number
         console.log('🔍 Looking up clinic with botNumber:', botNumber);
         
         const clinicResult = await db.query(
@@ -77,15 +74,9 @@ app.post('/webhook', async (req, res) => {
         );
         
         console.log('📊 Clinic query result:', clinicResult.rows);
-        // ========================================
         
         if (clinicResult.rows.length === 0) {
             console.log('❌ No clinic found for this number:', botNumber);
-            
-            // TEMPORARY: Show all clinics for debugging
-            const allClinics = await db.query(`SELECT id, name, doctor_whatsapp FROM clinics`);
-            console.log('📋 All clinics in database:', allClinics.rows);
-            
             res.sendStatus(200);
             return;
         }
@@ -93,6 +84,7 @@ app.post('/webhook', async (req, res) => {
         const clinicId = clinicResult.rows[0].id;
         console.log('✅ Clinic found:', clinicResult.rows[0].name, '(ID:', clinicId + ')');
         
+        // Handle patient commands (CANCEL, MY APPOINTMENTS, etc.)
         if (PatientCommandsHandler.isPatientCommand(messageBody)) {
             console.log('📋 Patient command detected');
             
@@ -114,6 +106,7 @@ app.post('/webhook', async (req, res) => {
             return;
         }
         
+        // Handle token commands
         if (messageBody.toUpperCase() === 'GET TOKEN' || messageBody.toUpperCase() === 'TOKEN') {
             await handleTokenRequest(userPhone, clinicId);
             res.sendStatus(200);
@@ -126,37 +119,49 @@ app.post('/webhook', async (req, res) => {
             return;
         }
         
+        // Get or create session
         let session = await getSession(userPhone, clinicId);
         
         if (!session) {
             session = await createSession(userPhone, clinicId);
         }
         
+        // Sync customer data
         await syncCustomer(userPhone, clinicId, session.language || 'en');
         
         const stage = session.current_step;
         
         console.log(`📍 Current stage: ${stage}`);
         
-        if (stage === 'main_menu' || messageBody.toUpperCase() === 'HI' || 
-            messageBody.toUpperCase() === 'HELLO' || messageBody === '0') {
+        // Route based on stage and message
+        
+        // Check for explicit menu triggers (HI, HELLO, 0)
+        if (messageBody.toUpperCase() === 'HI' || 
+            messageBody.toUpperCase() === 'HELLO' || 
+            messageBody === '0') {
             await handleMainMenu(userPhone, clinicId, session);
         }
+        // Check for menu option selection (1-4) when in main menu
         else if (stage === 'main_menu' && ['1', '2', '3', '4'].includes(messageBody.trim())) {
             await handleMenuOption(userPhone, clinicId, messageBody);
         }
+        // Doctor selection stage
         else if (stage === 'select_doctor') {
             await handleDoctorSelectionStage(userPhone, clinicId, session, messageBody);
         }
-        else if (stage.startsWith('booking_')) {
+        // Booking flow stages
+        else if (stage && stage.startsWith('booking_')) {
             await handleBookingFlow(userPhone, clinicId, session, messageBody);
         }
-        else if (stage.startsWith('reschedule_')) {
+        // Reschedule flow stages
+        else if (stage && stage.startsWith('reschedule_')) {
             await handleRescheduleFlow(userPhone, clinicId, session, messageBody);
         }
+        // Help command
         else if (messageBody.toUpperCase() === 'HELP') {
             await handleHelp(userPhone, clinicId);
         }
+        // Default: show main menu
         else {
             await handleMainMenu(userPhone, clinicId, session);
         }
@@ -165,6 +170,7 @@ app.post('/webhook', async (req, res) => {
         
     } catch (error) {
         console.error('❌ Webhook error:', error.message);
+        console.error('Stack:', error.stack);
         res.sendStatus(500);
     }
 });
@@ -218,7 +224,10 @@ async function handleMenuOption(userPhone, clinicId, selection) {
     try {
         const option = selection.trim();
         
+        console.log(`🎯 Menu option selected: ${option}`);
+        
         if (option === '1') {
+            // Book Appointment
             const hasMultiple = await DoctorSelection.hasMultipleDoctors(clinicId);
             
             if (hasMultiple) {
@@ -260,13 +269,16 @@ async function handleMenuOption(userPhone, clinicId, selection) {
             }
         }
         else if (option === '2') {
+            // View Appointments
             const result = await PatientCommandsHandler.handleViewAppointments(userPhone, clinicId);
             await sendWhatsAppMessage(userPhone, result.message);
         }
         else if (option === '3') {
+            // Get Token
             await handleTokenRequest(userPhone, clinicId);
         }
         else if (option === '4') {
+            // Contact Us
             const clinic = await db.query(
                 `SELECT name, doctor_name, doctor_whatsapp, address, city 
                  FROM clinics WHERE id = $1`,
@@ -325,8 +337,10 @@ async function handleDoctorSelectionStage(userPhone, clinicId, session, messageB
 
 async function handleBookingFlow(userPhone, clinicId, session, messageBody) {
     try {
-        if (messageBody.trim() === '1' || messageBody.trim() === '2' || 
-            messageBody.trim() === '3' || messageBody.trim() === '4') {
+        // Don't let menu numbers interrupt booking flow
+        if (['1', '2', '3', '4'].includes(messageBody.trim()) && 
+            session.current_step === 'booking_start') {
+            // This is the start, allow menu selection
             await handleMenuOption(userPhone, clinicId, messageBody);
             return;
         }

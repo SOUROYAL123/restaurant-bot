@@ -1,307 +1,127 @@
-/**
- * ═══════════════════════════════════════════════════════════
- * QUEUE/TOKEN SYSTEM
- * Walk-in patient token management
- * ═══════════════════════════════════════════════════════════
- */
-
-const db = require('../config/database');
-const { sendWhatsAppMessage } = require('../utils/twilioClient');
+// handlers/queueSystem.js
+const { neon } = require('@neondatabase/serverless');
+const sql = neon(process.env.DATABASE_URL);
 
 class QueueSystem {
-    
-    /**
-     * Initialize queue table
-     */
-    static async initializeTable() {
-        const query = `
-            CREATE TABLE IF NOT EXISTS queue_tokens (
-                id SERIAL PRIMARY KEY,
-                clinic_id INTEGER REFERENCES clinics(id),
-                token_number INTEGER NOT NULL,
-                patient_name VARCHAR(100),
-                patient_phone VARCHAR(20) NOT NULL,
-                status VARCHAR(20) DEFAULT 'waiting',
-                issue_time TIMESTAMP DEFAULT NOW(),
-                called_time TIMESTAMP,
-                completed_time TIMESTAMP,
-                queue_date DATE DEFAULT CURRENT_DATE,
-                estimated_wait_minutes INTEGER,
-                UNIQUE(clinic_id, token_number, queue_date)
-            );
-            
-            CREATE INDEX IF NOT EXISTS idx_queue_clinic_date ON queue_tokens(clinic_id, queue_date);
-            CREATE INDEX IF NOT EXISTS idx_queue_status ON queue_tokens(status);
-        `;
-        
-        await db.query(query);
+    constructor() {
+        this.initializeTable();
     }
-    
-    /**
-     * Issue new token
-     */
-    static async issueToken(clinicId, patientPhone, patientName = null) {
+
+    async initializeTable() {
         try {
-            // Get current date
-            const today = new Date().toISOString().split('T')[0];
+            await sql`
+                CREATE TABLE IF NOT EXISTS queue_tokens (
+                    id SERIAL PRIMARY KEY,
+                    token_number INTEGER NOT NULL,
+                    customer_id INTEGER REFERENCES customers(id),
+                    clinic_id INTEGER REFERENCES clinics(id),
+                    status VARCHAR(20) DEFAULT 'waiting',
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    called_at TIMESTAMP,
+                    completed_at TIMESTAMP
+                )
+            `;
             
-            // Get last token number for today
-            const lastToken = await db.query(
-                `SELECT MAX(token_number) as last_number 
-                 FROM queue_tokens 
-                 WHERE clinic_id = $1 AND queue_date = $2`,
-                [clinicId, today]
-            );
+            await sql`
+                CREATE INDEX IF NOT EXISTS idx_queue_clinic_status 
+                ON queue_tokens(clinic_id, status)
+            `;
             
-            const tokenNumber = (lastToken.rows[0].last_number || 0) + 1;
-            
-            // Count waiting tokens
-            const waiting = await db.query(
-                `SELECT COUNT(*) as count 
-                 FROM queue_tokens 
-                 WHERE clinic_id = $1 
-                 AND queue_date = $2 
-                 AND status = 'waiting'`,
-                [clinicId, today]
-            );
-            
-            const waitingCount = parseInt(waiting.rows[0].count);
-            
-            // Calculate estimated wait (15 mins per patient average)
-            const estimatedWait = waitingCount * 15;
-            
-            // Insert token
-            const result = await db.query(
-                `INSERT INTO queue_tokens 
-                 (clinic_id, token_number, patient_name, patient_phone, 
-                  queue_date, estimated_wait_minutes, status)
-                 VALUES ($1, $2, $3, $4, $5, $6, 'waiting')
-                 RETURNING id`,
-                [clinicId, tokenNumber, patientName, patientPhone, today, estimatedWait]
-            );
-            
-            return {
-                success: true,
-                tokenId: result.rows[0].id,
-                tokenNumber: tokenNumber,
-                position: waitingCount + 1,
-                estimatedWait: estimatedWait
-            };
-            
+            console.log('✅ Queue table initialized');
         } catch (error) {
-            console.error('Error issuing token:', error.message);
-            return {
-                success: false,
-                error: error.message
-            };
+            console.error('❌ Error initializing queue table:', error);
         }
     }
-    
-    /**
-     * Get current token status
-     */
-    static async getTokenStatus(clinicId, today = null) {
+
+    async generateToken(customerId, clinicId) {
         try {
-            if (!today) {
-                today = new Date().toISOString().split('T')[0];
-            }
-            
-            // Current serving token
-            const current = await db.query(
-                `SELECT token_number, patient_name 
-                 FROM queue_tokens 
-                 WHERE clinic_id = $1 
-                 AND queue_date = $2 
-                 AND status = 'serving'
-                 LIMIT 1`,
-                [clinicId, today]
-            );
-            
-            // Count waiting
-            const waiting = await db.query(
-                `SELECT COUNT(*) as count 
-                 FROM queue_tokens 
-                 WHERE clinic_id = $1 
-                 AND queue_date = $2 
-                 AND status = 'waiting'`,
-                [clinicId, today]
-            );
-            
-            // Total tokens issued
-            const total = await db.query(
-                `SELECT COUNT(*) as count 
-                 FROM queue_tokens 
-                 WHERE clinic_id = $1 
-                 AND queue_date = $2`,
-                [clinicId, today]
-            );
-            
-            return {
-                currentToken: current.rows.length > 0 ? current.rows[0].token_number : null,
-                waitingCount: parseInt(waiting.rows[0].count),
-                totalIssued: parseInt(total.rows[0].count)
-            };
-            
-        } catch (error) {
-            console.error('Error getting token status:', error.message);
-            return null;
-        }
-    }
-    
-    /**
-     * Check patient's token position
-     */
-    static async checkMyToken(clinicId, patientPhone) {
-        try {
+            // Get today's date
             const today = new Date().toISOString().split('T')[0];
             
-            const token = await db.query(
-                `SELECT * FROM queue_tokens 
-                 WHERE clinic_id = $1 
-                 AND patient_phone = $2 
-                 AND queue_date = $3 
-                 AND status IN ('waiting', 'serving')
-                 ORDER BY issue_time DESC 
-                 LIMIT 1`,
-                [clinicId, patientPhone, today]
-            );
+            // Get the last token number for today
+            const lastToken = await sql`
+                SELECT MAX(token_number) as last_number
+                FROM queue_tokens
+                WHERE clinic_id = ${clinicId}
+                AND DATE(created_at) = ${today}
+            `;
             
-            if (token.rows.length === 0) {
+            const newTokenNumber = (lastToken[0]?.last_number || 0) + 1;
+            
+            // Create new token
+            const result = await sql`
+                INSERT INTO queue_tokens 
+                (token_number, customer_id, clinic_id, status)
+                VALUES (${newTokenNumber}, ${customerId}, ${clinicId}, 'waiting')
+                RETURNING id, token_number
+            `;
+            
+            return result[0];
+            
+        } catch (error) {
+            console.error('Error generating token:', error);
+            throw error;
+        }
+    }
+
+    async getPosition(tokenId) {
+        try {
+            const token = await sql`
+                SELECT * FROM queue_tokens WHERE id = ${tokenId}
+            `;
+            
+            if (token.length === 0) {
                 return null;
             }
             
-            const myToken = token.rows[0];
-            
-            // Count tokens before me
-            const ahead = await db.query(
-                `SELECT COUNT(*) as count 
-                 FROM queue_tokens 
-                 WHERE clinic_id = $1 
-                 AND queue_date = $2 
-                 AND status = 'waiting'
-                 AND token_number < $3`,
-                [clinicId, today, myToken.token_number]
-            );
-            
-            const status = await this.getTokenStatus(clinicId, today);
+            const position = await sql`
+                SELECT COUNT(*) as position
+                FROM queue_tokens
+                WHERE clinic_id = ${token[0].clinic_id}
+                AND status = 'waiting'
+                AND id < ${tokenId}
+            `;
             
             return {
-                tokenNumber: myToken.token_number,
-                status: myToken.status,
-                position: parseInt(ahead.rows[0].count) + 1,
-                currentServing: status.currentToken,
-                estimatedWait: parseInt(ahead.rows[0].count) * 15
+                tokenNumber: token[0].token_number,
+                position: parseInt(position[0].position) + 1,
+                status: token[0].status
             };
             
         } catch (error) {
-            console.error('Error checking token:', error.message);
-            return null;
+            console.error('Error getting position:', error);
+            throw error;
         }
     }
-    
-    /**
-     * Call next token (doctor command)
-     */
-    static async callNext(clinicId) {
+
+    async getQueueStatus(clinicId) {
         try {
-            const today = new Date().toISOString().split('T')[0];
+            const waiting = await sql`
+                SELECT COUNT(*) as count
+                FROM queue_tokens
+                WHERE clinic_id = ${clinicId}
+                AND status = 'waiting'
+            `;
             
-            // Mark current as completed
-            await db.query(
-                `UPDATE queue_tokens 
-                 SET status = 'completed', completed_time = NOW()
-                 WHERE clinic_id = $1 
-                 AND queue_date = $2 
-                 AND status = 'serving'`,
-                [clinicId, today]
-            );
-            
-            // Get next waiting token
-            const next = await db.query(
-                `SELECT * FROM queue_tokens 
-                 WHERE clinic_id = $1 
-                 AND queue_date = $2 
-                 AND status = 'waiting'
-                 ORDER BY token_number 
-                 LIMIT 1`,
-                [clinicId, today]
-            );
-            
-            if (next.rows.length === 0) {
-                return {
-                    success: false,
-                    message: 'No patients waiting in queue.'
-                };
-            }
-            
-            const nextToken = next.rows[0];
-            
-            // Mark as serving
-            await db.query(
-                `UPDATE queue_tokens 
-                 SET status = 'serving', called_time = NOW()
-                 WHERE id = $1`,
-                [nextToken.id]
-            );
-            
-            // Notify patient
-            await this.notifyPatientTurn(nextToken);
+            const currentToken = await sql`
+                SELECT token_number
+                FROM queue_tokens
+                WHERE clinic_id = ${clinicId}
+                AND status = 'serving'
+                ORDER BY called_at DESC
+                LIMIT 1
+            `;
             
             return {
-                success: true,
-                tokenNumber: nextToken.token_number,
-                patientName: nextToken.patient_name,
-                patientPhone: nextToken.patient_phone
+                waiting: parseInt(waiting[0].count),
+                current: currentToken[0]?.token_number || null
             };
             
         } catch (error) {
-            console.error('Error calling next token:', error.message);
-            return {
-                success: false,
-                error: error.message
-            };
+            console.error('Error getting queue status:', error);
+            throw error;
         }
-    }
-    
-    /**
-     * Notify patient their turn is next
-     */
-    static async notifyPatientTurn(token) {
-        try {
-            const message = `🔔 *Your Turn!*\n\n` +
-                `🎫 Token #${token.token_number}\n\n` +
-                `Please proceed to the consultation room.\n\n` +
-                `Thank you for your patience! 🙏`;
-            
-            await sendWhatsAppMessage(token.patient_phone, message);
-            
-        } catch (error) {
-            console.error('Error notifying patient:', error.message);
-        }
-    }
-    
-    /**
-     * Format token message
-     */
-    static formatTokenMessage(tokenInfo, status) {
-        const message = `🎫 *Token Issued!*\n\n` +
-            `━━━━━━━━━━━━━━━━━━━━━\n` +
-            `🔢 Your Token: *#${tokenInfo.tokenNumber}*\n` +
-            `━━━━━━━━━━━━━━━━━━━━━\n\n` +
-            `📊 Current Status:\n` +
-            `• Now Serving: ${status.currentToken ? `#${status.currentToken}` : 'None'}\n` +
-            `• Your Position: ${tokenInfo.position}\n` +
-            `• Waiting: ${status.waitingCount} patients\n\n` +
-            `⏱️ Estimated Wait: *${tokenInfo.estimatedWait} minutes*\n\n` +
-            `━━━━━━━━━━━━━━━━━━━━━\n\n` +
-            `📱 We'll notify you when it's your turn!\n\n` +
-            `💡 Check status anytime: Reply "TOKEN STATUS"`;
-        
-        return message;
     }
 }
 
-// Initialize table on load
-QueueSystem.initializeTable().catch(console.error);
-
-module.exports = QueueSystem;
+module.exports = new QueueSystem();

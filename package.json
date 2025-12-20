@@ -1,19 +1,14 @@
 {
   "name": "whatsapp-clinic-bot-multilingual",
   "version": "2.0.0",
-  "description": "WhatsApp bot for clinic appointment booking with doctor approval",
+  "description": "WhatsApp clinic bot with Neon database",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "dev": "nodemon bot.js"
   },
-  "keywords": [
-    "whatsapp",
-    "clinic",
-    "appointment",
-    "twilio"
-  ],
-  "author": "Your Name",
+  "keywords": ["whatsapp", "clinic", "twilio", "neon"],
+  "author": "Sourav Roy",
   "license": "ISC",
   "dependencies": {
     "@neondatabase/serverless": "^0.10.3",

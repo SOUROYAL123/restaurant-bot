@@ -1,10 +1,10 @@
 const db = require('../config/database');
 
-async function getSession(phoneNumber) {
+async function getSession(phoneNumber, clinicId) {
     try {
         const result = await db.query(
-            `SELECT * FROM sessions WHERE user_phone = $1`,
-            [phoneNumber]
+            `SELECT * FROM sessions WHERE user_phone = $1 AND clinic_id = $2`,
+            [phoneNumber, clinicId]
         );
         
         if (result.rows.length > 0) {
@@ -12,77 +12,73 @@ async function getSession(phoneNumber) {
             
             // Update last activity
             await db.query(
-                `UPDATE sessions SET last_activity = NOW() WHERE user_phone = $1`,
-                [phoneNumber]
+                `UPDATE sessions SET last_activity = NOW() WHERE user_phone = $1 AND clinic_id = $2`,
+                [phoneNumber, clinicId]
             );
             
             return {
-                stage: session.current_step || session.stage || 'initial',
+                user_phone: phoneNumber,
+                clinic_id: clinicId,
+                current_step: session.current_step || 'main_menu',
                 language: session.language || 'en',
-                data: session.temp_data || session.session_data || {},
-                lastActivity: session.last_activity
+                temp_data: session.temp_data || {},
+                last_activity: session.last_activity
             };
         }
         
-        // Create new session
+        // Create new session if doesn't exist
         await db.query(
-            `INSERT INTO sessions (user_phone, current_step, language, temp_data, last_activity)
-             VALUES ($1, $2, $3, $4, NOW())`,
-            [phoneNumber, 'initial', 'en', JSON.stringify({})]
+            `INSERT INTO sessions (user_phone, clinic_id, current_step, language, temp_data, last_activity, created_at, updated_at)
+             VALUES ($1, $2, 'main_menu', 'en', '{}', NOW(), NOW(), NOW())
+             ON CONFLICT (user_phone, clinic_id) DO NOTHING`,
+            [phoneNumber, clinicId]
         );
         
         return {
-            stage: 'initial',
+            user_phone: phoneNumber,
+            clinic_id: clinicId,
+            current_step: 'main_menu',
             language: 'en',
-            data: {},
-            lastActivity: new Date()
+            temp_data: {},
+            last_activity: new Date()
         };
     } catch (error) {
-        console.error('Get session error:', error.message);
+        console.error('❌ Get session error:', error.message);
         return { 
-            stage: 'initial', 
+            user_phone: phoneNumber,
+            clinic_id: clinicId,
+            current_step: 'main_menu', 
             language: 'en', 
-            data: {}, 
-            lastActivity: new Date() 
+            temp_data: {}, 
+            last_activity: new Date() 
         };
     }
 }
 
-async function updateSession(phoneNumber, updates) {
+async function updateSession(phoneNumber, clinicId, stage, tempData = {}) {
     try {
-        const { stage, language, data } = updates;
-        const fields = [];
-        const values = [];
-        let paramCount = 1;
-        
-        if (stage !== undefined) {
-            fields.push(`current_step = $${paramCount++}`);
-            values.push(stage);
-        }
-        
-        if (language !== undefined) {
-            fields.push(`language = $${paramCount++}`);
-            values.push(language);
-        }
-        
-        if (data !== undefined) {
-            fields.push(`temp_data = $${paramCount++}`);
-            values.push(JSON.stringify(data));
-        }
-        
-        if (fields.length === 0) return;
-        
-        fields.push(`last_activity = NOW()`);
-        fields.push(`updated_at = NOW()`);
-        values.push(phoneNumber);
-        
         await db.query(
-            `UPDATE sessions SET ${fields.join(', ')} WHERE user_phone = $${paramCount}`,
-            values
+            `UPDATE sessions 
+             SET current_step = $3, 
+                 temp_data = $4,
+                 last_activity = NOW(),
+                 updated_at = NOW()
+             WHERE user_phone = $1 AND clinic_id = $2`,
+            [phoneNumber, clinicId, stage, JSON.stringify(tempData)]
         );
     } catch (error) {
-        console.error('Update session error:', error.message);
-        throw error;
+        console.error('❌ Update session error:', error.message);
+    }
+}
+
+async function clearSession(phoneNumber, clinicId) {
+    try {
+        await db.query(
+            `DELETE FROM sessions WHERE user_phone = $1 AND clinic_id = $2`,
+            [phoneNumber, clinicId]
+        );
+    } catch (error) {
+        console.error('❌ Clear session error:', error.message);
     }
 }
 
@@ -90,7 +86,7 @@ async function cleanupSessions() {
     try {
         const result = await db.query(
             `DELETE FROM sessions 
-             WHERE sessions.last_activity < NOW() - INTERVAL '30 minutes' 
+             WHERE last_activity < NOW() - INTERVAL '30 minutes' 
              RETURNING user_phone`
         );
         
@@ -116,7 +112,7 @@ async function getSessionStats() {
         );
         return result.rows[0];
     } catch (error) {
-        console.error('Get session stats error:', error.message);
+        console.error('❌ Get session stats error:', error.message);
         return { total_sessions: 0 };
     }
 }
@@ -124,6 +120,7 @@ async function getSessionStats() {
 module.exports = {
     getSession,
     updateSession,
+    clearSession,
     cleanupSessions,
     getSessionStats
 };

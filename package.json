@@ -1,48 +1,30 @@
 {
   "name": "whatsapp-clinic-bot-multilingual",
   "version": "2.0.0",
-  "description": "Multi-clinic WhatsApp appointment booking bot with multilingual support and customer database",
+  "description": "WhatsApp bot for clinic appointment booking with doctor approval",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "dev": "nodemon bot.js",
-    "init-db": "node scripts/initDatabase.js",
-    "seed": "node scripts/seedData.js",
-    "test": "node test-connection.js"
+    "dev": "nodemon bot.js"
   },
   "keywords": [
     "whatsapp",
-    "twilio",
-    "appointment",
     "clinic",
-    "booking",
-    "postgresql",
-    "neon",
-    "multilingual",
-    "bengali",
-    "hindi",
-    "customer-database",
-    "crm",
-    "automation",
-    "healthcare"
+    "appointment",
+    "twilio"
   ],
-  "author": "Sourav Roy - Legacylens Automation",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/SOUROYAL123/clinis_database_bot-.git"
-  },
+  "author": "Your Name",
+  "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
-    "twilio": "^4.20.0",
-    "pg": "^8.11.3",
-    "dotenv": "^16.3.1"
+    "@neondatabase/serverless": "^0.10.3",
+    "twilio": "^5.3.5",
+    "express": "^4.21.2",
+    "dotenv": "^16.4.7"
   },
   "devDependencies": {
-    "nodemon": "^3.0.2"
+    "nodemon": "^3.1.9"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.0.0"
+    "node": ">=18.0.0"
   }
 }

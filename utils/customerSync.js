@@ -1,23 +1,24 @@
+
 const db = require('../config/database');
 
 /**
  * Sync customer data - create or update customer record
  */
-async function syncCustomer(phoneNumber, clinicId, customerData = {}) {
+async function syncCustomer(phoneNumber, clinicId, languagePreference = 'en') {
     try {
-        const { name, languagePreference } = customerData;
+        // Use a default name if not provided
+        const defaultName = `User ${phoneNumber.slice(-4)}`;
         
         const result = await db.query(
-            `INSERT INTO customers (phone, clinic_id, name, preferred_language, last_contact_date, first_contact_date)
-             VALUES ($1, $2, $3, $4, NOW(), NOW())
+            `INSERT INTO customers (phone, clinic_id, name, preferred_language, last_contact_date, first_contact_date, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, NOW(), NOW(), NOW(), NOW())
              ON CONFLICT (phone, clinic_id) 
              DO UPDATE SET 
-                name = COALESCE($3, customers.name),
                 preferred_language = COALESCE($4, customers.preferred_language),
                 last_contact_date = NOW(),
                 updated_at = NOW()
              RETURNING *`,
-            [phoneNumber, clinicId, name, languagePreference]
+            [phoneNumber, clinicId, defaultName, languagePreference]
         );
         
         return result.rows[0];
@@ -68,8 +69,8 @@ async function logInteraction(phoneNumber, clinicId, messageType, messageContent
     try {
         await db.query(
             `INSERT INTO customer_interactions 
-             (customer_phone, clinic_id, message_type, message_content, bot_response)
-             VALUES ($1, $2, $3, $4, $5)`,
+             (customer_phone, clinic_id, message_type, message_content, bot_response, created_at)
+             VALUES ($1, $2, $3, $4, $5, NOW())`,
             [phoneNumber, clinicId, messageType, messageContent, botResponse]
         );
     } catch (error) {

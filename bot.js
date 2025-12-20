@@ -28,6 +28,19 @@ app.use(bodyParser.json());
 app.post('/webhook', async (req, res) => {
     try {
         const { Body, From, To } = req.body;
+        
+        // ========================================
+        // TEMPORARY DEBUG - Remove after fixing
+        // ========================================
+        console.log('=== DEBUG INFO ===');
+        console.log('From:', From);
+        console.log('To:', To);
+        console.log('Expected:', 'whatsapp:+917980407413');
+        console.log('Match:', To === 'whatsapp:+917980407413');
+        console.log('Body:', Body);
+        console.log('==================');
+        // ========================================
+        
         const userPhone = From.replace('whatsapp:', '').replace('+', '');
         const botNumber = To;
         const messageBody = (Body || '').trim();
@@ -53,18 +66,32 @@ app.post('/webhook', async (req, res) => {
             return;
         }
         
+        // ========================================
+        // DEBUG: Check clinic lookup
+        // ========================================
+        console.log('🔍 Looking up clinic with botNumber:', botNumber);
+        
         const clinicResult = await db.query(
-            `SELECT id FROM clinics WHERE doctor_whatsapp = $1 LIMIT 1`,
+            `SELECT id, name, doctor_whatsapp FROM clinics WHERE doctor_whatsapp = $1 LIMIT 1`,
             [botNumber]
         );
         
+        console.log('📊 Clinic query result:', clinicResult.rows);
+        // ========================================
+        
         if (clinicResult.rows.length === 0) {
-            console.log('❌ No clinic found for this number');
+            console.log('❌ No clinic found for this number:', botNumber);
+            
+            // TEMPORARY: Show all clinics for debugging
+            const allClinics = await db.query(`SELECT id, name, doctor_whatsapp FROM clinics`);
+            console.log('📋 All clinics in database:', allClinics.rows);
+            
             res.sendStatus(200);
             return;
         }
         
         const clinicId = clinicResult.rows[0].id;
+        console.log('✅ Clinic found:', clinicResult.rows[0].name, '(ID:', clinicId + ')');
         
         if (PatientCommandsHandler.isPatientCommand(messageBody)) {
             console.log('📋 Patient command detected');

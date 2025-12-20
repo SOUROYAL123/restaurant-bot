@@ -64,7 +64,7 @@ app.post('/webhook', async (req, res) => {
         
         console.log(`✅ Clinic found: ${clinic.name} (ID: ${clinicId})`);
 
-        // Check if it's a doctor command (will return false if not a doctor)
+        // Check if it's a doctor command
         const isDoctorCommand = await DoctorCommandsHandler.handleDoctorCommands(
             userPhone, 
             clinicId, 
@@ -78,14 +78,11 @@ app.post('/webhook', async (req, res) => {
         }
 
         // Regular patient flow
-        // Get or create session
         let session = await SessionManager.getSession(userPhone, clinicId);
         console.log(`📍 Current stage: ${session.current_step}`);
 
-        // Sync customer data
         await CustomerSync.syncCustomer(userPhone, clinicId, session);
 
-        // Normalize message
         const normalizedMessage = message.trim().toUpperCase();
 
         // Check for explicit menu triggers FIRST
@@ -205,7 +202,7 @@ app.post('/webhook', async (req, res) => {
     }
 });
 
-// Voice endpoint (optional)
+// Voice endpoint
 app.post('/voice', (req, res) => {
     const twiml = new twilio.twiml.VoiceResponse();
     twiml.say('Thank you for calling. Please use WhatsApp for appointments.');
@@ -221,11 +218,10 @@ app.listen(PORT, () => {
     console.log('✅ All features active');
 });
 
-// Helper function for sending WhatsApp messages (used by handlers)
+// Helper function
 async function sendWhatsAppMessage(phoneNumber, message) {
     const { sendWhatsAppMessage: sendMessage } = require('./utils/twilioClient');
     return await sendMessage(phoneNumber, message);
 }
 
-// Export for use in handlers
 module.exports = { sendWhatsAppMessage };

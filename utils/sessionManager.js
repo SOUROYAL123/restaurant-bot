@@ -1,126 +1,86 @@
-const db = require('../config/database');
+// utils/sessionManager.js
+const { neon } = require('@neondatabase/serverless');
+const sql = neon(process.env.DATABASE_URL);
 
-async function getSession(phoneNumber, clinicId) {
-    try {
-        const result = await db.query(
-            `SELECT * FROM sessions WHERE user_phone = $1 AND clinic_id = $2`,
-            [phoneNumber, clinicId]
-        );
-        
-        if (result.rows.length > 0) {
-            const session = result.rows[0];
-            
-            // Update last activity
-            await db.query(
-                `UPDATE sessions SET last_activity = NOW() WHERE user_phone = $1 AND clinic_id = $2`,
-                [phoneNumber, clinicId]
-            );
-            
+class SessionManager {
+    async getSession(userPhone, clinicId) {
+        try {
+            const sessions = await sql`
+                SELECT * FROM sessions 
+                WHERE user_phone = ${userPhone} 
+                AND clinic_id = ${clinicId}
+                LIMIT 1
+            `;
+
+            if (sessions.length > 0) {
+                return {
+                    ...sessions[0],
+                    temp_data: sessions[0].temp_data || {}
+                };
+            }
+
+            // Create new session
+            const newSession = await sql`
+                INSERT INTO sessions (user_phone, clinic_id, current_step, language, temp_data)
+                VALUES (${userPhone}, ${clinicId}, 'main_menu', 'en', '{}')
+                ON CONFLICT (user_phone, clinic_id) 
+                DO UPDATE SET last_activity = NOW()
+                RETURNING *
+            `;
+
             return {
-                user_phone: phoneNumber,
+                ...newSession[0],
+                temp_data: {}
+            };
+
+        } catch (error) {
+            console.error('❌ Get session error:', error.message);
+            return {
+                user_phone: userPhone,
                 clinic_id: clinicId,
-                current_step: session.current_step || 'main_menu',
-                language: session.language || 'en',
-                temp_data: session.temp_data || {},
-                last_activity: session.last_activity
+                current_step: 'main_menu',
+                language: 'en',
+                temp_data: {}
             };
         }
-        
-        // Create new session if doesn't exist
-        await db.query(
-            `INSERT INTO sessions (user_phone, clinic_id, current_step, language, temp_data, last_activity, created_at, updated_at)
-             VALUES ($1, $2, 'main_menu', 'en', '{}', NOW(), NOW(), NOW())
-             ON CONFLICT (user_phone, clinic_id) DO NOTHING`,
-            [phoneNumber, clinicId]
-        );
-        
-        return {
-            user_phone: phoneNumber,
-            clinic_id: clinicId,
-            current_step: 'main_menu',
-            language: 'en',
-            temp_data: {},
-            last_activity: new Date()
-        };
-    } catch (error) {
-        console.error('❌ Get session error:', error.message);
-        return { 
-            user_phone: phoneNumber,
-            clinic_id: clinicId,
-            current_step: 'main_menu', 
-            language: 'en', 
-            temp_data: {}, 
-            last_activity: new Date() 
-        };
     }
-}
 
-async function updateSession(phoneNumber, clinicId, stage, tempData = {}) {
-    try {
-        await db.query(
-            `UPDATE sessions 
-             SET current_step = $3, 
-                 temp_data = $4,
-                 last_activity = NOW(),
-                 updated_at = NOW()
-             WHERE user_phone = $1 AND clinic_id = $2`,
-            [phoneNumber, clinicId, stage, JSON.stringify(tempData)]
-        );
-    } catch (error) {
-        console.error('❌ Update session error:', error.message);
-    }
-}
+    async updateSession(userPhone, clinicId, updates) {
+        try {
+            const { current_step, language, temp_data } = updates;
 
-async function clearSession(phoneNumber, clinicId) {
-    try {
-        await db.query(
-            `DELETE FROM sessions WHERE user_phone = $1 AND clinic_id = $2`,
-            [phoneNumber, clinicId]
-        );
-    } catch (error) {
-        console.error('❌ Clear session error:', error.message);
-    }
-}
+            await sql`
+                UPDATE sessions 
+                SET 
+                    current_step = COALESCE(${current_step}, current_step),
+                    language = COALESCE(${language}, language),
+                    temp_data = COALESCE(${JSON.stringify(temp_data || {})}, temp_data),
+                    last_activity = NOW(),
+                    updated_at = NOW()
+                WHERE user_phone = ${userPhone} 
+                AND clinic_id = ${clinicId}
+            `;
 
-async function cleanupSessions() {
-    try {
-        const result = await db.query(
-            `DELETE FROM sessions 
-             WHERE last_activity < NOW() - INTERVAL '30 minutes' 
-             RETURNING user_phone`
-        );
-        
-        if (result.rowCount > 0) {
-            console.log(`🧹 Cleaned up ${result.rowCount} inactive sessions`);
+        } catch (error) {
+            console.error('❌ Update session error:', error.message);
         }
-        
-        return result.rowCount;
-    } catch (error) {
-        console.error('❌ Cleanup sessions error:', error.message);
-        return 0;
+    }
+
+    async clearSession(userPhone, clinicId) {
+        try {
+            await sql`
+                UPDATE sessions 
+                SET 
+                    current_step = 'main_menu',
+                    temp_data = '{}',
+                    updated_at = NOW()
+                WHERE user_phone = ${userPhone} 
+                AND clinic_id = ${clinicId}
+            `;
+        } catch (error) {
+            console.error('Error clearing session:', error.message);
+        }
     }
 }
 
-async function getSessionStats() {
-    try {
-        const result = await db.query(
-            `SELECT 
-                COUNT(*) as total_sessions,
-                COUNT(CASE WHEN last_activity > NOW() - INTERVAL '5 minutes' THEN 1 END) as active_last_5min,
-                COUNT(CASE WHEN last_activity > NOW() - INTERVAL '30 minutes' THEN 1 END) as active_last_30min
-             FROM sessions`
-        );
-        return result.rows[0];
-    } catch (error) {
-        console.error('❌ Get session stats error:', error.message);
-        return { total_sessions: 0 };
-    }
-}
-
-module.exports = {
-    getSession,
-    updateSession,
-    clearSession,
-    cleanupSessions,
-    getSessionStats
-};
+module.exports = new SessionManager();

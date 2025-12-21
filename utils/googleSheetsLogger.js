@@ -4,14 +4,26 @@ const { JWT } = require('google-auth-library');
 
 class GoogleSheetsLogger {
     constructor() {
+        if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
+            console.log('⚠️ Google Sheets credentials not configured');
+            this.enabled = false;
+            return;
+        }
+
         this.serviceAccountAuth = new JWT({
             email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
             key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
             scopes: ['https://www.googleapis.com/auth/spreadsheets'],
         });
+        this.enabled = true;
     }
 
     async logAppointment(clinicSheetId, appointmentData) {
+        if (!this.enabled) {
+            console.log('⚠️ Google Sheets not enabled');
+            return false;
+        }
+
         try {
             if (!clinicSheetId) {
                 console.log('⚠️ No Google Sheet ID configured for this clinic');
@@ -57,6 +69,8 @@ class GoogleSheetsLogger {
     }
 
     async updateAppointmentStatus(clinicSheetId, appointmentId, newStatus, approvedAt = null) {
+        if (!this.enabled) return false;
+
         try {
             if (!clinicSheetId) return false;
 

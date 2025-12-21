@@ -2,6 +2,7 @@
 const { neon } = require('@neondatabase/serverless');
 const sql = neon(process.env.DATABASE_URL);
 const { sendWhatsAppMessage } = require('../utils/twilioClient');
+const SessionManager = require('../utils/sessionManager');
 
 /**
  * Main appointment booking handler
@@ -19,15 +20,15 @@ async function handleBooking(userPhone, clinicId, session, message, twiml) {
             break;
             
         case 'booking_date':
-            await saveDate(userPhone, clinicId, session, message, twiml);
+            await saveDate(userPhone, clinicId, message, twiml);
             break;
             
         case 'booking_time':
-            await saveTime(userPhone, clinicId, session, message, twiml);
+            await saveTime(userPhone, clinicId, message, twiml);
             break;
             
         case 'booking_confirm':
-            await confirmBooking(userPhone, clinicId, session, message, twiml);
+            await confirmBooking(userPhone, clinicId, message, twiml);
             break;
             
         default:
@@ -35,21 +36,14 @@ async function handleBooking(userPhone, clinicId, session, message, twiml) {
     }
 }
 
-/**
- * Ask for customer name
- */
 async function askForName(userPhone, clinicId, twiml) {
     twiml.message('📝 What is your name?');
-    
-    const SessionManager = require('../utils/sessionManager');
     await SessionManager.updateSession(userPhone, clinicId, {
-        current_step: 'booking_name'
+        current_step: 'booking_name',
+        temp_data: {}
     });
 }
 
-/**
- * Save name and ask for date
- */
 async function saveName(userPhone, clinicId, message, twiml) {
     const name = message.trim();
     
@@ -65,17 +59,16 @@ async function saveName(userPhone, clinicId, message, twiml) {
         `Example: 25-12-2025`
     );
     
-    const SessionManager = require('../utils/sessionManager');
     await SessionManager.updateSession(userPhone, clinicId, {
         current_step: 'booking_date',
         temp_data: { name }
     });
 }
 
-/**
- * Save date and ask for time
- */
-async function saveDate(userPhone, clinicId, session, message, twiml) {
+async function saveDate(userPhone, clinicId, message, twiml) {
+    // RE-FETCH session to get latest temp_data
+    const session = await SessionManager.getSession(userPhone, clinicId);
+    
     const dateMatch = message.match(/(\d{2})-(\d{2})-(\d{4})/);
     
     if (!dateMatch) {
@@ -86,7 +79,6 @@ async function saveDate(userPhone, clinicId, session, message, twiml) {
     const [_, day, month, year] = dateMatch;
     const appointmentDate = `${year}-${month}-${day}`;
     
-    // Validate date is not in past
     const selectedDate = new Date(appointmentDate);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -102,7 +94,6 @@ async function saveDate(userPhone, clinicId, session, message, twiml) {
         `Example: 2:00 PM`
     );
     
-    const SessionManager = require('../utils/sessionManager');
     await SessionManager.updateSession(userPhone, clinicId, {
         current_step: 'booking_time',
         temp_data: {
@@ -112,13 +103,13 @@ async function saveDate(userPhone, clinicId, session, message, twiml) {
     });
 }
 
-/**
- * Save time and ask for confirmation
- */
-async function saveTime(userPhone, clinicId, session, message, twiml) {
+async function saveTime(userPhone, clinicId, message, twiml) {
+    // RE-FETCH session to get latest temp_data
+    const session = await SessionManager.getSession(userPhone, clinicId);
+    
     const time = message.trim();
     
-    if (time.length < 4) {
+    if (time.length < 2) {
         twiml.message('❌ Please enter a valid time.\nExample: 2:00 PM');
         return;
     }
@@ -133,7 +124,6 @@ async function saveTime(userPhone, clinicId, session, message, twiml) {
         `Reply YES to confirm or NO to cancel`
     );
     
-    const SessionManager = require('../utils/sessionManager');
     await SessionManager.updateSession(userPhone, clinicId, {
         current_step: 'booking_confirm',
         temp_data: {
@@ -143,16 +133,14 @@ async function saveTime(userPhone, clinicId, session, message, twiml) {
     });
 }
 
-/**
- * Confirm and create appointment
- */
-async function confirmBooking(userPhone, clinicId, session, message, twiml) {
+async function confirmBooking(userPhone, clinicId, message, twiml) {
+    // RE-FETCH session to get latest temp_data
+    const session = await SessionManager.getSession(userPhone, clinicId);
+    
     const normalized = message.trim().toUpperCase();
     
     if (normalized !== 'YES' && normalized !== 'Y') {
         twiml.message('❌ Booking cancelled.\n\nReply 0 for main menu.');
-        
-        const SessionManager = require('../utils/sessionManager');
         await SessionManager.clearSession(userPhone, clinicId);
         return;
     }
@@ -162,103 +150,19 @@ async function confirmBooking(userPhone, clinicId, session, message, twiml) {
     try {
         console.log('💾 Creating appointment...');
         
-        // Get or create customer
         const CustomerSync = require('../utils/customerSync');
-        const customer = await CustomerSync.getCustomer(userPhone, clinicId);
+        let customer = await CustomerSync.getCustomer(userPhone, clinicId);
         
-        let customerId = customer?.id;
-        
-        if (!customerId) {
-            customerId = await CustomerSync.syncCustomer(userPhone, clinicId, { temp_data: { name } });
+        if (!customer) {
+            const customerId = await CustomerSync.syncCustomer(userPhone, clinicId, { 
+                temp_data: { name },
+                language: 'en'
+            });
+            customer = { id: customerId };
         }
         
-        // Get default doctor
         const doctors = await sql`
             SELECT id FROM doctors 
             WHERE clinic_id = ${clinicId} 
             AND status = 'active'
             ORDER BY id
-            LIMIT 1
-        `;
-        
-        const doctorId = doctors[0]?.id || null;
-        
-        // Create appointment
-        const result = await sql`
-            INSERT INTO appointments (
-                clinic_id, 
-                customer_id, 
-                doctor_id,
-                patient_name, 
-                patient_phone,
-                appointment_date, 
-                appointment_time,
-                status
-            )
-            VALUES (
-                ${clinicId}, 
-                ${customerId},
-                ${doctorId},
-                ${name}, 
-                ${userPhone},
-                ${appointment_date}, 
-                ${appointment_time},
-                'pending'
-            )
-            RETURNING id
-        `;
-        
-        const appointmentId = result[0].id;
-        console.log(`✅ Appointment created: #${appointmentId}`);
-        
-        // Notify doctor
-        console.log('📤 Notifying doctor...');
-        try {
-            const clinic = await sql`
-                SELECT doctor_whatsapp FROM clinics WHERE id = ${clinicId} LIMIT 1
-            `;
-            
-            if (clinic[0]?.doctor_whatsapp) {
-                const doctorMessage = `🔔 *New Appointment Request*\n\n` +
-                    `📋 ID: #${appointmentId}\n` +
-                    `👤 Patient: ${name}\n` +
-                    `📞 Phone: ${userPhone.replace('whatsapp:', '')}\n` +
-                    `📅 Date: ${appointment_date}\n` +
-                    `⏰ Time: ${appointment_time}\n\n` +
-                    `Reply:\n` +
-                    `APPROVE #${appointmentId} - to approve\n` +
-                    `REJECT #${appointmentId} - to reject`;
-                
-                await sendWhatsAppMessage(clinic[0].doctor_whatsapp, doctorMessage);
-                console.log('✅ Doctor notified');
-            }
-        } catch (error) {
-            console.error('⚠️ Failed to notify doctor');
-            console.error('Error notifying doctor:', error.message);
-        }
-        
-        // Confirm to patient
-        twiml.message(
-            `✅ *Appointment Request Submitted*\n\n` +
-            `📋 Booking #${appointmentId}\n` +
-            `👤 Name: ${name}\n` +
-            `📅 Date: ${appointment_date}\n` +
-            `⏰ Time: ${appointment_time}\n\n` +
-            `⏳ Awaiting doctor confirmation.\n` +
-            `You'll receive a notification soon.\n\n` +
-            `Reply 0 for main menu`
-        );
-        
-        // Clear session
-        const SessionManager = require('../utils/sessionManager');
-        await SessionManager.clearSession(userPhone, clinicId);
-        
-    } catch (error) {
-        console.error('❌ Error creating appointment:', error);
-        twiml.message('❌ Sorry, something went wrong. Please try again.\n\nReply 0 for main menu');
-    }
-}
-
-module.exports = {
-    handleBooking
-};

@@ -57,11 +57,15 @@ async function handlePatientCancellation(userPhone, clinicId, message, twiml) {
         
         // Update Google Sheets
         if (appointment.google_sheet_id) {
-            await GoogleSheetsLogger.updateAppointmentStatus(
-                appointment.google_sheet_id,
-                appointmentId,
-                'cancelled (patient)'
-            );
+            try {
+                await GoogleSheetsLogger.updateAppointmentStatus(
+                    appointment.google_sheet_id,
+                    appointmentId,
+                    'cancelled (patient)'
+                );
+            } catch (sheetError) {
+                console.error('⚠️ Google Sheets update failed:', sheetError.message);
+            }
         }
         
         // Notify doctor

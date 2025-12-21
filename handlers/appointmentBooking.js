@@ -161,9 +161,17 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
             customer = { id: customerId };
         }
         
-        // Get clinic info
+        // Get clinic info - SELECT SPECIFIC COLUMNS ONLY
         const clinic = await sql`
-            SELECT * FROM clinics WHERE id = ${clinicId} LIMIT 1
+            SELECT 
+                id,
+                name,
+                doctor_whatsapp,
+                auto_approve,
+                google_sheet_id
+            FROM clinics 
+            WHERE id = ${clinicId} 
+            LIMIT 1
         `;
         
         const autoApprove = clinic[0]?.auto_approve || false;
@@ -194,7 +202,7 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
         // Determine initial status
         const initialStatus = autoApprove ? 'confirmed' : 'pending';
         
-        // Create appointment
+        // Create appointment - INCLUDING appointment_slot
         const result = await sql`
             INSERT INTO appointments (
                 clinic_id, 
@@ -204,6 +212,7 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
                 patient_phone,
                 appointment_date, 
                 appointment_time,
+                appointment_slot,
                 status,
                 cancellation_deadline
             )
@@ -214,6 +223,7 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
                 ${name}, 
                 ${userPhone},
                 ${appointment_date}, 
+                ${appointment_time},
                 ${appointment_time},
                 ${initialStatus},
                 ${cancellationDeadline.toISOString()}

@@ -66,7 +66,6 @@ async function saveName(userPhone, clinicId, message, twiml) {
 }
 
 async function saveDate(userPhone, clinicId, message, twiml) {
-    // RE-FETCH session to get latest temp_data
     const session = await SessionManager.getSession(userPhone, clinicId);
     
     const dateMatch = message.match(/(\d{2})-(\d{2})-(\d{4})/);
@@ -104,7 +103,6 @@ async function saveDate(userPhone, clinicId, message, twiml) {
 }
 
 async function saveTime(userPhone, clinicId, message, twiml) {
-    // RE-FETCH session to get latest temp_data
     const session = await SessionManager.getSession(userPhone, clinicId);
     
     const time = message.trim();
@@ -134,7 +132,6 @@ async function saveTime(userPhone, clinicId, message, twiml) {
 }
 
 async function confirmBooking(userPhone, clinicId, message, twiml) {
-    // RE-FETCH session to get latest temp_data
     const session = await SessionManager.getSession(userPhone, clinicId);
     
     const normalized = message.trim().toUpperCase();
@@ -166,3 +163,81 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
             WHERE clinic_id = ${clinicId} 
             AND status = 'active'
             ORDER BY id
+            LIMIT 1
+        `;
+        
+        const doctorId = doctors[0]?.id || null;
+        
+        const result = await sql`
+            INSERT INTO appointments (
+                clinic_id, 
+                customer_id, 
+                doctor_id,
+                patient_name, 
+                patient_phone,
+                appointment_date, 
+                appointment_time,
+                status
+            )
+            VALUES (
+                ${clinicId}, 
+                ${customer.id},
+                ${doctorId},
+                ${name}, 
+                ${userPhone},
+                ${appointment_date}, 
+                ${appointment_time},
+                'pending'
+            )
+            RETURNING id
+        `;
+        
+        const appointmentId = result[0].id;
+        console.log(`✅ Appointment created: #${appointmentId}`);
+        
+        console.log('📤 Notifying doctor...');
+        try {
+            const clinic = await sql`
+                SELECT doctor_whatsapp FROM clinics WHERE id = ${clinicId} LIMIT 1
+            `;
+            
+            if (clinic[0]?.doctor_whatsapp) {
+                const doctorMessage = `🔔 *New Appointment Request*\n\n` +
+                    `📋 ID: #${appointmentId}\n` +
+                    `👤 Patient: ${name}\n` +
+                    `📞 Phone: ${userPhone.replace('whatsapp:', '')}\n` +
+                    `📅 Date: ${appointment_date}\n` +
+                    `⏰ Time: ${appointment_time}\n\n` +
+                    `Reply:\n` +
+                    `APPROVE #${appointmentId} - to approve\n` +
+                    `REJECT #${appointmentId} - to reject`;
+                
+                await sendWhatsAppMessage(clinic[0].doctor_whatsapp, doctorMessage);
+                console.log('✅ Doctor notified');
+            }
+        } catch (error) {
+            console.error('⚠️ Failed to notify doctor:', error.message);
+        }
+        
+        twiml.message(
+            `✅ *Appointment Request Submitted*\n\n` +
+            `📋 Booking #${appointmentId}\n` +
+            `👤 Name: ${name}\n` +
+            `📅 Date: ${appointment_date}\n` +
+            `⏰ Time: ${appointment_time}\n\n` +
+            `⏳ Awaiting doctor confirmation.\n` +
+            `You'll receive a notification soon.\n\n` +
+            `Reply 0 for main menu`
+        );
+        
+        await SessionManager.clearSession(userPhone, clinicId);
+        
+    } catch (error) {
+        console.error('❌ Error creating appointment:', error);
+        twiml.message('❌ Sorry, something went wrong. Please try again.\n\nReply 0 for main menu');
+    }
+}
+
+module.exports = {
+    handleBooking
+};

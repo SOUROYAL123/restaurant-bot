@@ -17,6 +17,7 @@ const CustomerSync = require('./utils/customerSync');
 const AppointmentBooking = require('./handlers/appointmentBooking');
 const QueueSystem = require('./handlers/queueSystem');
 const DoctorCommandsHandler = require('./handlers/doctorCommands');
+const PatientCancellation = require('./handlers/patientCancellation');
 
 // Inline appointment viewing function
 async function viewAppointments(userPhone, clinicId, twiml) {
@@ -56,6 +57,7 @@ async function viewAppointments(userPhone, clinicId, twiml) {
             const statusEmoji = apt.status === 'confirmed' ? '✅' : '⏳';
             const statusText = apt.status === 'confirmed' ? 'Confirmed' : 'Pending';
             message += `${index + 1}. ${statusEmoji} *${statusText}*\n`;
+            message += `   📋 ID: #${apt.id}\n`;
             message += `   📅 Date: ${apt.appointment_date}\n`;
             message += `   ⏰ Time: ${apt.appointment_time}\n`;
             if (apt.doctor_name) {
@@ -63,6 +65,16 @@ async function viewAppointments(userPhone, clinicId, twiml) {
             }
             if (apt.status === 'pending') {
                 message += `   ℹ️ Awaiting doctor confirmation\n`;
+            }
+            
+            // Show cancellation info
+            const deadline = new Date(apt.cancellation_deadline);
+            const now = new Date();
+            if (now < deadline) {
+                message += `   ❌ To cancel: Reply CANCEL ${apt.id}\n`;
+                message += `   ⏰ Cancel before: ${deadline.toLocaleString('en-IN')}\n`;
+            } else {
+                message += `   ⚠️ Cancellation deadline passed\n`;
             }
             message += '\n';
         });
@@ -79,7 +91,14 @@ app.get('/', (req, res) => {
     res.json({ 
         status: 'active',
         service: 'WhatsApp Clinic Bot',
-        version: '2.0.0'
+        version: '2.0.0',
+        features: [
+            'Google Sheets Integration',
+            'Auto-Approval Toggle',
+            '24-Hour Cancellation Window',
+            'Multi-Clinic Support',
+            'Doctor Dashboard'
+        ]
     });
 });
 
@@ -118,6 +137,7 @@ app.post('/webhook', async (req, res) => {
         const clinicId = clinic.id;
         
         console.log(`✅ Clinic found: ${clinic.name} (ID: ${clinicId})`);
+        console.log(`⚙️ Auto-approval: ${clinic.auto_approve ? 'ENABLED' : 'DISABLED'}`);
 
         // Check if it's a doctor command
         const isDoctorCommand = await DoctorCommandsHandler.handleDoctorCommands(
@@ -129,6 +149,19 @@ app.post('/webhook', async (req, res) => {
 
         if (isDoctorCommand) {
             console.log('✅ Doctor command handled');
+            return res.type('text/xml').send(twiml.toString());
+        }
+
+        // Check for patient cancellation command
+        const isCancellation = await PatientCancellation.handlePatientCancellation(
+            userPhone,
+            clinicId,
+            message,
+            twiml
+        );
+
+        if (isCancellation) {
+            console.log('✅ Patient cancellation handled');
             return res.type('text/xml').send(twiml.toString());
         }
 
@@ -199,9 +232,11 @@ app.post('/webhook', async (req, res) => {
                     case '4':
                         twiml.message(
                             `📞 *Contact Information*\n\n` +
-                            `Clinic: ${clinic.name}\n` +
-                            `Address: ${clinic.address || 'N/A'}\n` +
-                            `Phone: ${clinic.contact_phone || 'N/A'}\n\n` +
+                            `🏥 Clinic: ${clinic.name}\n` +
+                            `👨‍⚕️ Doctor: ${clinic.doctor_name || 'N/A'}\n` +
+                            `📍 Address: ${clinic.address || 'N/A'}\n` +
+                            `📞 Phone: ${clinic.contact_phone || 'N/A'}\n\n` +
+                            `⚙️ Auto-Approval: ${clinic.auto_approve ? 'Enabled ✅' : 'Disabled ❌'}\n\n` +
                             `Reply 0 for main menu.`
                         );
                         await SessionManager.updateSession(userPhone, clinicId, {
@@ -226,8 +261,12 @@ app.post('/webhook', async (req, res) => {
         }
 
         // Default: Show main menu
+        const autoApprovalStatus = clinic.auto_approve ? '✅ Auto-Approved' : '⏳ Manual Approval';
+        
         const menuMessage = 
             `👋 Welcome to *${clinic.name}*\n\n` +
+            `👨‍⚕️ ${clinic.doctor_name || 'Doctor'}\n` +
+            `${autoApprovalStatus}\n\n` +
             `Please select an option:\n\n` +
             `1️⃣ Book Appointment\n` +
             `2️⃣ View My Appointments\n` +
@@ -260,13 +299,118 @@ app.post('/voice', (req, res) => {
     res.type('text/xml').send(twiml.toString());
 });
 
+// API endpoint to toggle auto-approval (for web dashboard)
+app.post('/api/clinic/:clinicId/auto-approve', async (req, res) => {
+    try {
+        const { clinicId } = req.params;
+        const { enabled } = req.body;
+
+        await sql`
+            UPDATE clinics 
+            SET auto_approve = ${enabled}, 
+                updated_at = NOW()
+            WHERE id = ${clinicId}
+        `;
+
+        res.json({ 
+            success: true, 
+            message: `Auto-approval ${enabled ? 'enabled' : 'disabled'}`,
+            auto_approve: enabled
+        });
+
+    } catch (error) {
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// API endpoint to get clinic status
+app.get('/api/clinic/:clinicId/status', async (req, res) => {
+    try {
+        const { clinicId } = req.params;
+
+        const clinic = await sql`
+            SELECT id, name, doctor_name, auto_approve, google_sheet_id
+            FROM clinics 
+            WHERE id = ${clinicId}
+            LIMIT 1
+        `;
+
+        if (clinic.length === 0) {
+            return res.status(404).json({ success: false, error: 'Clinic not found' });
+        }
+
+        // Get appointment stats
+        const stats = await sql`
+            SELECT 
+                COUNT(*) FILTER (WHERE status = 'pending') as pending,
+                COUNT(*) FILTER (WHERE status = 'confirmed') as confirmed,
+                COUNT(*) FILTER (WHERE status = 'completed') as completed,
+                COUNT(*) FILTER (WHERE status = 'cancelled') as cancelled,
+                COUNT(*) FILTER (WHERE appointment_date = CURRENT_DATE AND status IN ('pending', 'confirmed')) as today
+            FROM appointments 
+            WHERE clinic_id = ${clinicId}
+        `;
+
+        res.json({
+            success: true,
+            clinic: {
+                ...clinic[0],
+                has_google_sheets: !!clinic[0].google_sheet_id
+            },
+            stats: stats[0]
+        });
+
+    } catch (error) {
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// Initialize queue table on startup
+async function initializeQueueTable() {
+    try {
+        await sql`
+            CREATE TABLE IF NOT EXISTS queue_tokens (
+                id SERIAL PRIMARY KEY,
+                token_number INTEGER NOT NULL,
+                customer_id INTEGER REFERENCES customers(id),
+                clinic_id INTEGER REFERENCES clinics(id),
+                status VARCHAR(20) DEFAULT 'waiting',
+                created_at TIMESTAMP DEFAULT NOW(),
+                called_at TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+        `;
+        
+        await sql`
+            CREATE INDEX IF NOT EXISTS idx_queue_clinic_status 
+            ON queue_tokens(clinic_id, status)
+        `;
+        
+        console.log('✅ Queue table initialized');
+    } catch (error) {
+        console.error('❌ Error initializing queue table:', error);
+    }
+}
+
 // Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`🚀 Server running on port ${PORT}`);
     console.log(`📱 Webhook: https://your-domain.com/webhook`);
     console.log(`📞 Voice: https://your-domain.com/voice`);
-    console.log('✅ All features active');
+    console.log(`🔗 API: https://your-domain.com/api/clinic/:id/status`);
+    console.log('');
+    console.log('✅ Features enabled:');
+    console.log('   • Google Sheets Integration');
+    console.log('   • Auto-Approval Toggle');
+    console.log('   • 24-Hour Cancellation Window');
+    console.log('   • Multi-Clinic Support');
+    console.log('   • Queue System');
+    console.log('');
+    
+    await initializeQueueTable();
 });
 
 // Helper function

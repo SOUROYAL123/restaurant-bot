@@ -149,19 +149,26 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
         console.log('💾 Creating appointment...');
         console.log('📅 Date:', appointment_date);
         console.log('⏰ Time:', appointment_time);
+        console.log('👤 Patient:', name);
+        console.log('📞 Phone:', userPhone);
         
         const CustomerSync = require('../utils/customerSync');
         let customer = await CustomerSync.getCustomer(userPhone, clinicId);
         
         if (!customer) {
+            console.log('👤 Creating new customer...');
             const customerId = await CustomerSync.syncCustomer(userPhone, clinicId, { 
                 temp_data: { name },
                 language: 'en'
             });
             customer = { id: customerId };
+            console.log('✅ Customer created:', customerId);
+        } else {
+            console.log('✅ Existing customer found:', customer.id);
         }
         
         // Get clinic info - SELECT SPECIFIC COLUMNS ONLY
+        console.log('🏥 Fetching clinic info...');
         const clinic = await sql`
             SELECT 
                 id,
@@ -174,10 +181,21 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
             LIMIT 1
         `;
         
+        if (clinic.length === 0) {
+            console.error('❌ Clinic not found!');
+            twiml.message('❌ Error: Clinic not found. Please contact support.');
+            return;
+        }
+        
         const autoApprove = clinic[0]?.auto_approve || false;
         const googleSheetId = clinic[0]?.google_sheet_id;
         
+        console.log('🏥 Clinic:', clinic[0].name);
+        console.log('⚙️ Auto-approve:', autoApprove);
+        console.log('📊 Google Sheet ID:', googleSheetId || 'Not configured');
+        
         // Get doctor
+        console.log('👨‍⚕️ Fetching doctor info...');
         const doctors = await sql`
             SELECT id, name FROM doctors 
             WHERE clinic_id = ${clinicId} 
@@ -188,6 +206,12 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
         
         const doctorId = doctors[0]?.id || null;
         const doctorName = doctors[0]?.name || 'Doctor';
+        
+        if (doctorId) {
+            console.log('👨‍⚕️ Doctor:', doctorName, '(ID:', doctorId + ')');
+        } else {
+            console.log('⚠️ No active doctor found');
+        }
         
         // Calculate cancellation deadline (24 hours before)
         const [year, month, day] = appointment_date.split('-');
@@ -201,8 +225,10 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
         
         // Determine initial status
         const initialStatus = autoApprove ? 'confirmed' : 'pending';
+        console.log('📋 Initial status:', initialStatus);
         
         // Create appointment - INCLUDING appointment_slot
+        console.log('💾 Inserting appointment into database...');
         const result = await sql`
             INSERT INTO appointments (
                 clinic_id, 
@@ -236,6 +262,7 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
         
         // Log to Google Sheets (only if configured)
         if (googleSheetId) {
+            console.log('📊 Logging to Google Sheets...');
             try {
                 await GoogleSheetsLogger.logAppointment(googleSheetId, {
                     id: appointmentId,
@@ -255,27 +282,66 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
             console.log('ℹ️ No Google Sheet configured, skipping logging');
         }
         
-        // Notify doctor (only if not auto-approved)
+        // ===================================
+        // NOTIFY DOCTOR (Enhanced Logging)
+        // ===================================
         if (!autoApprove) {
-            console.log('📤 Notifying doctor...');
+            console.log('');
+            console.log('=== DOCTOR NOTIFICATION ===');
+            console.log('📤 Auto-approve is OFF, notifying doctor...');
+            console.log('📤 Doctor WhatsApp from DB:', clinic[0]?.doctor_whatsapp);
+            
             try {
-                if (clinic[0]?.doctor_whatsapp) {
+                if (!clinic[0]?.doctor_whatsapp) {
+                    console.log('⚠️ ERROR: No doctor WhatsApp configured in database!');
+                    console.log('⚠️ Please run: UPDATE clinics SET doctor_whatsapp = \'whatsapp:+919748006945\' WHERE id = 1');
+                } else {
                     const doctorMessage = `🔔 *New Appointment Request*\n\n` +
                         `📋 ID: #${appointmentId}\n` +
                         `👤 Patient: ${name}\n` +
-                        `📞 Phone: ${userPhone.replace('whatsapp:', '')}\n` +
+                        `📞 Phone: ${userPhone.replace('whatsapp:', '').replace('+', '')}\n` +
                         `📅 Date: ${appointment_date}\n` +
                         `⏰ Time: ${appointment_time}\n\n` +
                         `Reply:\n` +
                         `APPROVE #${appointmentId} - to approve\n` +
                         `REJECT #${appointmentId} - to reject`;
                     
-                    await sendWhatsAppMessage(clinic[0].doctor_whatsapp, doctorMessage);
-                    console.log('✅ Doctor notified');
+                    console.log('📤 Sending notification to:', clinic[0].doctor_whatsapp);
+                    console.log('📝 Message length:', doctorMessage.length, 'characters');
+                    
+                    const sendStartTime = Date.now();
+                    const sent = await sendWhatsAppMessage(clinic[0].doctor_whatsapp, doctorMessage);
+                    const sendDuration = Date.now() - sendStartTime;
+                    
+                    console.log('⏱️ Send duration:', sendDuration + 'ms');
+                    
+                    if (sent) {
+                        console.log('✅ Doctor notification sent successfully!');
+                    } else {
+                        console.log('❌ Doctor notification FAILED (returned false)');
+                        console.log('❌ Check Twilio logs: https://console.twilio.com/us1/monitor/logs/sms');
+                        console.log('❌ Common issues:');
+                        console.log('   1. Doctor\'s number not verified in Twilio sandbox');
+                        console.log('   2. Invalid Twilio credentials');
+                        console.log('   3. Rate limiting');
+                    }
                 }
-            } catch (error) {
-                console.error('⚠️ Failed to notify doctor:', error.message);
+            } catch (notificationError) {
+                console.error('❌ CRITICAL: Failed to notify doctor!');
+                console.error('❌ Error type:', notificationError.name);
+                console.error('❌ Error message:', notificationError.message);
+                console.error('❌ Error stack:', notificationError.stack);
+                
+                // Check if it's a Twilio-specific error
+                if (notificationError.code) {
+                    console.error('❌ Twilio Error Code:', notificationError.code);
+                    console.error('❌ Twilio Error Details:', notificationError.moreInfo);
+                }
             }
+            console.log('=== END NOTIFICATION ===');
+            console.log('');
+        } else {
+            console.log('ℹ️ Auto-approve is ON, skipping doctor notification');
         }
         
         // Format cancellation deadline for display
@@ -288,6 +354,7 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
         });
         
         // Send confirmation to patient
+        console.log('📱 Sending confirmation to patient...');
         if (autoApprove) {
             twiml.message(
                 `✅ *Appointment Confirmed!*\n\n` +
@@ -318,12 +385,22 @@ async function confirmBooking(userPhone, clinicId, message, twiml) {
             );
         }
         
+        console.log('✅ Patient confirmation sent');
+        
         await SessionManager.clearSession(userPhone, clinicId);
+        console.log('✅ Session cleared');
+        console.log('=== BOOKING COMPLETE ===');
         
     } catch (error) {
-        console.error('❌ Error creating appointment:', error);
-        console.error('Error details:', error.message);
-        console.error('Stack:', error.stack);
+        console.error('');
+        console.error('=== CRITICAL ERROR ===');
+        console.error('❌ Error creating appointment');
+        console.error('❌ Error type:', error.name);
+        console.error('❌ Error message:', error.message);
+        console.error('❌ Error stack:', error.stack);
+        console.error('===================');
+        console.error('');
+        
         twiml.message('❌ Sorry, something went wrong. Please try again.\n\nReply 0 for main menu');
     }
 }

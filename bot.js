@@ -19,6 +19,66 @@ const QueueSystem = require('./handlers/queueSystem');
 const DoctorCommandsHandler = require('./handlers/doctorCommands');
 const PatientCancellation = require('./handlers/patientCancellation');
 
+// ✅ AUTO-FIX DATABASE ON STARTUP
+async function initializeDatabase() {
+    try {
+        console.log('🔧 Checking database schema...');
+        
+        // Add waba_number column if it doesn't exist
+        await sql`
+            ALTER TABLE clinics 
+            ADD COLUMN IF NOT EXISTS waba_number VARCHAR(50)
+        `;
+        
+        // Expand doctors.whatsapp column
+        await sql`
+            ALTER TABLE doctors 
+            ALTER COLUMN whatsapp TYPE VARCHAR(50)
+        `;
+        
+        // Set waba_number to WABA_NUMBER from env if not set
+        await sql`
+            UPDATE clinics 
+            SET waba_number = ${process.env.WABA_NUMBER}
+            WHERE id = 1 
+            AND (waba_number IS NULL OR waba_number = '')
+        `;
+        
+        // Ensure doctor_whatsapp is set correctly
+        await sql`
+            UPDATE clinics 
+            SET doctor_whatsapp = 'whatsapp:+919748006945',
+                auto_approve = false
+            WHERE id = 1 
+            AND doctor_whatsapp != 'whatsapp:+919748006945'
+        `;
+        
+        // Add doctor if not exists
+        await sql`
+            INSERT INTO doctors (name, whatsapp, clinic_id, specialization, status)
+            VALUES ('Dr. Sharma', 'whatsapp:+919748006945', 1, 'General Physician', 'active')
+            ON CONFLICT (whatsapp) 
+            DO UPDATE SET status = 'active'
+        `;
+        
+        console.log('✅ Database schema verified');
+        
+        // Verify setup
+        const clinic = await sql`
+            SELECT waba_number, doctor_whatsapp FROM clinics WHERE id = 1
+        `;
+        
+        if (clinic.length > 0) {
+            console.log('📊 Clinic Configuration:');
+            console.log('   Bot (WABA):', clinic[0].waba_number);
+            console.log('   Doctor:', clinic[0].doctor_whatsapp);
+        }
+        
+    } catch (error) {
+        console.error('❌ Database initialization error:', error.message);
+    }
+}
+
 // Inline appointment viewing function
 async function viewAppointments(userPhone, clinicId, twiml) {
     try {
@@ -91,13 +151,14 @@ app.get('/', (req, res) => {
     res.json({ 
         status: 'active',
         service: 'WhatsApp Clinic Bot',
-        version: '2.0.0',
+        version: '2.0.1',
         features: [
             'Google Sheets Integration',
             'Auto-Approval Toggle',
             '24-Hour Cancellation Window',
             'Multi-Clinic Support',
-            'Doctor Dashboard'
+            'Doctor Dashboard',
+            'Auto Database Migration'
         ]
     });
 });
@@ -118,7 +179,7 @@ app.post('/webhook', async (req, res) => {
 
         console.log(`📨 Message from ${userPhone.replace('whatsapp:+', '')}: ${message}`);
 
-        // ✅ FIXED: Look up clinic by WABA number (not doctor_whatsapp)
+        // Look up clinic by WABA number
         console.log(`🔍 Looking up clinic with botNumber: ${botNumber}`);
         const clinics = await sql`
             SELECT * FROM clinics 
@@ -299,7 +360,7 @@ app.post('/voice', (req, res) => {
     res.type('text/xml').send(twiml.toString());
 });
 
-// API endpoint to toggle auto-approval (for web dashboard)
+// API endpoint to toggle auto-approval
 app.post('/api/clinic/:clinicId/auto-approve', async (req, res) => {
     try {
         const { clinicId } = req.params;
@@ -367,7 +428,7 @@ app.get('/api/clinic/:clinicId/status', async (req, res) => {
     }
 });
 
-// Initialize queue table on startup
+// Initialize queue table
 async function initializeQueueTable() {
     try {
         await sql`
@@ -398,19 +459,17 @@ async function initializeQueueTable() {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
     console.log(`🚀 Server running on port ${PORT}`);
-    console.log(`📱 Webhook: https://your-domain.com/webhook`);
-    console.log(`📞 Voice: https://your-domain.com/voice`);
-    console.log(`🔗 API: https://your-domain.com/api/clinic/:id/status`);
-    console.log('');
-    console.log('✅ Features enabled:');
-    console.log('   • Google Sheets Integration');
-    console.log('   • Auto-Approval Toggle');
-    console.log('   • 24-Hour Cancellation Window');
-    console.log('   • Multi-Clinic Support');
-    console.log('   • Queue System');
+    console.log(`📱 Webhook: https://clinis-database-bot.onrender.com/webhook`);
+    console.log(`📞 Voice: https://clinis-database-bot.onrender.com/voice`);
+    console.log(`🔗 API: https://clinis-database-bot.onrender.com/api/clinic/:id/status`);
     console.log('');
     
+    // Initialize database schema
+    await initializeDatabase();
     await initializeQueueTable();
+    
+    console.log('');
+    console.log('✅ All systems ready!');
 });
 
 // Helper function

@@ -4,9 +4,12 @@ const sql = neon(process.env.DATABASE_URL);
 const { sendWhatsAppMessage } = require('../utils/twilioClient');
 const GoogleSheetsLogger = require('../utils/googleSheetsLogger');
 
+/**
+ * MAIN ENTRY — Doctor WhatsApp Commands
+ */
 async function handleDoctorCommands(userPhone, clinicId, message, twiml) {
 
-    // ✅ SAFE DEBUG LOG (DO NOT MOVE THIS OUTSIDE)
+    // 🔍 DEBUG LOG (SAFE)
     console.log('📥 DOCTOR MSG:', {
         from: userPhone,
         clinicId,
@@ -15,9 +18,9 @@ async function handleDoctorCommands(userPhone, clinicId, message, twiml) {
 
     const normalizedMessage = message.trim().toUpperCase();
 
-    // Check if sender is a registered active doctor
+    // ✅ Verify doctor identity
     const doctors = await sql`
-        SELECT * FROM doctors 
+        SELECT * FROM doctors
         WHERE whatsapp = ${userPhone}
         AND clinic_id = ${clinicId}
         AND status = 'active'
@@ -25,7 +28,7 @@ async function handleDoctorCommands(userPhone, clinicId, message, twiml) {
     `;
 
     if (doctors.length === 0) {
-        console.log('⚠️ Message ignored – not a registered doctor');
+        console.log('⚠️ Ignored: sender not a doctor');
         return false;
     }
 
@@ -50,45 +53,47 @@ async function handleDoctorCommands(userPhone, clinicId, message, twiml) {
     }
 
     // ======================
-    // APPROVE APPOINTMENT
+    // APPROVE
     // ======================
-    if (normalizedMessage.startsWith('APPROVE #')) {
-        const appointmentId = normalizedMessage.replace('APPROVE #', '').trim();
-        await approveAppointment(doctor, appointmentId, clinicId, twiml);
+    if (normalizedMessage.startsWith('APPROVE')) {
+        const appointmentId = extractId(normalizedMessage);
+        if (!appointmentId) {
+            twiml.message('❌ Use: APPROVE #id');
+            return true;
+        }
+        await approveAppointment(doctor, appointmentId, twiml);
         return true;
     }
 
     // ======================
-    // REJECT APPOINTMENT
+    // REJECT
     // ======================
-    if (normalizedMessage.startsWith('REJECT #')) {
-        const appointmentId = normalizedMessage.replace('REJECT #', '').trim();
-        await rejectAppointment(doctor, appointmentId, clinicId, twiml);
+    if (normalizedMessage.startsWith('REJECT')) {
+        const appointmentId = extractId(normalizedMessage);
+        if (!appointmentId) {
+            twiml.message('❌ Use: REJECT #id');
+            return true;
+        }
+        await rejectAppointment(doctor, appointmentId, twiml);
         return true;
     }
 
     // ======================
-    // CANCEL APPOINTMENT
+    // CANCEL
     // ======================
-    if (normalizedMessage.startsWith('CANCEL #')) {
-        const appointmentId = normalizedMessage.replace('CANCEL #', '').trim();
-        await cancelAppointment(doctor, appointmentId, clinicId, twiml);
+    if (normalizedMessage.startsWith('CANCEL')) {
+        const appointmentId = extractId(normalizedMessage);
+        if (!appointmentId) {
+            twiml.message('❌ Use: CANCEL #id');
+            return true;
+        }
+        await cancelAppointment(doctor, appointmentId, twiml);
         return true;
     }
 
     // ======================
-    // LIST COMMANDS
+    // HELP
     // ======================
-    if (normalizedMessage === 'PENDING') {
-        await showPendingAppointments(doctor, twiml);
-        return true;
-    }
-
-    if (normalizedMessage === 'TODAY') {
-        await showTodayAppointments(doctor, twiml);
-        return true;
-    }
-
     if (normalizedMessage === 'HELP' || normalizedMessage === 'COMMANDS') {
         showDoctorHelp(twiml);
         return true;
@@ -97,12 +102,21 @@ async function handleDoctorCommands(userPhone, clinicId, message, twiml) {
     return false;
 }
 
-/* =========================
-   REJECT — FIXED & RELIABLE
-   ========================= */
-async function rejectAppointment(doctor, appointmentId, clinicId, twiml) {
+/**
+ * Extract appointment ID from messages like:
+ * APPROVE 22 | APPROVE #22 | REJECT #22
+ */
+function extractId(text) {
+    const match = text.match(/#?(\d+)/);
+    return match ? match[1] : null;
+}
+
+/**
+ * APPROVE APPOINTMENT
+ */
+async function approveAppointment(doctor, appointmentId, twiml) {
     try {
-        const appointments = await sql`
+        const rows = await sql`
             SELECT a.*, c.whatsapp AS customer_phone
             FROM appointments a
             JOIN customers c ON a.customer_id = c.id
@@ -112,12 +126,58 @@ async function rejectAppointment(doctor, appointmentId, clinicId, twiml) {
             LIMIT 1
         `;
 
-        if (appointments.length === 0) {
+        if (rows.length === 0) {
             twiml.message('❌ Appointment not found or already processed.');
             return;
         }
 
-        const appointment = appointments[0];
+        const appt = rows[0];
+
+        await sql`
+            UPDATE appointments
+            SET status = 'confirmed', updated_at = NOW()
+            WHERE id = ${appointmentId}
+        `;
+
+        await sendWhatsAppMessage(
+            appt.customer_phone,
+            `✅ *Appointment Confirmed*\n\n` +
+            `📋 Booking #${appointmentId}\n` +
+            `📅 ${appt.appointment_date}\n` +
+            `⏰ ${appt.appointment_time}\n\n` +
+            `Approved by Dr. ${doctor.name}\n\n` +
+            `To cancel: CANCEL ${appointmentId}`
+        );
+
+        twiml.message(`✅ Appointment #${appointmentId} approved.`);
+
+    } catch (err) {
+        console.error('❌ APPROVE ERROR:', err);
+        twiml.message('❌ Error approving appointment.');
+    }
+}
+
+/**
+ * REJECT APPOINTMENT
+ */
+async function rejectAppointment(doctor, appointmentId, twiml) {
+    try {
+        const rows = await sql`
+            SELECT a.*, c.whatsapp AS customer_phone
+            FROM appointments a
+            JOIN customers c ON a.customer_id = c.id
+            WHERE a.id = ${appointmentId}
+            AND a.doctor_id = ${doctor.id}
+            AND a.status = 'pending'
+            LIMIT 1
+        `;
+
+        if (rows.length === 0) {
+            twiml.message('❌ Appointment not found or already processed.');
+            return;
+        }
+
+        const appt = rows[0];
 
         await sql`
             UPDATE appointments
@@ -125,35 +185,99 @@ async function rejectAppointment(doctor, appointmentId, clinicId, twiml) {
             WHERE id = ${appointmentId}
         `;
 
-        // ✅ PATIENT NOTIFICATION (THIS WAS MISSING EARLIER)
         await sendWhatsAppMessage(
-            appointment.customer_phone,
+            appt.customer_phone,
             `❌ *Appointment Rejected*\n\n` +
             `📋 Booking #${appointmentId}\n` +
-            `📅 ${appointment.appointment_date}\n` +
-            `⏰ ${appointment.appointment_time}\n\n` +
-            `The doctor is unavailable at this time.\n\n` +
-            `Reply *1* to book another appointment.`
+            `📅 ${appt.appointment_date}\n` +
+            `⏰ ${appt.appointment_time}\n\n` +
+            `Doctor unavailable. Please rebook.`
         );
 
-        twiml.message(`❌ Appointment #${appointmentId} rejected.\nPatient notified.`);
+        twiml.message(`❌ Appointment #${appointmentId} rejected.`);
 
-    } catch (error) {
-        console.error('❌ Reject error:', error);
+    } catch (err) {
+        console.error('❌ REJECT ERROR:', err);
         twiml.message('❌ Error rejecting appointment.');
     }
 }
 
-/* =========================
-   EXISTING FUNCTIONS (UNCHANGED)
-   ========================= */
-// approveAppointment()
-// cancelAppointment()
-// toggleAutoApproval()
-// checkAutoStatus()
-// showDoctorHelp()
-// showPendingAppointments()
-// showTodayAppointments()
+/**
+ * CANCEL APPOINTMENT (Doctor)
+ */
+async function cancelAppointment(doctor, appointmentId, twiml) {
+    try {
+        const rows = await sql`
+            SELECT a.*, c.whatsapp AS customer_phone
+            FROM appointments a
+            JOIN customers c ON a.customer_id = c.id
+            WHERE a.id = ${appointmentId}
+            AND a.doctor_id = ${doctor.id}
+            AND a.status IN ('pending','confirmed')
+            LIMIT 1
+        `;
+
+        if (rows.length === 0) {
+            twiml.message('❌ Appointment not found.');
+            return;
+        }
+
+        const appt = rows[0];
+
+        await sql`
+            UPDATE appointments
+            SET status = 'cancelled', updated_at = NOW()
+            WHERE id = ${appointmentId}
+        `;
+
+        await sendWhatsAppMessage(
+            appt.customer_phone,
+            `❌ *Appointment Cancelled by Doctor*\n\n` +
+            `📋 Booking #${appointmentId}\n` +
+            `📅 ${appt.appointment_date}\n` +
+            `⏰ ${appt.appointment_time}`
+        );
+
+        twiml.message(`❌ Appointment #${appointmentId} cancelled.`);
+
+    } catch (err) {
+        console.error('❌ CANCEL ERROR:', err);
+        twiml.message('❌ Error cancelling appointment.');
+    }
+}
+
+/**
+ * AUTO APPROVAL TOGGLE
+ */
+async function toggleAutoApproval(clinicId, enabled, twiml) {
+    await sql`
+        UPDATE clinics
+        SET auto_approve = ${enabled}, updated_at = NOW()
+        WHERE id = ${clinicId}
+    `;
+    twiml.message(`⚙️ Auto-Approval ${enabled ? 'ENABLED' : 'DISABLED'}`);
+}
+
+async function checkAutoStatus(clinicId, twiml) {
+    const rows = await sql`
+        SELECT auto_approve FROM clinics WHERE id = ${clinicId}
+    `;
+    twiml.message(`⚙️ Auto-Approval is ${rows[0].auto_approve ? 'ON' : 'OFF'}`);
+}
+
+/**
+ * HELP
+ */
+function showDoctorHelp(twiml) {
+    twiml.message(
+        `👨‍⚕️ *Doctor Commands*\n\n` +
+        `APPROVE #id\n` +
+        `REJECT #id\n` +
+        `CANCEL #id\n\n` +
+        `AUTO ON | AUTO OFF | AUTO STATUS\n` +
+        `HELP`
+    );
+}
 
 module.exports = {
     handleDoctorCommands

@@ -8,7 +8,7 @@ const { sendMessage } = require('./utils/sendMessage');
 const AppointmentBooking = require('./handlers/appointmentBooking');
 
 // --------------------
-// BASIC APP SETUP
+// APP SETUP
 // --------------------
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -18,16 +18,15 @@ const PORT = process.env.PORT || 3000;
 
 // --------------------
 // IN-MEMORY SESSION STORE
-// (replace with Redis later)
+// (use Redis later)
 // --------------------
 const sessions = {};
 
 // --------------------
-// MOCK DB FUNCTION
-// Replace with your real DB query
+// MOCK CLINIC LOOKUP
+// Replace with real DB query
 // --------------------
 async function getClinicByWaba(wabaNumber) {
-  // You already have this in DB – mocked here
   return {
     id: 1,
     name: 'Dr Sharma Clinic',
@@ -36,6 +35,19 @@ async function getClinicByWaba(wabaNumber) {
     status: 'active',
     auto_approve: false
   };
+}
+
+// --------------------
+// HELPERS
+// --------------------
+function isGreeting(text) {
+  const t = text.toLowerCase();
+  return ['hi', 'hello', 'hey', 'start', 'hii', 'hlo'].includes(t);
+}
+
+function isBookIntent(text) {
+  const t = text.toLowerCase();
+  return t.includes('book') || t.includes('appointment');
 }
 
 // --------------------
@@ -62,9 +74,7 @@ app.post('/webhook', async (req, res) => {
     // SESSION INIT
     // --------------------
     if (!sessions[from]) {
-      sessions[from] = {
-        stage: 'main_menu'
-      };
+      sessions[from] = { stage: 'main_menu' };
     }
 
     const session = sessions[from];
@@ -80,13 +90,25 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    console.log(`✅ Clinic found: ${clinic.name} (ID: ${clinic.id})`);
+    console.log(`✅ Clinic found: ${clinic.name}`);
 
     // --------------------
     // MAIN MENU
     // --------------------
     if (session.stage === 'main_menu') {
-      if (body === '1') {
+
+      // Greeting or first message
+      if (isGreeting(body)) {
+        await sendMessage(
+          from,
+          `👋 Welcome to ${clinic.name}\n\n1️⃣ Book Appointment`
+        );
+        res.sendStatus(200);
+        return;
+      }
+
+      // Natural language booking intent
+      if (isBookIntent(body) || body === '1') {
         session.stage = 'booking_start';
 
         await AppointmentBooking.handleBooking({
@@ -101,9 +123,10 @@ app.post('/webhook', async (req, res) => {
         return;
       }
 
+      // Unknown input
       await sendMessage(
         from,
-        '👋 Welcome to ' + clinic.name + '\n\n1️⃣ Book Appointment'
+        `❌ I didn’t understand that.\n\nReply with:\n1️⃣ Book Appointment`
       );
       res.sendStatus(200);
       return;
@@ -143,12 +166,16 @@ app.post('/webhook', async (req, res) => {
     }
 
     // --------------------
-    // FALLBACK
+    // FALLBACK (SAFETY NET)
     // --------------------
-    await sendMessage(from, '❌ Invalid input. Please start again.');
     session.stage = 'main_menu';
+    await sendMessage(
+      from,
+      '⚠️ Session reset.\n\nReply:\n1️⃣ Book Appointment'
+    );
 
     res.sendStatus(200);
+
   } catch (err) {
     console.error('❌ Webhook error:', err);
     res.sendStatus(200);
@@ -167,5 +194,5 @@ app.get('/', (req, res) => {
 // --------------------
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📱 Webhook: /webhook`);
+  console.log(`📱 Webhook ready`);
 });

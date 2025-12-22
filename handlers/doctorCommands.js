@@ -31,8 +31,6 @@ async function handleDoctorCommands(userPhone, clinicId, message, twiml) {
         return false;
     }
 
-    const doctor = doctors[0];
-
     // ======================
     // APPROVE
     // ======================
@@ -42,7 +40,7 @@ async function handleDoctorCommands(userPhone, clinicId, message, twiml) {
             twiml.message('❌ Use: APPROVE #id');
             return true;
         }
-        await approveAppointment(doctor, clinicId, appointmentId, twiml);
+        await approveAppointment(clinicId, appointmentId, twiml);
         return true;
     }
 
@@ -55,7 +53,7 @@ async function handleDoctorCommands(userPhone, clinicId, message, twiml) {
             twiml.message('❌ Use: REJECT #id');
             return true;
         }
-        await rejectAppointment(doctor, clinicId, appointmentId, twiml);
+        await rejectAppointment(clinicId, appointmentId, twiml);
         return true;
     }
 
@@ -80,16 +78,16 @@ function extractId(text) {
 }
 
 /**
- * APPROVE APPOINTMENT (FIXED)
- * ❌ NO doctor_id dependency
+ * APPROVE APPOINTMENT
+ * (NO updated_at dependency)
  */
-async function approveAppointment(doctor, clinicId, appointmentId, twiml) {
+async function approveAppointment(clinicId, appointmentId, twiml) {
     try {
 
         console.log('🔎 Approving appointment', { appointmentId, clinicId });
 
         const rows = await sql`
-            SELECT a.*, c.whatsapp AS patient_phone
+            SELECT a.id, a.appointment_date, a.appointment_time, c.whatsapp AS patient_phone
             FROM appointments a
             JOIN customers c ON a.customer_id = c.id
             WHERE a.id = ${appointmentId}
@@ -107,22 +105,22 @@ async function approveAppointment(doctor, clinicId, appointmentId, twiml) {
 
         await sql`
             UPDATE appointments
-            SET status = 'confirmed', updated_at = NOW()
+            SET status = 'confirmed'
             WHERE id = ${appointmentId}
         `;
 
-        // Notify patient
+        // 📱 Notify patient
         await sendWhatsAppMessage(
             appt.patient_phone,
             `✅ *Appointment Confirmed*\n\n` +
             `📋 Booking #${appointmentId}\n` +
             `📅 ${appt.appointment_date}\n` +
             `⏰ ${appt.appointment_time}\n\n` +
-            `Approved by doctor.\n\n` +
-            `To cancel: CANCEL ${appointmentId}`
+            `Your appointment has been approved by the doctor.\n\n` +
+            `To cancel, reply: CANCEL ${appointmentId}`
         );
 
-        // Confirm to doctor
+        // 👨‍⚕️ Confirm to doctor
         twiml.message(
             `✅ *Appointment Approved*\n\n` +
             `📋 Booking #${appointmentId}\n` +
@@ -136,15 +134,16 @@ async function approveAppointment(doctor, clinicId, appointmentId, twiml) {
 }
 
 /**
- * REJECT APPOINTMENT (FIXED)
+ * REJECT APPOINTMENT
+ * (NO updated_at dependency)
  */
-async function rejectAppointment(doctor, clinicId, appointmentId, twiml) {
+async function rejectAppointment(clinicId, appointmentId, twiml) {
     try {
 
         console.log('🔎 Rejecting appointment', { appointmentId, clinicId });
 
         const rows = await sql`
-            SELECT a.*, c.whatsapp AS patient_phone
+            SELECT a.id, a.appointment_date, a.appointment_time, c.whatsapp AS patient_phone
             FROM appointments a
             JOIN customers c ON a.customer_id = c.id
             WHERE a.id = ${appointmentId}
@@ -162,21 +161,22 @@ async function rejectAppointment(doctor, clinicId, appointmentId, twiml) {
 
         await sql`
             UPDATE appointments
-            SET status = 'rejected', updated_at = NOW()
+            SET status = 'rejected'
             WHERE id = ${appointmentId}
         `;
 
-        // Notify patient
+        // 📱 Notify patient
         await sendWhatsAppMessage(
             appt.patient_phone,
             `❌ *Appointment Rejected*\n\n` +
             `📋 Booking #${appointmentId}\n` +
             `📅 ${appt.appointment_date}\n` +
             `⏰ ${appt.appointment_time}\n\n` +
-            `Doctor unavailable. Please rebook.`
+            `Doctor is unavailable at this time.\n` +
+            `Please book another slot if needed.`
         );
 
-        // Confirm to doctor
+        // 👨‍⚕️ Confirm to doctor
         twiml.message(
             `❌ *Appointment Rejected*\n\n` +
             `📋 Booking #${appointmentId}\n` +

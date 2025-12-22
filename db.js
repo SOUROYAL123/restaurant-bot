@@ -8,24 +8,22 @@ if (!process.env.DATABASE_URL) {
 const sql = neon(process.env.DATABASE_URL);
 
 /**
- * Compatibility wrapper so existing code using pool.query(...)
- * continues to work without installing `pg`
+ * Minimal pg-like wrapper for Neon
+ * Supports: pool.query(text, params)
  */
-module.exports = {
-  query: async (text, params = []) => {
-    // Simple case: no params
-    if (!params || params.length === 0) {
-      const rows = await sql.unsafe(text);
-      return { rows };
-    }
+async function query(text, params = []) {
+  // Convert $1, $2 ... to template placeholders
+  let queryText = text;
 
-    // Replace $1, $2... with Neon parameters
-    let queryText = text;
-    params.forEach((_, i) => {
-      queryText = queryText.replace(`$${i + 1}`, `$${i + 1}`);
-    });
+  params.forEach((_, i) => {
+    queryText = queryText.replace(`$${i + 1}`, `\${params[${i}]}`);
+  });
 
-    const rows = await sql.unsafe(queryText, params);
-    return { rows };
-  }
-};
+  // Execute via Function constructor to preserve template literals
+  const fn = new Function('sql', 'params', `return sql\`${queryText}\`;`);
+  const rows = await fn(sql, params);
+
+  return { rows };
+}
+
+module.exports = { query };

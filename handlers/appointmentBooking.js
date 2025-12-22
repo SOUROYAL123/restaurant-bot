@@ -78,4 +78,5 @@ async function handleDoctorCommands(userPhone, clinicId, message, twiml) {
   return true; // 🔴 THIS WAS CRITICAL
 }
 
-module.exports = { handleDoctorCommands };
+module.exports = { handleBooking };
+

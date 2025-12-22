@@ -118,11 +118,11 @@ app.post('/webhook', async (req, res) => {
 
         console.log(`📨 Message from ${userPhone.replace('whatsapp:+', '')}: ${message}`);
 
-        // Look up clinic by bot number
+        // ✅ FIXED: Look up clinic by WABA number (not doctor_whatsapp)
         console.log(`🔍 Looking up clinic with botNumber: ${botNumber}`);
         const clinics = await sql`
             SELECT * FROM clinics 
-            WHERE doctor_whatsapp = ${botNumber}
+            WHERE waba_number = ${botNumber}
             LIMIT 1
         `;
         

@@ -1,4 +1,5 @@
 // handlers/doctorCommands.js
+console.log('DOCTOR MSG:', userPhone, message);
 const { neon } = require('@neondatabase/serverless');
 const sql = neon(process.env.DATABASE_URL);
 const { sendWhatsAppMessage } = require('../utils/twilioClient');

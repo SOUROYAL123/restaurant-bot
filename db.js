@@ -1,25 +1,31 @@
-// db.js
+// src/db.js
 const { neon } = require('@neondatabase/serverless');
 
 if (!process.env.DATABASE_URL) {
-  throw new Error('❌ DATABASE_URL is not set');
+  throw new Error('DATABASE_URL environment variable is not set');
 }
 
 const sql = neon(process.env.DATABASE_URL);
 
+/**
+ * Compatibility wrapper so existing code using pool.query(...)
+ * continues to work without installing `pg`
+ */
 module.exports = {
   query: async (text, params = []) => {
-    // Neon uses template literals, so we map pg-style calls
-    if (!params.length) {
-      return sql.unsafe(text);
+    // Simple case: no params
+    if (!params || params.length === 0) {
+      const rows = await sql.unsafe(text);
+      return { rows };
     }
 
-    // Convert $1, $2... to Neon placeholders
-    let q = text;
+    // Replace $1, $2... with Neon parameters
+    let queryText = text;
     params.forEach((_, i) => {
-      q = q.replace(`$${i + 1}`, `$${i + 1}`);
+      queryText = queryText.replace(`$${i + 1}`, `$${i + 1}`);
     });
 
-    return sql.unsafe(q, params);
+    const rows = await sql.unsafe(queryText, params);
+    return { rows };
   }
 };

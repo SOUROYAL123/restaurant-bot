@@ -1,70 +1,56 @@
-// utils/sessionManager.js
-const pool = require('../db');
+const db = require('../db');
 
-async function getSession(userPhone, clinicId) {
-  const res = await pool.query(
-    `SELECT * FROM sessions 
-     WHERE user_phone = $1 AND clinic_id = $2 
-     LIMIT 1`,
-    [userPhone, clinicId]
+/**
+ * Always ensures a session exists.
+ * If not, it creates one.
+ */
+async function ensureSession(phone) {
+  await db.query(
+    `INSERT INTO sessions (phone, step)
+     VALUES ($1, 'booking_start')
+     ON CONFLICT (phone) DO NOTHING`,
+    [phone]
   );
-  return res.rows[0] || null;
 }
 
-async function createSession(userPhone, clinicId) {
-  const res = await pool.query(
-    `INSERT INTO sessions 
-     (user_phone, clinic_id, current_step, language, created_at)
-     VALUES ($1, $2, 'booking_start', 'en', NOW())
-     RETURNING *`,
-    [userPhone, clinicId]
+/**
+ * Get session for a phone
+ */
+async function getSession(phone) {
+  const res = await db.query(
+    `SELECT * FROM sessions WHERE phone = $1`,
+    [phone]
   );
   return res.rows[0];
 }
 
-async function updateSession(userPhone, clinicId, updates) {
-  const keys = Object.keys(updates);
-  if (!keys.length) return;
-
+/**
+ * Update session safely
+ */
+async function updateSession(phone, updates) {
   const fields = [];
   const values = [];
-  let i = 1;
+  let idx = 1;
 
-  for (const key of keys) {
-    fields.push(`${key} = $${i++}`);
+  for (const key in updates) {
+    fields.push(`${key} = $${idx}`);
     values.push(updates[key]);
+    idx++;
   }
 
-  await pool.query(
-    `UPDATE sessions 
-     SET ${fields.join(', ')}, updated_at = NOW()
-     WHERE user_phone = $${i++} AND clinic_id = $${i}`,
-    [...values, userPhone, clinicId]
-  );
-}
+  values.push(phone);
 
-async function clearSession(userPhone, clinicId) {
-  await pool.query(
-    `DELETE FROM sessions 
-     WHERE user_phone = $1 AND clinic_id = $2`,
-    [userPhone, clinicId]
-  );
-}
+  const query = `
+    UPDATE sessions
+    SET ${fields.join(', ')}, updated_at = now()
+    WHERE phone = $${idx}
+  `;
 
-/* ✅ THIS WAS MISSING */
-async function setUserLanguage(userPhone, clinicId, language) {
-  await pool.query(
-    `UPDATE sessions 
-     SET language = $1, updated_at = NOW()
-     WHERE user_phone = $2 AND clinic_id = $3`,
-    [language, userPhone, clinicId]
-  );
+  await db.query(query, values);
 }
 
 module.exports = {
+  ensureSession,
   getSession,
-  createSession,
-  updateSession,
-  clearSession,
-  setUserLanguage
+  updateSession
 };

@@ -17,7 +17,7 @@ app.use(bodyParser.json());
 // ===============================
 app.post('/webhook', async (req, res) => {
   try {
-    const from = req.body.From;          // whatsapp:+9180xxxxxxx
+    const from = req.body.From;
     const body = req.body.Body || '';
 
     if (!from) {
@@ -27,16 +27,32 @@ app.post('/webhook', async (req, res) => {
     const message = body.trim().toLowerCase();
     const userPhone = from.replace('whatsapp:', '');
 
-    // 1️⃣ Ensure session exists (uses user_phone column)
+    // 🔐 Always ensure session row exists
     await ensureSession(userPhone);
 
-    // 2️⃣ Get session
-    const session = await getSession(userPhone);
+    // 🔍 Fetch session
+    let session = await getSession(userPhone);
     console.log('SESSION:', session);
+
+    // 🛑 HARD SAFETY GUARD (prevents all crashes)
+    if (!session || !session.step) {
+      console.log('⚠️ Resetting invalid session');
+
+      await updateSession(userPhone, { step: 'booking_start' });
+
+      res.set('Content-Type', 'text/xml');
+      return res.send(`
+        <Response>
+          <Message>👋 Welcome! Please type hi.</Message>
+        </Response>
+      `);
+    }
 
     let reply = '';
 
-    // 3️⃣ Flow control
+    // ===============================
+    // FLOW CONTROL
+    // ===============================
     switch (session.step) {
 
       case 'booking_start':
@@ -79,12 +95,15 @@ app.post('/webhook', async (req, res) => {
         break;
 
       default:
-        reply = `❌ Something went wrong. Type hi to restart.`;
+        console.log('⚠️ Unknown step, resetting:', session.step);
         await updateSession(userPhone, { step: 'booking_start' });
+        reply = `👋 Session reset. Please type hi.`;
         break;
     }
 
-    // 4️⃣ Respond to WhatsApp (Twilio XML)
+    // ===============================
+    // SEND RESPONSE
+    // ===============================
     res.set('Content-Type', 'text/xml');
     res.send(`
       <Response>
@@ -93,6 +112,7 @@ app.post('/webhook', async (req, res) => {
     `);
 
   } catch (err) {
+    // 🔥 LAST LINE OF DEFENSE
     console.error('WEBHOOK ERROR:', err);
 
     res.set('Content-Type', 'text/xml');

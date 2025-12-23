@@ -1,9 +1,5 @@
 const db = require('../db');
 
-/**
- * Always ensures a session exists.
- * If not, it creates one.
- */
 async function ensureSession(phone) {
   await db.query(
     `INSERT INTO sessions (phone, step)
@@ -13,9 +9,6 @@ async function ensureSession(phone) {
   );
 }
 
-/**
- * Get session for a phone
- */
 async function getSession(phone) {
   const res = await db.query(
     `SELECT * FROM sessions WHERE phone = $1`,
@@ -24,18 +17,15 @@ async function getSession(phone) {
   return res.rows[0];
 }
 
-/**
- * Update session safely
- */
 async function updateSession(phone, updates) {
   const fields = [];
   const values = [];
-  let idx = 1;
+  let i = 1;
 
   for (const key in updates) {
-    fields.push(`${key} = $${idx}`);
+    fields.push(`${key} = $${i}`);
     values.push(updates[key]);
-    idx++;
+    i++;
   }
 
   values.push(phone);
@@ -43,7 +33,7 @@ async function updateSession(phone, updates) {
   const query = `
     UPDATE sessions
     SET ${fields.join(', ')}, updated_at = now()
-    WHERE phone = $${idx}
+    WHERE phone = $${i}
   `;
 
   await db.query(query, values);

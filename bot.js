@@ -1,163 +1,112 @@
-// bot.js
-
 require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
-const twilio = require('twilio');
 
-const SessionManager = require('./utils/sessionManager');
-
-// existing handlers (AS-IS)
-const { handleClinicSelection } = require('./handlers/clinicSelection');
-const { handleBooking } = require('./handlers/appointmentBooking');
-const { handleDoctorCommands } = require('./handlers/doctorCommands');
-const { handlePatientCancellation } = require('./handlers/patientCancellation');
-const PatientCommandsHandler = require('./handlers/patientCommands');
-const LanguageHandler = require('./handlers/languageHandler');
+const {
+  ensureSession,
+  getSession,
+  updateSession
+} = require('./utils/sessionManager');
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-const PORT = process.env.PORT || 3000;
-
-// =====================================================
-// WEBHOOK
-// =====================================================
+// ------------------
+// WhatsApp Webhook
+// ------------------
 app.post('/webhook', async (req, res) => {
-  const twiml = new twilio.twiml.MessagingResponse();
-
   try {
-    const from = req.body.From;
-    const to = req.body.To;
-    const message = (req.body.Body || '').trim();
-
-    console.log('📨 Incoming:', { from, to, message });
+    const from = req.body.From;        // whatsapp:+9180xxxxxxx
+    const message = req.body.Body?.trim().toLowerCase();
 
     if (!from || !message) {
-      return res.type('text/xml').send(twiml.toString());
+      return res.sendStatus(200);
     }
 
-    // -------------------------------------------------
-    // 1️⃣ Load or create session (UNCHANGED LOGIC)
-    // -------------------------------------------------
-    let session = await SessionManager.getSession(from);
-    if (!session) {
-      session = await SessionManager.createSession(from);
+    // Normalize phone number
+    const phone = from.replace('whatsapp:', '');
+
+    // 1️⃣ Ensure session exists
+    await ensureSession(phone);
+
+    // 2️⃣ Fetch session
+    const session = await getSession(phone);
+    console.log('SESSION:', session);
+
+    let reply = '';
+
+    // 3️⃣ Handle flow by step
+    switch (session.step) {
+
+      case 'booking_start':
+        reply =
+          `👋 Welcome to the Clinic Bot\n\n` +
+          `Reply with:\n` +
+          `1️⃣ Book Appointment\n` +
+          `2️⃣ Contact Clinic`;
+
+        await updateSession(phone, { step: 'awaiting_action' });
+        break;
+
+      case 'awaiting_action':
+        if (message === '1') {
+          reply = '🏥 Please reply with clinic number:\n1️⃣ Clinic A\n2️⃣ Clinic B';
+          await updateSession(phone, { step: 'awaiting_clinic' });
+        } else if (message === '2') {
+          reply = '📞 You can contact us at +91-XXXXXXXXXX';
+          await updateSession(phone, { step: 'booking_start' });
+        } else {
+          reply = '❌ Invalid choice. Reply 1 or 2.';
+        }
+        break;
+
+      case 'awaiting_clinic':
+        if (message === '1' || message === '2') {
+          reply = `✅ Clinic ${message} selected.\nBooking flow complete (demo).`;
+          await updateSession(phone, {
+            clinic_id: message,
+            step: 'booking_start'
+          });
+        } else {
+          reply = '❌ Invalid clinic. Reply 1 or 2.';
+        }
+        break;
+
+      default:
+        reply = '❌ Something went wrong. Type hi to restart.';
+        await updateSession(phone, { step: 'booking_start' });
+        break;
     }
 
-    console.log('📍 Session:', {
-      clinic_id: session.clinic_id,
-      step: session.current_step
-    });
+    // 4️⃣ Send response back to WhatsApp (Twilio compatible XML)
+    res.set('Content-Type', 'text/xml');
+    res.send(`
+      <Response>
+        <Message>${reply}</Message>
+      </Response>
+    `);
 
-    // -------------------------------------------------
-    // 2️⃣ CLINIC SELECTION (only if clinic_id missing)
-    // -------------------------------------------------
-    const clinicHandled = await handleClinicSelection(
-      from,
-      message,
-      session,
-      twiml
-    );
-
-    if (clinicHandled) {
-      return res.type('text/xml').send(twiml.toString());
-    }
-
-    // from here onward clinic_id MUST exist
-    const clinicId = session.clinic_id;
-    if (!clinicId) {
-      twiml.message('❌ Clinic not selected. Type *hi* to restart.');
-      return res.type('text/xml').send(twiml.toString());
-    }
-
-    // -------------------------------------------------
-    // 3️⃣ DOCTOR COMMANDS (APPROVE / REJECT)
-    // -------------------------------------------------
-    const doctorHandled = await handleDoctorCommands(
-      from,
-      clinicId,
-      message,
-      twiml
-    );
-    if (doctorHandled) {
-      return res.type('text/xml').send(twiml.toString());
-    }
-
-    // -------------------------------------------------
-    // 4️⃣ PATIENT CANCELLATION
-    // -------------------------------------------------
-    const cancelled = await handlePatientCancellation(
-      from,
-      clinicId,
-      message,
-      twiml
-    );
-    if (cancelled) {
-      return res.type('text/xml').send(twiml.toString());
-    }
-
-    // -------------------------------------------------
-    // 5️⃣ PATIENT COMMANDS
-    // -------------------------------------------------
-    if (PatientCommandsHandler.isPatientCommand(message)) {
-      const result = await PatientCommandsHandler.handleCommand(
-        from,
-        clinicId,
-        message
-      );
-
-      if (result?.message) {
-        twiml.message(result.message);
-      }
-
-      return res.type('text/xml').send(twiml.toString());
-    }
-
-    // -------------------------------------------------
-    // 6️⃣ LANGUAGE HANDLER
-    // -------------------------------------------------
-    const languageHandled = await LanguageHandler.handle(
-      from,
-      message,
-      twiml,
-      clinicId
-    );
-    if (languageHandled) {
-      return res.type('text/xml').send(twiml.toString());
-    }
-
-    // -------------------------------------------------
-    // 7️⃣ BOOKING FLOW (UNCHANGED)
-    // -------------------------------------------------
-    await handleBooking(
-      from,
-      clinicId,
-      session,
-      message,
-      twiml
-    );
-
-    return res.type('text/xml').send(twiml.toString());
-
-  } catch (error) {
-    console.error('❌ Webhook error:', error);
-    twiml.message('❌ Something went wrong. Type *hi* to restart.');
-    return res.type('text/xml').send(twiml.toString());
+  } catch (err) {
+    console.error('WEBHOOK ERROR:', err);
+    res.set('Content-Type', 'text/xml');
+    res.send(`
+      <Response>
+        <Message>❌ Something went wrong. Type hi to restart.</Message>
+      </Response>
+    `);
   }
 });
 
-// =====================================================
-// HEALTH CHECK (RENDER)
-// =====================================================
+// ------------------
+// Health Check
+// ------------------
 app.get('/', (req, res) => {
-  res.send('✅ WhatsApp multi-clinic bot is running');
+  res.send('WhatsApp Clinic Bot Running');
 });
 
-// =====================================================
-// START SERVER (RENDER-SAFE)
-// =====================================================
+// ------------------
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });

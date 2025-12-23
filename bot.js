@@ -7,10 +7,8 @@ const twilio = require('twilio');
 
 const SessionManager = require('./utils/sessionManager');
 
-// 🔹 NEW: Clinic selection handler
+// existing handlers (AS-IS)
 const { handleClinicSelection } = require('./handlers/clinicSelection');
-
-// Existing handlers (UNCHANGED)
 const { handleBooking } = require('./handlers/appointmentBooking');
 const { handleDoctorCommands } = require('./handlers/doctorCommands');
 const { handlePatientCancellation } = require('./handlers/patientCancellation');
@@ -30,8 +28,8 @@ app.post('/webhook', async (req, res) => {
   const twiml = new twilio.twiml.MessagingResponse();
 
   try {
-    const from = req.body.From;     // user / doctor phone
-    const to = req.body.To;         // WABA number
+    const from = req.body.From;
+    const to = req.body.To;
     const message = (req.body.Body || '').trim();
 
     console.log('📨 Incoming:', { from, to, message });
@@ -41,7 +39,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     // -------------------------------------------------
-    // 1️⃣ Load or create session (NO clinic yet)
+    // 1️⃣ Load or create session (UNCHANGED LOGIC)
     // -------------------------------------------------
     let session = await SessionManager.getSession(from);
     if (!session) {
@@ -54,7 +52,7 @@ app.post('/webhook', async (req, res) => {
     });
 
     // -------------------------------------------------
-    // 2️⃣ CLINIC SELECTION (RUNS FIRST)
+    // 2️⃣ CLINIC SELECTION (only if clinic_id missing)
     // -------------------------------------------------
     const clinicHandled = await handleClinicSelection(
       from,
@@ -67,7 +65,7 @@ app.post('/webhook', async (req, res) => {
       return res.type('text/xml').send(twiml.toString());
     }
 
-    // 🚨 From here onward, clinic_id MUST exist
+    // from here onward clinic_id MUST exist
     const clinicId = session.clinic_id;
     if (!clinicId) {
       twiml.message('❌ Clinic not selected. Type *hi* to restart.');
@@ -101,7 +99,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     // -------------------------------------------------
-    // 5️⃣ PATIENT COMMANDS (MY APPOINTMENTS, etc.)
+    // 5️⃣ PATIENT COMMANDS
     // -------------------------------------------------
     if (PatientCommandsHandler.isPatientCommand(message)) {
       const result = await PatientCommandsHandler.handleCommand(
@@ -151,14 +149,14 @@ app.post('/webhook', async (req, res) => {
 });
 
 // =====================================================
-// HEALTH CHECK
+// HEALTH CHECK (RENDER)
 // =====================================================
 app.get('/', (req, res) => {
   res.send('✅ WhatsApp multi-clinic bot is running');
 });
 
 // =====================================================
-// START SERVER
+// START SERVER (RENDER-SAFE)
 // =====================================================
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

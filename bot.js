@@ -1,6 +1,19 @@
 /**
  * ═══════════════════════════════════════════════════════════
  * WhatsApp Multi-Clinic Appointment Bot - Production v3.0
+ * 
+ * Features:
+ * - Multi-clinic support with data segregation
+ * - Auto-approval/rejection workflow
+ * - Doctor approval via WhatsApp commands
+ * - Google Sheets logging per clinic
+ * - Session management
+ * - Message queue for reliability
+ * - Rate limiting & security
+ * - Comprehensive logging
+ * 
+ * Author: Sourav Roy (Legacylens Automation)
+ * Repository: https://github.com/SOUROYAL123/clinis_database_bot-.git
  * ═══════════════════════════════════════════════════════════
  */
 
@@ -9,59 +22,79 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const { neon } = require('@neondatabase/serverless');
 
-// Initialize
+// ═══════════════════════════════════════════════════════════
+// INITIALIZATION
+// ═══════════════════════════════════════════════════════════
+
 const app = express();
 const sql = neon(process.env.DATABASE_URL);
+
+// Trust proxy for Render.com
+app.set('trust proxy', 1);
 
 // Middleware
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// Import utilities
+// ═══════════════════════════════════════════════════════════
+// IMPORT UTILITIES WITH FALLBACKS
+// ═══════════════════════════════════════════════════════════
+
 const { sendWhatsAppMessage } = require('./utils/twilioClient');
 const GoogleSheetsLogger = require('./utils/googleSheetsLogger');
 
-// Import with fallbacks
-let logger, messageQueue, adminRoutes, webhookLimiter, verifyTwilioSignature;
-
+// Logger with fallback
+let logger;
 try {
     logger = require('./utils/logger');
 } catch (e) {
     logger = {
-        info: (msg, data) => console.log('[INFO]', msg, data),
-        success: (msg, data) => console.log('[SUCCESS]', msg, data),
-        warning: (msg, data) => console.log('[WARNING]', msg, data),
-        error: (msg, err) => console.error('[ERROR]', msg, err),
-        appointment: (action, id, data) => console.log('[APPOINTMENT]', action, id, data)
+        info: (msg, data) => console.log('[INFO]', msg, data || ''),
+        success: (msg, data) => console.log('[SUCCESS]', msg, data || ''),
+        warning: (msg, data) => console.log('[WARNING]', msg, data || ''),
+        error: (msg, err) => console.error('[ERROR]', msg, err?.message || err),
+        appointment: (action, id, data) => console.log('[APPOINTMENT]', action, id, data || '')
     };
 }
 
+// Message Queue with fallback
+let messageQueue;
 try {
     messageQueue = require('./utils/messageQueue');
 } catch (e) {
+    logger.warning('Message queue not available, using fallback');
     messageQueue = {
         enqueue: async (phone, msg) => {
-            console.log('Message queue not available, sending directly');
+            logger.info('Message queue unavailable, sending directly');
+            try {
+                await sendWhatsAppMessage(phone, msg);
+            } catch (error) {
+                logger.error('Failed to send message', error);
+            }
             return null;
         }
     };
 }
 
+// Security middleware with fallback
+let webhookLimiter, verifyTwilioSignature;
 try {
     const security = require('./middleware/security');
     webhookLimiter = security.webhookLimiter;
     verifyTwilioSignature = security.verifyTwilioSignature;
 } catch (e) {
-    console.log('Security middleware not found, using passthrough');
+    logger.warning('Security middleware not found, using passthrough');
     webhookLimiter = (req, res, next) => next();
     verifyTwilioSignature = (req, res, next) => next();
 }
 
+// Admin routes with fallback
 try {
-    adminRoutes = require('./routes/admin');
+    const adminRoutes = require('./routes/admin');
     app.use('/api/admin', adminRoutes);
+    logger.info('Admin routes loaded successfully');
 } catch (e) {
-    console.log('Admin routes not found, skipping');
+    logger.warning('Admin routes not found, skipping');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -84,6 +117,7 @@ async function getOrCreateSession(userPhone) {
                 SELECT * FROM sessions WHERE user_phone = ${userPhone}
             `;
         } else {
+            // Update last activity
             await sql`
                 UPDATE sessions 
                 SET last_activity = NOW()
@@ -157,6 +191,7 @@ async function getOrCreateCustomer(userPhone, clinicId, name = null) {
             
             return result[0].id;
         } else {
+            // Update name if provided
             if (name) {
                 await sql`
                     UPDATE customers
@@ -175,7 +210,7 @@ async function getOrCreateCustomer(userPhone, clinicId, name = null) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// DOCTOR COMMANDS
+// DOCTOR COMMANDS (APPROVE/REJECT)
 // ═══════════════════════════════════════════════════════════
 
 async function handleDoctorCommand(userPhone, message) {
@@ -194,6 +229,7 @@ async function handleDoctorCommand(userPhone, message) {
         const appointmentId = match[1];
         const isApprove = upperMessage.startsWith('APPROVE');
         
+        // Verify doctor and get appointment
         const appointments = await sql`
             SELECT a.*, c.doctor_whatsapp, c.google_sheet_id, c.name as clinic_name
             FROM appointments a
@@ -219,6 +255,7 @@ async function handleDoctorCommand(userPhone, message) {
         const newStatus = isApprove ? 'confirmed' : 'rejected';
         const timestamp = new Date();
         
+        // Update appointment status
         if (isApprove) {
             await sql`
                 UPDATE appointments
@@ -244,19 +281,21 @@ async function handleDoctorCommand(userPhone, message) {
             clinic: appt.clinic_name
         });
         
+        // Update Google Sheets
         if (appt.google_sheet_id) {
             try {
                 await GoogleSheetsLogger.updateAppointmentStatus(
                     appt.google_sheet_id,
                     appointmentId,
                     newStatus,
-                    timestamp.toLocaleString('en-IN')
+                    timestamp.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                 );
             } catch (error) {
                 logger.warning('Google Sheets update failed', { error: error.message });
             }
         }
         
+        // Notify patient
         const patientMessage = isApprove
             ? `✅ *Appointment Confirmed*\n\n` +
               `📋 Booking #${appointmentId}\n` +
@@ -271,13 +310,16 @@ async function handleDoctorCommand(userPhone, message) {
               `Please book a different time.\n\n` +
               `Reply "1" to book again.`;
         
+        // Queue or send message to patient
         try {
             await sendWhatsAppMessage(appt.patient_phone, patientMessage);
         } catch (error) {
+            logger.warning('Failed to send patient notification, queuing', { error: error.message });
             await messageQueue.enqueue(appt.patient_phone, patientMessage);
         }
         
-        return `✅ Appointment #${appointmentId} ${isApprove ? 'APPROVED' : 'REJECTED'}\n\nPatient will be notified automatically.`;
+        return `✅ Appointment #${appointmentId} ${isApprove ? 'APPROVED' : 'REJECTED'}\n\n` +
+               `Patient will be notified automatically.`;
         
     } catch (error) {
         logger.error('Doctor command error', error);
@@ -314,7 +356,8 @@ async function notifyDoctor(appointmentId) {
         const date = new Date(appt.appointment_date).toLocaleDateString('en-IN', {
             day: '2-digit',
             month: 'long',
-            year: 'numeric'
+            year: 'numeric',
+            timeZone: 'Asia/Kolkata'
         });
         
         const autoApproveInfo = appt.auto_approve 
@@ -349,7 +392,7 @@ async function notifyDoctor(appointmentId) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// MAIN WEBHOOK
+// MAIN WEBHOOK HANDLER
 // ═══════════════════════════════════════════════════════════
 
 app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => {
@@ -369,10 +412,14 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             message: message.substring(0, 50) 
         });
         
+        // Get or create session
         const session = await getOrCreateSession(userPhone);
         let reply = '';
         
-        // Doctor commands
+        // ═══════════════════════════════════════════════════════════
+        // DOCTOR COMMANDS (APPROVE/REJECT)
+        // ═══════════════════════════════════════════════════════════
+        
         const doctorResponse = await handleDoctorCommand(userPhone, message);
         if (doctorResponse) {
             res.set('Content-Type', 'text/xml');
@@ -383,8 +430,12 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             `);
         }
         
-        // Patient booking flow
+        // ═══════════════════════════════════════════════════════════
+        // PATIENT BOOKING FLOW
+        // ═══════════════════════════════════════════════════════════
+        
         if (message.toLowerCase() === 'hi' || message === '1') {
+            // Show clinic list
             const clinics = await sql`
                 SELECT id, name, doctor_name
                 FROM clinics
@@ -395,6 +446,7 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             if (clinics.length === 0) {
                 reply = `❌ No clinics available at the moment.\n\nPlease contact support.`;
             } else if (clinics.length === 1) {
+                // Auto-select single clinic
                 await updateSession(userPhone, { 
                     stage: 'booking_name', 
                     clinic_id: clinics[0].id 
@@ -404,6 +456,7 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                         `👨‍⚕️ Dr. ${clinics[0].doctor_name}\n\n` +
                         `👤 What is your full name?`;
             } else {
+                // Multiple clinics - show selection
                 reply = `🏥 *Select Your Clinic*\n\n`;
                 clinics.forEach((clinic, i) => {
                     reply += `${i + 1}. ${clinic.name}\n   👨‍⚕️ Dr. ${clinic.doctor_name}\n\n`;
@@ -414,6 +467,10 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                 await updateSession(userPhone, { stage: 'select_clinic' });
             }
         }
+        
+        // ═══════════════════════════════════════════════════════════
+        // CLINIC SELECTION
+        // ═══════════════════════════════════════════════════════════
         
         else if (session.stage === 'select_clinic') {
             const clinicIndex = parseInt(message) - 1;
@@ -441,6 +498,10 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             }
         }
         
+        // ═══════════════════════════════════════════════════════════
+        // BOOKING NAME
+        // ═══════════════════════════════════════════════════════════
+        
         else if (session.stage === 'booking_name') {
             if (message.length < 2) {
                 reply = `❌ Please enter a valid name.\n\nExample: John Doe`;
@@ -458,6 +519,10 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                         `Example: 28-12-2025`;
             }
         }
+        
+        // ═══════════════════════════════════════════════════════════
+        // BOOKING DATE
+        // ═══════════════════════════════════════════════════════════
         
         else if (session.stage === 'booking_date') {
             const dateMatch = message.match(/^(\d{2})-(\d{2})-(\d{4})$/);
@@ -489,7 +554,8 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                         weekday: 'long',
                         day: '2-digit',
                         month: 'long',
-                        year: 'numeric'
+                        year: 'numeric',
+                        timeZone: 'Asia/Kolkata'
                     });
                     
                     reply = `📅 ${formattedDate}\n\n` +
@@ -500,13 +566,19 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             }
         }
         
+        // ═══════════════════════════════════════════════════════════
+        // BOOKING TIME + CREATE APPOINTMENT
+        // ═══════════════════════════════════════════════════════════
+        
         else if (session.stage === 'booking_time') {
             const sessionData = session.session_data || {};
             const name = sessionData.name;
             const date = sessionData.date;
             
+            // Create customer
             const customerId = await getOrCreateCustomer(userPhone, session.clinic_id, name);
             
+            // Create appointment
             const result = await sql`
                 INSERT INTO appointments (
                     clinic_id,
@@ -542,6 +614,7 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                 time: message
             });
             
+            // Get clinic info
             const clinics = await sql`
                 SELECT name, google_sheet_id
                 FROM clinics
@@ -550,6 +623,7 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             
             const clinic = clinics[0];
             
+            // Log to Google Sheets
             if (clinic.google_sheet_id) {
                 try {
                     await GoogleSheetsLogger.logAppointment(clinic.google_sheet_id, {
@@ -560,20 +634,24 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                         patient_phone: userPhone,
                         status: 'pending',
                         doctor_name: '',
-                        created_at: new Date().toLocaleString('en-IN')
+                        created_at: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
                     });
                 } catch (error) {
                     logger.warning('Google Sheets logging failed', { error: error.message });
                 }
             }
             
+            // Notify doctor
             await notifyDoctor(appointmentId);
+            
+            // Clear session
             await clearSession(userPhone);
             
             const formattedDate = new Date(date).toLocaleDateString('en-IN', {
                 day: '2-digit',
                 month: 'long',
-                year: 'numeric'
+                year: 'numeric',
+                timeZone: 'Asia/Kolkata'
             });
             
             reply = `✅ *Booking Request Submitted*\n\n` +
@@ -588,11 +666,16 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                     `To book another appointment, reply "1"`;
         }
         
+        // ═══════════════════════════════════════════════════════════
+        // DEFAULT
+        // ═══════════════════════════════════════════════════════════
+        
         else {
             reply = `👋 Welcome to our clinic!\n\n` +
                     `Reply "hi" or "1" to book an appointment.`;
         }
         
+        // Send reply
         res.set('Content-Type', 'text/xml');
         res.send(`
             <Response>
@@ -613,9 +696,59 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
 });
 
 // ═══════════════════════════════════════════════════════════
-// HEALTH CHECK
+// HEALTH CHECK ENDPOINTS
 // ═══════════════════════════════════════════════════════════
 
+// Simple ping endpoint for quick health checks
+app.get('/ping', (req, res) => {
+    res.status(200).send('pong');
+});
+
+// Detailed health check with database verification
+app.get('/health', async (req, res) => {
+    try {
+        // Quick database check with 5 second timeout
+        const dbCheck = await Promise.race([
+            sql`SELECT NOW() as server_time, 1 as healthy`,
+            new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Database timeout')), 5000)
+            )
+        ]);
+        
+        res.status(200).json({ 
+            status: 'healthy',
+            service: 'WhatsApp Multi-Clinic Bot',
+            version: '3.0.0',
+            database: {
+                status: 'connected',
+                server_time: dbCheck[0].server_time
+            },
+            timestamp: new Date().toISOString(),
+            uptime: Math.floor(process.uptime()),
+            memory: {
+                used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+                total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+            }
+        });
+    } catch (error) {
+        logger.warning('Health check database error', error);
+        
+        // Return 200 even on DB error to keep service running
+        res.status(200).json({ 
+            status: 'degraded',
+            service: 'WhatsApp Multi-Clinic Bot',
+            version: '3.0.0',
+            database: {
+                status: 'error',
+                error: error.message
+            },
+            timestamp: new Date().toISOString(),
+            uptime: Math.floor(process.uptime())
+        });
+    }
+});
+
+// Root endpoint with stats
 app.get('/', async (req, res) => {
     try {
         const dbCheck = await sql`SELECT NOW() as server_time`;
@@ -634,10 +767,16 @@ app.get('/', async (req, res) => {
             stats: {
                 active_clinics: parseInt(clinicCount[0].count),
                 pending_appointments: parseInt(pendingCount[0].count)
+            },
+            endpoints: {
+                webhook: '/webhook',
+                health: '/health',
+                ping: '/ping',
+                admin: '/api/admin'
             }
         });
     } catch (error) {
-        logger.error('Health check error', error);
+        logger.error('Root endpoint error', error);
         res.status(500).json({
             status: 'error',
             message: error.message
@@ -645,25 +784,46 @@ app.get('/', async (req, res) => {
     }
 });
 
-app.get('/health', async (req, res) => {
-    try {
-        await sql`SELECT 1`;
-        res.json({ status: 'healthy', timestamp: new Date().toISOString() });
-    } catch (error) {
-        res.status(503).json({ status: 'unhealthy', error: error.message });
-    }
+// ═══════════════════════════════════════════════════════════
+// ERROR HANDLING MIDDLEWARE
+// ═══════════════════════════════════════════════════════════
+
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({
+        error: 'Not Found',
+        message: `Cannot ${req.method} ${req.path}`,
+        endpoints: {
+            webhook: 'POST /webhook',
+            health: 'GET /health',
+            ping: 'GET /ping',
+            root: 'GET /'
+        }
+    });
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+    logger.error('Unhandled error', err);
+    res.status(500).json({ 
+        error: 'Internal server error',
+        message: process.env.NODE_ENV === 'development' ? err.message : 'An error occurred'
+    });
 });
 
 // ═══════════════════════════════════════════════════════════
-// START SERVER
+// SERVER STARTUP
 // ═══════════════════════════════════════════════════════════
 
 const PORT = process.env.PORT || 3000;
+const HOST = '0.0.0.0'; // CRITICAL: Bind to all interfaces for Render.com
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, HOST, () => {
     logger.success('Server started', { 
-        port: PORT, 
-        environment: process.env.NODE_ENV || 'development'
+        port: PORT,
+        host: HOST,
+        environment: process.env.NODE_ENV || 'production',
+        nodeVersion: process.version
     });
     
     console.log('');
@@ -671,18 +831,82 @@ app.listen(PORT, () => {
     console.log('🚀 WhatsApp Multi-Clinic Bot - Production v3.0');
     console.log('═══════════════════════════════════════════════');
     console.log('');
-    console.log(`✅ Server running on port ${PORT}`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`✅ Server running on ${HOST}:${PORT}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'production'}`);
+    console.log(`📦 Node.js: ${process.version}`);
+    console.log(`🕐 Started: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
+    console.log('');
+    console.log('📍 Endpoints:');
+    console.log(`   Webhook:  POST http://localhost:${PORT}/webhook`);
+    console.log(`   Health:   GET  http://localhost:${PORT}/health`);
+    console.log(`   Ping:     GET  http://localhost:${PORT}/ping`);
+    console.log(`   Admin:    GET  http://localhost:${PORT}/api/admin`);
     console.log('');
     console.log('═══════════════════════════════════════════════');
+    console.log('');
+    
+    // Signal readiness to Render
+    console.log('✅ Server is ready to accept connections');
 });
 
-process.on('SIGTERM', () => {
-    logger.info('SIGTERM received, shutting down gracefully');
-    process.exit(0);
+// Handle server startup errors
+server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+        logger.error(`Port ${PORT} is already in use`, error);
+        process.exit(1);
+    } else if (error.code === 'EACCES') {
+        logger.error(`Port ${PORT} requires elevated privileges`, error);
+        process.exit(1);
+    } else {
+        logger.error('Server error', error);
+        process.exit(1);
+    }
 });
 
-process.on('SIGINT', () => {
-    logger.info('SIGINT received, shutting down gracefully');
-    process.exit(0);
+// ═══════════════════════════════════════════════════════════
+// GRACEFUL SHUTDOWN
+// ═══════════════════════════════════════════════════════════
+
+function gracefulShutdown(signal) {
+    logger.info(`${signal} received, shutting down gracefully`);
+    
+    server.close(() => {
+        logger.info('Server closed, exiting process');
+        process.exit(0);
+    });
+    
+    // Force shutdown after 30 seconds
+    setTimeout(() => {
+        logger.error('Forced shutdown after timeout');
+        process.exit(1);
+    }, 30000);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// ═══════════════════════════════════════════════════════════
+// UNCAUGHT ERROR HANDLERS
+// ═══════════════════════════════════════════════════════════
+
+process.on('uncaughtException', (error) => {
+    logger.error('Uncaught Exception - Server will exit', error);
+    process.exit(1);
 });
+
+process.on('unhandledRejection', (reason, promise) => {
+    logger.error('Unhandled Rejection', new Error(reason));
+    // Don't exit on unhandled rejections in production
+    if (process.env.NODE_ENV === 'development') {
+        process.exit(1);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════
+// EXPORTS (for testing)
+// ═══════════════════════════════════════════════════════════
+
+module.exports = {
+    app,
+    server
+};

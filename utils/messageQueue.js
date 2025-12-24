@@ -1,5 +1,4 @@
 const { neon } = require('@neondatabase/serverless');
-const { sendWhatsAppMessage } = require('./twilioClient');
 const logger = require('./logger');
 
 const sql = neon(process.env.DATABASE_URL);
@@ -10,6 +9,19 @@ class MessageQueue {
      */
     async enqueue(phone, message) {
         try {
+            // Check if pending_messages table exists
+            const tables = await sql`
+                SELECT table_name 
+                FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'pending_messages'
+            `;
+            
+            if (tables.length === 0) {
+                logger.warning('pending_messages table does not exist, skipping queue');
+                return null;
+            }
+            
             const result = await sql`
                 INSERT INTO pending_messages (phone, message, status, attempts)
                 VALUES (${phone}, ${message}, 'pending', 0)
@@ -25,7 +37,8 @@ class MessageQueue {
             
         } catch (error) {
             logger.error('Failed to queue message', error);
-            throw error;
+            // Don't throw - just log and continue
+            return null;
         }
     }
     
@@ -49,6 +62,7 @@ class MessageQueue {
             
             for (const msg of pending) {
                 try {
+                    const { sendWhatsAppMessage } = require('./twilioClient');
                     await sendWhatsAppMessage(msg.phone, msg.message);
                     
                     await sql`

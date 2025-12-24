@@ -1,35 +1,51 @@
 {
-  "name": "whatsapp-clinic-bot-multilingual",
-  "version": "2.0.0",
-  "description": "WhatsApp clinic bot with Neon database, Google Sheets logging, and auto-approval",
+  "name": "whatsapp-clinic-bot-production",
+  "version": "3.0.0",
+  "description": "Production WhatsApp multi-clinic bot with auto-approval, doctor workflow, and Google Sheets logging",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "dev": "nodemon bot.js",
-    "test": "node test-connection.js"
+    "test": "node test-connection.js",
+    "cron": "node jobs/autoApproveReject.js",
+    "migrate": "node scripts/runMigration.js",
+    "setup": "node scripts/setupProduction.js",
+    "status": "node scripts/checkStatus.js",
+    "verify": "node scripts/verifySetup.js"
   },
   "keywords": [
     "whatsapp",
     "clinic",
+    "multi-tenant",
     "twilio",
     "neon",
     "google-sheets",
-    "appointment-booking"
+    "appointment-booking",
+    "auto-approval",
+    "doctor-workflow"
   ],
-  "author": "Sourav Roy",
-  "license": "ISC",
+  "author": "Sourav Roy <sourav@legacylens.com>",
+  "license": "MIT",
   "dependencies": {
     "@neondatabase/serverless": "^0.10.3",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "google-auth-library": "^9.15.1",
     "google-spreadsheet": "^4.1.5",
-    "twilio": "^5.3.5"
+    "twilio": "^5.3.5",
+    "body-parser": "^1.20.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"
   },
   "engines": {
-  "node": "18.x"
+    "node": "18.x"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SOUROYAL123/clinis_database_bot-.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SOUROYAL123/clinis_database_bot-/issues"
+  }
 }
-}  

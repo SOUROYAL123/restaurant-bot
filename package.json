@@ -1,7 +1,7 @@
 {
   "name": "whatsapp-clinic-bot-production",
   "version": "3.0.0",
-  "description": "Production WhatsApp multi-clinic bot with auto-approval, doctor workflow, and Google Sheets logging",
+  "description": "Production WhatsApp multi-clinic bot with auto-approval, doctor workflow, Google Sheets logging, and comprehensive analytics",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
@@ -11,10 +11,15 @@
     "prestart": "echo '🚀 Starting production server...'",
     "cron": "node jobs/autoApproveReject.js",
     "cron:reminders": "node cron-reminders.js",
+    "cron:cleanup": "node jobs/cleanupSessions.js",
+    "cron:queue": "node jobs/processMessageQueue.js",
     "setup": "node scripts/setupProduction.js",
     "setup:clinic": "node scripts/setupClinic.js",
     "status": "node scripts/checkStatus.js",
     "verify": "node scripts/verifySetup.js",
+    "health": "node scripts/healthCheck.js",
+    "analytics": "node scripts/analytics.js",
+    "logs": "node scripts/viewLogs.js",
     "db:init": "node scripts/initNeonDB.js",
     "db:backup": "node scripts/backupNeonDB.js",
     "db:migrate": "node scripts/runMigration.js",
@@ -22,9 +27,6 @@
     "db:seed": "node scripts/seedData.js",
     "doctor:test": "node test-doctor-notification.js",
     "doctor:diagnose": "node diagnose-notification-issue.js",
-    "analytics": "node scripts/analytics.js",
-    "health": "node scripts/healthCheck.js",
-    "logs": "node scripts/viewLogs.js",
     "deploy": "npm run verify && npm run db:backup && echo '✅ Ready for deployment'",
     "clean": "rm -rf node_modules package-lock.json && npm install",
     "lint": "echo 'Running lint checks...'",
@@ -43,7 +45,8 @@
     "doctor-workflow",
     "healthcare",
     "chatbot",
-    "serverless"
+    "serverless",
+    "production-ready"
   ],
   "author": {
     "name": "Sourav Roy",
@@ -83,7 +86,9 @@
       "handlers/",
       "utils/",
       "config/",
-      "routes/"
+      "routes/",
+      "jobs/",
+      "middleware/"
     ],
     "ext": "js,json",
     "ignore": [
@@ -92,7 +97,8 @@
       "logs/",
       "*.log"
     ],
-    "delay": "1000"
+    "delay": "1000",
+    "verbose": true
   },
   "config": {
     "port": "3000",

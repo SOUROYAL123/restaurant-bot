@@ -431,10 +431,11 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
         }
         
         // ═══════════════════════════════════════════════════════════
-        // PATIENT BOOKING FLOW
+        // PATIENT BOOKING FLOW - GREETING / RESTART
         // ═══════════════════════════════════════════════════════════
         
-        if (message.toLowerCase() === 'hi' || message === '1') {
+        // Only treat "hi" as greeting, NOT "1" (to avoid clinic selection loop)
+        if (message.toLowerCase() === 'hi') {
             // Show clinic list
             const clinics = await sql`
                 SELECT id, name, doctor_name
@@ -453,13 +454,13 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                 });
                 
                 reply = `🏥 Welcome to ${clinics[0].name}\n` +
-                        `👨‍⚕️ Dr. ${clinics[0].doctor_name}\n\n` +
+                        `👨‍⚕️ ${clinics[0].doctor_name}\n\n` +
                         `👤 What is your full name?`;
             } else {
                 // Multiple clinics - show selection
                 reply = `🏥 *Select Your Clinic*\n\n`;
                 clinics.forEach((clinic, i) => {
-                    reply += `${i + 1}. ${clinic.name}\n   👨‍⚕️ Dr. ${clinic.doctor_name}\n\n`;
+                    reply += `${i + 1}. ${clinic.name}\n   👨‍⚕️ ${clinic.doctor_name}\n\n`;
                 });
                 reply += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
                 reply += `Reply with number (1-${clinics.length})`;
@@ -476,13 +477,16 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             const clinicIndex = parseInt(message) - 1;
             
             const clinics = await sql`
-                SELECT id, name
+                SELECT id, name, doctor_name
                 FROM clinics
                 WHERE status = 'active'
                 ORDER BY id
             `;
             
-            if (clinicIndex >= 0 && clinicIndex < clinics.length) {
+            if (isNaN(clinicIndex) || clinicIndex < 0 || clinicIndex >= clinics.length) {
+                reply = `❌ Invalid selection.\n\n` +
+                        `Please reply with a number between 1 and ${clinics.length}`;
+            } else {
                 const selectedClinic = clinics[clinicIndex];
                 
                 await updateSession(userPhone, { 
@@ -492,9 +496,6 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                 
                 reply = `✅ ${selectedClinic.name} selected\n\n` +
                         `👤 What is your full name?`;
-            } else {
-                reply = `❌ Invalid selection.\n\n` +
-                        `Please reply with a number between 1 and ${clinics.length}`;
             }
         }
         
@@ -663,7 +664,7 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                     `━━━━━━━━━━━━━━━━━━━━━\n\n` +
                     `⏳ Waiting for doctor approval...\n\n` +
                     `You'll receive confirmation soon!\n\n` +
-                    `To book another appointment, reply "1"`;
+                    `To book another appointment, reply "hi"`;
         }
         
         // ═══════════════════════════════════════════════════════════
@@ -672,7 +673,7 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
         
         else {
             reply = `👋 Welcome to our clinic!\n\n` +
-                    `Reply "hi" or "1" to book an appointment.`;
+                    `Reply "hi" to book an appointment.`;
         }
         
         // Send reply

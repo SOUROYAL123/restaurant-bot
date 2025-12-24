@@ -178,13 +178,13 @@ async function getOrCreateCustomer(userPhone, clinicId, name = null) {
     try {
         let customers = await sql`
             SELECT * FROM customers 
-            WHERE phone = ${userPhone} 
+            WHERE patient_phone = ${userPhone} 
             AND clinic_id = ${clinicId}
         `;
         
         if (customers.length === 0) {
             const result = await sql`
-                INSERT INTO customers (clinic_id, phone, name, status)
+                INSERT INTO customers (clinic_id, patient_phone, name, status)
                 VALUES (${clinicId}, ${userPhone}, ${name || `User ${userPhone.slice(-4)}`}, 'active')
                 RETURNING id
             `;
@@ -217,7 +217,8 @@ async function handleDoctorCommand(userPhone, message) {
     try {
         const upperMessage = message.toUpperCase();
         
-        if (!upperMessage.startsWith('APPROVE #') && !upperMessage.startsWith('REJECT #')) {
+        // Accept both "APPROVE #29" and "APPROVE#29" formats
+        if (!upperMessage.includes('APPROVE') && !upperMessage.includes('REJECT')) {
             return null;
         }
         

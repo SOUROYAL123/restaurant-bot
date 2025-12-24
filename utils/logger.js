@@ -5,6 +5,7 @@ class Logger {
     constructor() {
         this.logsDir = path.join(__dirname, '..', 'logs');
         
+        // Create logs directory if it doesn't exist
         if (!fs.existsSync(this.logsDir)) {
             fs.mkdirSync(this.logsDir, { recursive: true });
         }
@@ -36,15 +37,19 @@ class Logger {
         }
         
         // File output
-        const logFile = path.join(
-            this.logsDir, 
-            `${new Date().toISOString().split('T')[0]}.log`
-        );
-        
-        fs.appendFileSync(
-            logFile, 
-            JSON.stringify(logEntry) + '\n'
-        );
+        try {
+            const logFile = path.join(
+                this.logsDir, 
+                `${new Date().toISOString().split('T')[0]}.log`
+            );
+            
+            fs.appendFileSync(
+                logFile, 
+                JSON.stringify(logEntry) + '\n'
+            );
+        } catch (error) {
+            console.error('Failed to write log file:', error.message);
+        }
     }
     
     info(message, data) {

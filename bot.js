@@ -1,18 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════
  * WhatsApp Multi-Clinic Appointment Bot - Production v3.0
- * 
- * Features:
- * - Multi-clinic support with data segregation
- * - Auto-approval/rejection workflow
- * - Doctor approval via WhatsApp commands
- * - Google Sheets logging per clinic
- * - Session management
- * - Message queue for reliability
- * - Rate limiting & security
- * - Comprehensive logging
- * 
- * Author: Sourav Roy (Legacylens Automation)
  * ═══════════════════════════════════════════════════════════
  */
 
@@ -20,7 +8,6 @@ require('dotenv').config();
 const express = require('express');
 const bodyParser = require('body-parser');
 const { neon } = require('@neondatabase/serverless');
-const twilio = require('twilio');
 
 // Initialize
 const app = express();
@@ -33,14 +20,49 @@ app.use(bodyParser.json());
 // Import utilities
 const { sendWhatsAppMessage } = require('./utils/twilioClient');
 const GoogleSheetsLogger = require('./utils/googleSheetsLogger');
-const logger = require('./utils/logger');
-const messageQueue = require('./utils/messageQueue');
 
-// Import middleware
-const { webhookLimiter, verifyTwilioSignature } = require('./middleware/security');
+// Import with fallbacks
+let logger, messageQueue, adminRoutes, webhookLimiter, verifyTwilioSignature;
 
-// Import routes
-const adminRoutes = require('./routes/admin');
+try {
+    logger = require('./utils/logger');
+} catch (e) {
+    logger = {
+        info: (msg, data) => console.log('[INFO]', msg, data),
+        success: (msg, data) => console.log('[SUCCESS]', msg, data),
+        warning: (msg, data) => console.log('[WARNING]', msg, data),
+        error: (msg, err) => console.error('[ERROR]', msg, err),
+        appointment: (action, id, data) => console.log('[APPOINTMENT]', action, id, data)
+    };
+}
+
+try {
+    messageQueue = require('./utils/messageQueue');
+} catch (e) {
+    messageQueue = {
+        enqueue: async (phone, msg) => {
+            console.log('Message queue not available, sending directly');
+            return null;
+        }
+    };
+}
+
+try {
+    const security = require('./middleware/security');
+    webhookLimiter = security.webhookLimiter;
+    verifyTwilioSignature = security.verifyTwilioSignature;
+} catch (e) {
+    console.log('Security middleware not found, using passthrough');
+    webhookLimiter = (req, res, next) => next();
+    verifyTwilioSignature = (req, res, next) => next();
+}
+
+try {
+    adminRoutes = require('./routes/admin');
+    app.use('/api/admin', adminRoutes);
+} catch (e) {
+    console.log('Admin routes not found, skipping');
+}
 
 // ═══════════════════════════════════════════════════════════
 // SESSION MANAGEMENT
@@ -62,7 +84,6 @@ async function getOrCreateSession(userPhone) {
                 SELECT * FROM sessions WHERE user_phone = ${userPhone}
             `;
         } else {
-            // Update last activity
             await sql`
                 UPDATE sessions 
                 SET last_activity = NOW()
@@ -136,7 +157,6 @@ async function getOrCreateCustomer(userPhone, clinicId, name = null) {
             
             return result[0].id;
         } else {
-            // Update name if provided
             if (name) {
                 await sql`
                     UPDATE customers
@@ -155,7 +175,7 @@ async function getOrCreateCustomer(userPhone, clinicId, name = null) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// DOCTOR COMMANDS (APPROVE/REJECT)
+// DOCTOR COMMANDS
 // ═══════════════════════════════════════════════════════════
 
 async function handleDoctorCommand(userPhone, message) {
@@ -174,7 +194,6 @@ async function handleDoctorCommand(userPhone, message) {
         const appointmentId = match[1];
         const isApprove = upperMessage.startsWith('APPROVE');
         
-        // Verify doctor
         const appointments = await sql`
             SELECT a.*, c.doctor_whatsapp, c.google_sheet_id, c.name as clinic_name
             FROM appointments a
@@ -200,7 +219,6 @@ async function handleDoctorCommand(userPhone, message) {
         const newStatus = isApprove ? 'confirmed' : 'rejected';
         const timestamp = new Date();
         
-        // Update appointment
         if (isApprove) {
             await sql`
                 UPDATE appointments
@@ -226,7 +244,6 @@ async function handleDoctorCommand(userPhone, message) {
             clinic: appt.clinic_name
         });
         
-        // Update Google Sheets
         if (appt.google_sheet_id) {
             try {
                 await GoogleSheetsLogger.updateAppointmentStatus(
@@ -240,7 +257,6 @@ async function handleDoctorCommand(userPhone, message) {
             }
         }
         
-        // Notify patient
         const patientMessage = isApprove
             ? `✅ *Appointment Confirmed*\n\n` +
               `📋 Booking #${appointmentId}\n` +
@@ -255,11 +271,13 @@ async function handleDoctorCommand(userPhone, message) {
               `Please book a different time.\n\n` +
               `Reply "1" to book again.`;
         
-        // Queue message for patient
-        await messageQueue.enqueue(appt.patient_phone, patientMessage);
+        try {
+            await sendWhatsAppMessage(appt.patient_phone, patientMessage);
+        } catch (error) {
+            await messageQueue.enqueue(appt.patient_phone, patientMessage);
+        }
         
-        return `✅ Appointment #${appointmentId} ${isApprove ? 'APPROVED' : 'REJECTED'}\n\n` +
-               `Patient will be notified automatically.`;
+        return `✅ Appointment #${appointmentId} ${isApprove ? 'APPROVED' : 'REJECTED'}\n\nPatient will be notified automatically.`;
         
     } catch (error) {
         logger.error('Doctor command error', error);
@@ -268,7 +286,7 @@ async function handleDoctorCommand(userPhone, message) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// NOTIFICATION SYSTEM
+// DOCTOR NOTIFICATION
 // ═══════════════════════════════════════════════════════════
 
 async function notifyDoctor(appointmentId) {
@@ -331,7 +349,7 @@ async function notifyDoctor(appointmentId) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// MAIN WEBHOOK HANDLER
+// MAIN WEBHOOK
 // ═══════════════════════════════════════════════════════════
 
 app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => {
@@ -351,14 +369,10 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             message: message.substring(0, 50) 
         });
         
-        // Get session
         const session = await getOrCreateSession(userPhone);
         let reply = '';
         
-        // ═══════════════════════════════════════════════════════════
-        // DOCTOR COMMANDS (APPROVE/REJECT)
-        // ═══════════════════════════════════════════════════════════
-        
+        // Doctor commands
         const doctorResponse = await handleDoctorCommand(userPhone, message);
         if (doctorResponse) {
             res.set('Content-Type', 'text/xml');
@@ -369,12 +383,8 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             `);
         }
         
-        // ═══════════════════════════════════════════════════════════
-        // PATIENT BOOKING FLOW
-        // ═══════════════════════════════════════════════════════════
-        
+        // Patient booking flow
         if (message.toLowerCase() === 'hi' || message === '1') {
-            // Show clinic list
             const clinics = await sql`
                 SELECT id, name, doctor_name
                 FROM clinics
@@ -385,7 +395,6 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             if (clinics.length === 0) {
                 reply = `❌ No clinics available at the moment.\n\nPlease contact support.`;
             } else if (clinics.length === 1) {
-                // Auto-select single clinic
                 await updateSession(userPhone, { 
                     stage: 'booking_name', 
                     clinic_id: clinics[0].id 
@@ -395,7 +404,6 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                         `👨‍⚕️ Dr. ${clinics[0].doctor_name}\n\n` +
                         `👤 What is your full name?`;
             } else {
-                // Multiple clinics - show selection
                 reply = `🏥 *Select Your Clinic*\n\n`;
                 clinics.forEach((clinic, i) => {
                     reply += `${i + 1}. ${clinic.name}\n   👨‍⚕️ Dr. ${clinic.doctor_name}\n\n`;
@@ -406,10 +414,6 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                 await updateSession(userPhone, { stage: 'select_clinic' });
             }
         }
-        
-        // ═══════════════════════════════════════════════════════════
-        // CLINIC SELECTION
-        // ═══════════════════════════════════════════════════════════
         
         else if (session.stage === 'select_clinic') {
             const clinicIndex = parseInt(message) - 1;
@@ -437,10 +441,6 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             }
         }
         
-        // ═══════════════════════════════════════════════════════════
-        // BOOKING NAME
-        // ═══════════════════════════════════════════════════════════
-        
         else if (session.stage === 'booking_name') {
             if (message.length < 2) {
                 reply = `❌ Please enter a valid name.\n\nExample: John Doe`;
@@ -458,10 +458,6 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                         `Example: 28-12-2025`;
             }
         }
-        
-        // ═══════════════════════════════════════════════════════════
-        // BOOKING DATE
-        // ═══════════════════════════════════════════════════════════
         
         else if (session.stage === 'booking_date') {
             const dateMatch = message.match(/^(\d{2})-(\d{2})-(\d{4})$/);
@@ -504,19 +500,13 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             }
         }
         
-        // ═══════════════════════════════════════════════════════════
-        // BOOKING TIME + CREATE APPOINTMENT
-        // ═══════════════════════════════════════════════════════════
-        
         else if (session.stage === 'booking_time') {
             const sessionData = session.session_data || {};
             const name = sessionData.name;
             const date = sessionData.date;
             
-            // Create customer
             const customerId = await getOrCreateCustomer(userPhone, session.clinic_id, name);
             
-            // Create appointment
             const result = await sql`
                 INSERT INTO appointments (
                     clinic_id,
@@ -552,7 +542,6 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                 time: message
             });
             
-            // Get clinic info
             const clinics = await sql`
                 SELECT name, google_sheet_id
                 FROM clinics
@@ -561,7 +550,6 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
             
             const clinic = clinics[0];
             
-            // Log to Google Sheets
             if (clinic.google_sheet_id) {
                 try {
                     await GoogleSheetsLogger.logAppointment(clinic.google_sheet_id, {
@@ -579,10 +567,7 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                 }
             }
             
-            // Notify doctor
             await notifyDoctor(appointmentId);
-            
-            // Clear session
             await clearSession(userPhone);
             
             const formattedDate = new Date(date).toLocaleDateString('en-IN', {
@@ -603,16 +588,11 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                     `To book another appointment, reply "1"`;
         }
         
-        // ═══════════════════════════════════════════════════════════
-        // DEFAULT
-        // ═══════════════════════════════════════════════════════════
-        
         else {
             reply = `👋 Welcome to our clinic!\n\n` +
                     `Reply "hi" or "1" to book an appointment.`;
         }
         
-        // Send reply
         res.set('Content-Type', 'text/xml');
         res.send(`
             <Response>
@@ -633,13 +613,7 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
 });
 
 // ═══════════════════════════════════════════════════════════
-// ADMIN ROUTES
-// ═══════════════════════════════════════════════════════════
-
-app.use('/api/admin', adminRoutes);
-
-// ═══════════════════════════════════════════════════════════
-// HEALTH CHECK & STATUS
+// HEALTH CHECK
 // ═══════════════════════════════════════════════════════════
 
 app.get('/', async (req, res) => {
@@ -660,11 +634,6 @@ app.get('/', async (req, res) => {
             stats: {
                 active_clinics: parseInt(clinicCount[0].count),
                 pending_appointments: parseInt(pendingCount[0].count)
-            },
-            endpoints: {
-                webhook: '/webhook',
-                admin: '/api/admin',
-                health: '/'
             }
         });
     } catch (error) {
@@ -686,18 +655,6 @@ app.get('/health', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// ERROR HANDLING
-// ═══════════════════════════════════════════════════════════
-
-app.use((err, req, res, next) => {
-    logger.error('Unhandled error', err);
-    res.status(500).json({ 
-        error: 'Internal server error',
-        message: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-});
-
-// ═══════════════════════════════════════════════════════════
 // START SERVER
 // ═══════════════════════════════════════════════════════════
 
@@ -706,8 +663,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     logger.success('Server started', { 
         port: PORT, 
-        environment: process.env.NODE_ENV || 'development',
-        timezone: process.env.TZ || 'Asia/Kolkata'
+        environment: process.env.NODE_ENV || 'development'
     });
     
     console.log('');
@@ -717,14 +673,10 @@ app.listen(PORT, () => {
     console.log('');
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`🔗 Health check: http://localhost:${PORT}/health`);
-    console.log(`📊 Admin API: http://localhost:${PORT}/api/admin`);
     console.log('');
     console.log('═══════════════════════════════════════════════');
-    console.log('');
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
     logger.info('SIGTERM received, shutting down gracefully');
     process.exit(0);

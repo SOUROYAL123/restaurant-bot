@@ -341,7 +341,8 @@ async function notifyDoctor(appointmentId) {
                 c.doctor_name,
                 c.doctor_whatsapp,
                 c.auto_approve,
-                c.auto_approve_after_hours
+                c.auto_approve_after_hours,
+                c.auto_action
             FROM appointments a
             JOIN clinics c ON a.clinic_id = c.id
             WHERE a.id = ${appointmentId}
@@ -362,7 +363,7 @@ async function notifyDoctor(appointmentId) {
         });
         
         const autoApproveInfo = appt.auto_approve 
-            ? `\n⏰ Will auto-approve in ${appt.auto_approve_after_hours} hours if no response`
+            ? `\n\n⏰ *Auto-${appt.auto_action === 'approve' ? 'Approve' : 'Reject'}:* ${appt.auto_approve_after_hours} hours`
             : '';
         
         const message = `🔔 *New Appointment Request*\n\n` +
@@ -694,6 +695,41 @@ app.post('/webhook', webhookLimiter, verifyTwilioSignature, async (req, res) => 
                 <Message>❌ An error occurred. Please try again or contact support.</Message>
             </Response>
         `);
+    }
+});
+
+// ═══════════════════════════════════════════════════════════
+// AUTO-APPROVAL CRON ENDPOINT
+// ═══════════════════════════════════════════════════════════
+
+app.post('/cron/auto-approve', async (req, res) => {
+    try {
+        logger.info('Auto-approval cron triggered');
+        
+        // Simple auth check (optional)
+        const cronSecret = req.headers['x-cron-secret'] || req.query.secret;
+        if (process.env.CRON_SECRET && cronSecret !== process.env.CRON_SECRET) {
+            logger.warning('Unauthorized cron request');
+            return res.status(401).json({ error: 'Unauthorized' });
+        }
+        
+        const { processAutoApprovals } = require('./autoApproval');
+        const result = await processAutoApprovals();
+        
+        logger.success('Auto-approval cron completed', result);
+        
+        res.json({
+            success: true,
+            timestamp: new Date().toISOString(),
+            ...result
+        });
+        
+    } catch (error) {
+        logger.error('Auto-approval cron error', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
     }
 });
 

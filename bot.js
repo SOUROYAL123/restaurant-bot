@@ -1,21 +1,19 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v4.1.0 - INTERACTIVE LIST BUTTONS
+ * WHATSAPP CLINIC BOT v4.1.1 - PRODUCTION EDITION
  * 
  * Enterprise-grade multi-clinic appointment booking system
  * 
  * Features:
- * ✅ WhatsApp List Buttons for doctor approvals (NO TEMPLATE NEEDED!)
+ * ✅ Ultra-clean doctor notifications (copy-paste friendly)
  * ✅ Multi-clinic support
  * ✅ Auto-approval workflow  
  * ✅ Session management with phone normalization
  * ✅ Google Sheets logging (optional)
- * ✅ Redis caching (optional)
- * ✅ 24-hour reminders
  * ✅ Comprehensive error handling
  * 
  * Author: Sourav Roy - Legacylens Automation
- * v4.1.0 - Interactive List Buttons for Doctor Approvals
+ * v4.1.1 - Fixed doctor notifications with clean format
  * ═══════════════════════════════════════════════════════════
  */
 
@@ -171,7 +169,7 @@ async function delCache(key) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// WHATSAPP MESSAGING WITH INTERACTIVE LIST BUTTONS
+// WHATSAPP MESSAGING
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async function sendWhatsApp(to, message) {
@@ -191,71 +189,41 @@ async function sendWhatsApp(to, message) {
 }
 
 /**
- * Send WhatsApp List Message with clickable buttons
- * This works WITHOUT template approval!
+ * Send doctor notification with ultra-clean copy-paste format
+ * This format works EVERYWHERE and is super easy for doctors
  */
-async function sendDoctorNotificationWithListButtons(to, appointmentDetails, appointmentId) {
+async function sendDoctorNotification(to, appointmentDetails, appointmentId) {
   try {
     const phone = formatForWhatsApp(to);
-    
-    const { patientName, patientPhone, date, time } = appointmentDetails;
+    const { patientName, patientPhone, date, time, autoNote } = appointmentDetails;
 
-    // Try sending as interactive list message
-    try {
-      const msg = await twilioClient.messages.create({
-        from: process.env.WABA_NUMBER,
-        to: phone,
-        body: `🔔 *NEW APPOINTMENT REQUEST*\n\n📋 ID: #${appointmentId}\n👤 ${patientName}\n📞 ${patientPhone}\n📅 ${date}\n⏰ ${time}\n\n👇 *Tap button below to respond*`,
-        // List message format
-        listTitle: 'Choose Action',
-        listDescription: 'Select to Approve or Reject',
-        listItems: JSON.stringify([
-          {
-            id: `approve_${appointmentId}`,
-            title: '✅ Approve Appointment',
-            description: `Approve ${patientName}'s appointment`
-          },
-          {
-            id: `reject_${appointmentId}`,
-            title: '❌ Reject Appointment',
-            description: `Reject ${patientName}'s appointment`
-          }
-        ])
-      });
+    // Ultra-clean format - easy to read and copy-paste
+    const message = 
+      `🔔 *NEW APPOINTMENT REQUEST*\n\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n` +
+      `📋 *ID:* #${appointmentId}\n` +
+      `👤 *Patient:* ${patientName}\n` +
+      `📞 *Phone:* ${patientPhone}\n` +
+      `📅 *Date:* ${date}\n` +
+      `⏰ *Time:* ${time}\n` +
+      `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+      `*Quick Actions:*\n` +
+      `✅ APPROVE #${appointmentId}\n` +
+      `❌ REJECT #${appointmentId}` +
+      (autoNote ? `\n\n${autoNote}` : '');
 
-      log.info('List button message sent', { to: normalizePhone(phone), sid: msg.sid, appointmentId });
-      return true;
+    const msg = await twilioClient.messages.create({
+      from: process.env.WABA_NUMBER,
+      to: phone,
+      body: message
+    });
 
-    } catch (listError) {
-      // List buttons failed - use super enhanced text format
-      log.warn('List buttons not supported, using enhanced format', { error: listError.message });
-
-      const enhancedMessage = 
-        `🔔 *NEW APPOINTMENT REQUEST*\n\n` +
-        `━━━━━━━━━━━━━━━━━━━━━\n` +
-        `📋 *ID:* #${appointmentId}\n` +
-        `👤 *Patient:* ${patientName}\n` +
-        `📞 *Phone:* ${patientPhone}\n` +
-        `📅 *Date:* ${date}\n` +
-        `⏰ *Time:* ${time}\n` +
-        `━━━━━━━━━━━━━━━━━━━━━\n\n` +
-        `*👇 TAP TO COPY & SEND:*\n\n` +
-        `┌─────────────────┐\n` +
-        `│ ✅ APPROVE #${appointmentId} │\n` +
-        `└─────────────────┘\n\n` +
-        `┌─────────────────┐\n` +
-        `│ ❌ REJECT #${appointmentId}  │\n` +
-        `└─────────────────┘`;
-
-      const fallbackMsg = await twilioClient.messages.create({
-        from: process.env.WABA_NUMBER,
-        to: phone,
-        body: enhancedMessage
-      });
-
-      log.info('Enhanced text notification sent', { to: normalizePhone(phone), sid: fallbackMsg.sid, appointmentId });
-      return true;
-    }
+    log.info('Doctor notification sent', { 
+      to: normalizePhone(phone), 
+      sid: msg.sid, 
+      appointmentId 
+    });
+    return true;
 
   } catch (error) {
     log.error('Doctor notification failed', error);
@@ -323,7 +291,7 @@ async function getClinic(id) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// CONVERSATION FLOW (Simplified for space - same as v4.0.5)
+// CONVERSATION FLOW HANDLERS
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async function handleStart(phone) {
@@ -449,14 +417,19 @@ async function handleTime(phone, text) {
       `✅ *Appointment Requested Successfully!*\n\n━━━━━━━━━━━━━━━━━━━━━\n\n📋 *Booking ID:* #${aptId}\n👤 *Name:* ${data.name}\n🏥 *Clinic:* ${clinic.name}\n📅 *Date:* ${dateDisplay}\n⏰ *Time:* ${timeSlot}\n\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ *Status:* Pending doctor approval\n\nYou'll receive a confirmation message once the doctor approves your appointment.`
     );
 
-    // Send doctor notification with list buttons
-    await sendDoctorNotificationWithListButtons(
+    // Send doctor notification with clean format
+    const autoNote = clinic.auto_approve 
+      ? `⚠️ Auto-approves in ${clinic.auto_approve_after_hours}h if no response`
+      : '';
+
+    await sendDoctorNotification(
       clinic.doctor_whatsapp,
       {
         patientName: data.name,
         patientPhone: cleanPhone,
         date: dateDisplay,
-        time: timeSlot
+        time: timeSlot,
+        autoNote
       },
       aptId
     );
@@ -477,15 +450,6 @@ async function handleDoctorCommand(phone, text) {
   const cleanPhone = normalizePhone(phone);
   const cmd = text.trim().toUpperCase();
 
-  // Handle list button response (format: "approve_123" or "reject_123")
-  const listMatch = cmd.match(/(APPROVE|REJECT)_(\d+)/);
-  if (listMatch) {
-    const action = listMatch[1];
-    const aptId = parseInt(listMatch[2]);
-    // Convert to standard format
-    return await handleDoctorCommand(phone, `${action} #${aptId}`);
-  }
-
   if (!cmd.startsWith('APPROVE') && !cmd.startsWith('REJECT')) {
     return false;
   }
@@ -495,7 +459,7 @@ async function handleDoctorCommand(phone, text) {
 
   const match = cmd.match(/#?(\d+)/);
   if (!match) {
-    await sendWhatsApp(phone, `❌ *Invalid format*\n\nUse:\n• APPROVE #123\n• REJECT #123`);
+    await sendWhatsApp(phone, `❌ *Invalid format*\n\nUse:\n✅ APPROVE #123\n❌ REJECT #123`);
     return true;
   }
 
@@ -540,7 +504,13 @@ async function handleDoctorCommand(phone, text) {
 
   const confirmEmoji = isApprove ? '✅' : '❌';
   const confirmText = isApprove ? 'CONFIRMED' : 'REJECTED';
-  await sendWhatsApp(phone, `${confirmEmoji} *Appointment #${aptId} ${confirmText}*\n\nPatient: ${apt.patient_name}\nDate: ${dateStr}\nTime: ${apt.appointment_time}\n\nPatient has been notified.`);
+  await sendWhatsApp(phone, 
+    `${confirmEmoji} *Appointment #${aptId} ${confirmText}*\n\n` +
+    `Patient: ${apt.patient_name}\n` +
+    `Date: ${dateStr}\n` +
+    `Time: ${apt.appointment_time}\n\n` +
+    `✓ Patient has been notified.`
+  );
 
   log.success(`Doctor ${newStatus} appointment`, { id: aptId, doctor: clinic[0].doctor_name, patient: apt.patient_name });
   return true;
@@ -587,23 +557,22 @@ async function handleMessage(phone, text) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// HTTP ROUTES (Same as v4.0.5 - shortened for space)
+// HTTP ROUTES
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-app.get('/', (req, res) => res.json({ name: 'WhatsApp Clinic Bot', version: '4.1.0', status: 'operational', features: { list_buttons: 'enabled' }, uptime: Math.floor(process.uptime()) }));
+app.get('/', (req, res) => res.json({ name: 'WhatsApp Clinic Bot', version: '4.1.1', status: 'operational', uptime: Math.floor(process.uptime()) }));
 app.get('/health', async (req, res) => { const health = { status: 'healthy', uptime: Math.floor(process.uptime()), database: 'unknown', cache: cacheEnabled ? 'enabled' : 'disabled' }; try { await sql`SELECT 1`; health.database = 'connected'; } catch (err) { health.database = 'disconnected'; health.status = 'degraded'; } res.status(health.status === 'healthy' ? 200 : 503).json(health); });
 app.head('/ping', (req, res) => res.status(200).send());
 app.get('/ping', (req, res) => res.status(200).json({ pong: true, uptime: Math.floor(process.uptime()) }));
-app.get('/status', async (req, res) => { try { const stats = await sql`SELECT (SELECT COUNT(*) FROM clinics WHERE status = 'active') as clinics, (SELECT COUNT(*) FROM appointments WHERE DATE(created_at) = CURRENT_DATE) as today, (SELECT COUNT(*) FROM appointments WHERE status = 'pending') as pending`; res.json({ status: 'operational', version: '4.1.0', uptime: Math.floor(process.uptime()), stats: stats[0] || {} }); } catch (err) { res.status(500).json({ error: 'Database unavailable' }); } });
+app.get('/status', async (req, res) => { try { const stats = await sql`SELECT (SELECT COUNT(*) FROM clinics WHERE status = 'active') as clinics, (SELECT COUNT(*) FROM appointments WHERE DATE(created_at) = CURRENT_DATE) as today, (SELECT COUNT(*) FROM appointments WHERE status = 'pending') as pending`; res.json({ status: 'operational', version: '4.1.1', uptime: Math.floor(process.uptime()), stats: stats[0] || {} }); } catch (err) { res.status(500).json({ error: 'Database unavailable' }); } });
 
 app.post('/webhook/whatsapp', async (req, res) => {
   res.status(200).send('OK');
   try {
-    const { From, Body, ButtonPayload, ListId } = req.body;
+    const { From, Body } = req.body;
     if (!From || !Body) { log.warn('Invalid webhook payload'); return; }
-    const message = ListId || ButtonPayload || Body;
-    log.info('Incoming message', { from: normalizePhone(From), message, isInteractive: !!(ListId || ButtonPayload) });
-    setImmediate(() => handleMessage(From, message));
+    log.info('Incoming message', { from: normalizePhone(From), message: Body });
+    setImmediate(() => handleMessage(From, Body));
   } catch (err) { log.error('Webhook error', err); }
 });
 
@@ -619,17 +588,15 @@ app.use((err, req, res, next) => { log.error('Unhandled error', err); res.status
 
 async function startServer() {
   try {
-    log.info('Starting WhatsApp Clinic Bot v4.1.0...');
-    log.info('Testing database connection...');
+    log.info('Starting WhatsApp Clinic Bot v4.1.1...');
     const dbTest = await sql`SELECT NOW() as time`;
     log.success('Database connected', { time: dbTest[0].time });
     const tables = await sql`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('clinics', 'appointments', 'sessions')`;
     log.info('Database tables verified', { count: tables.length });
-    log.info(`Binding to ${HOST}:${PORT}...`);
     
     const server = app.listen(PORT, HOST, () => {
       console.log('═══════════════════════════════════════════════════════════');
-      console.log('🚀 WHATSAPP CLINIC BOT v4.1.0 - LIST BUTTONS');
+      console.log('🚀 WHATSAPP CLINIC BOT v4.1.1 - PRODUCTION READY');
       console.log('═══════════════════════════════════════════════════════════');
       console.log(`📡 Host:        ${HOST}`);
       console.log(`📡 Port:        ${PORT}`);
@@ -637,9 +604,9 @@ async function startServer() {
       console.log(`💾 Database:    Connected ✅`);
       console.log(`⚡ Cache:       ${cacheEnabled ? 'Enabled ✅' : 'Disabled ⚪'}`);
       console.log(`📊 Sheets:      ${GoogleSheetsLogger.logAppointment ? 'Enabled ✅' : 'Disabled ⚪'}`);
-      console.log(`🔘 Buttons:     List Buttons with Auto-Fallback ✅`);
+      console.log(`📱 Format:      Clean Copy-Paste for Doctors ✅`);
       console.log('═══════════════════════════════════════════════════════════');
-      console.log('✅ SERVER IS LIVE - CLICKABLE BUTTONS ENABLED');
+      console.log('✅ SERVER IS LIVE - READY FOR APPOINTMENTS');
       console.log('═══════════════════════════════════════════════════════════');
     });
 
@@ -651,8 +618,8 @@ async function startServer() {
   }
 }
 
-process.on('SIGTERM', async () => { log.info('SIGTERM received'); if (redisClient && cacheEnabled) { try { await redisClient.quit(); } catch (err) {} } process.exit(0); });
-process.on('SIGINT', async () => { log.info('SIGINT received'); if (redisClient && cacheEnabled) { try { await redisClient.quit(); } catch (err) {} } process.exit(0); });
+process.on('SIGTERM', async () => { if (redisClient && cacheEnabled) { try { await redisClient.quit(); } catch (err) {} } process.exit(0); });
+process.on('SIGINT', async () => { if (redisClient && cacheEnabled) { try { await redisClient.quit(); } catch (err) {} } process.exit(0); });
 process.on('uncaughtException', (error) => { log.error('UNCAUGHT EXCEPTION', error); process.exit(1); });
 process.on('unhandledRejection', (reason) => { log.error('UNHANDLED REJECTION', { reason }); });
 

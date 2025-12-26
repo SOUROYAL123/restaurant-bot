@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v4.0.3 - ULTIMATE PRODUCTION EDITION
+ * WHATSAPP CLINIC BOT v4.0.4 - ULTIMATE PRODUCTION EDITION
  * 
  * Enterprise-grade multi-clinic appointment booking system
  * 
@@ -19,10 +19,10 @@
  * Author: Sourav Roy - Legacylens Automation
  * Deployed on: Render.com
  * 
- * v4.0.3 Changes:
- * - Fixed phone number length issue (VARCHAR(20) -> VARCHAR(50))
- * - Added phone normalization (removes whatsapp: prefix for storage)
- * - Consistent phone handling throughout application
+ * v4.0.4 Changes:
+ * - Fixed restart logic - "1" no longer restarts mid-conversation
+ * - Only explicit commands (hi/hello/start/restart) trigger restart
+ * - Improved conversation flow continuity
  * ═══════════════════════════════════════════════════════════
  */
 
@@ -735,8 +735,11 @@ async function handleMessage(phone, text) {
     const session = await getSession(phone);
     const msg = text.trim().toLowerCase();
 
-    // Start/restart conversation
-    if (!session || msg === 'hi' || msg === 'hello' || msg === '1' || msg === 'start') {
+    // FIXED: Only restart on explicit commands, NOT on "1" during active conversation
+    const isRestartCommand = msg === 'hi' || msg === 'hello' || msg === 'start' || msg === 'restart';
+    
+    // Start/restart conversation - only if no session OR explicit restart command
+    if (!session || isRestartCommand) {
       await handleStart(phone);
       return;
     }
@@ -777,7 +780,7 @@ async function handleMessage(phone, text) {
 app.get('/', (req, res) => {
   res.json({
     name: 'WhatsApp Clinic Bot',
-    version: '4.0.3',
+    version: '4.0.4',
     status: 'operational',
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString()
@@ -825,7 +828,7 @@ app.get('/status', async (req, res) => {
 
     res.json({
       status: 'operational',
-      version: '4.0.3',
+      version: '4.0.4',
       uptime: Math.floor(process.uptime()),
       stats: stats[0] || {}
     });
@@ -847,7 +850,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
       return;
     }
 
-    log.info('Incoming message', { from: normalizePhone(From) });
+    log.info('Incoming message', { from: normalizePhone(From), message: Body });
     
     // Process message async
     setImmediate(() => handleMessage(From, Body));
@@ -906,7 +909,7 @@ app.use((err, req, res, next) => {
 
 async function startServer() {
   try {
-    log.info('Starting WhatsApp Clinic Bot v4.0.3...');
+    log.info('Starting WhatsApp Clinic Bot v4.0.4...');
     
     // Test database connection
     log.info('Testing database connection...');
@@ -930,7 +933,7 @@ async function startServer() {
     
     const server = app.listen(PORT, HOST, () => {
       console.log('═══════════════════════════════════════════════════════════');
-      console.log('🚀 WHATSAPP CLINIC BOT v4.0.3 - PRODUCTION READY');
+      console.log('🚀 WHATSAPP CLINIC BOT v4.0.4 - PRODUCTION READY');
       console.log('═══════════════════════════════════════════════════════════');
       console.log(`📡 Host:        ${HOST}`);
       console.log(`📡 Port:        ${PORT}`);
@@ -940,6 +943,7 @@ async function startServer() {
       console.log(`📊 Sheets:      ${GoogleSheetsLogger.logAppointment ? 'Enabled ✅' : 'Disabled ⚪'}`);
       console.log(`🔒 Proxy:       Trusted (Render.com compatible)`);
       console.log(`📞 Phone:       Normalized storage (no whatsapp: prefix)`);
+      console.log(`🔄 Flow:        Fixed restart logic (hi/start only)`);
       console.log('═══════════════════════════════════════════════════════════');
       console.log('✅ SERVER IS LIVE AND ACCEPTING REQUESTS');
       console.log('═══════════════════════════════════════════════════════════');

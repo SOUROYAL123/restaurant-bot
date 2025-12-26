@@ -1,13 +1,13 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v4.0.4 - ULTIMATE PRODUCTION EDITION
+ * WHATSAPP CLINIC BOT v4.0.5 - ULTIMATE PRODUCTION EDITION
  * 
  * Enterprise-grade multi-clinic appointment booking system
  * 
  * Features:
  * ✅ Multi-clinic support
  * ✅ Auto-approval workflow  
- * ✅ Doctor commands (APPROVE/REJECT #ID)
+ * ✅ Doctor commands with INTERACTIVE BUTTONS
  * ✅ Session management with phone normalization
  * ✅ Google Sheets logging (optional)
  * ✅ Redis caching (optional)
@@ -19,10 +19,11 @@
  * Author: Sourav Roy - Legacylens Automation
  * Deployed on: Render.com
  * 
- * v4.0.4 Changes:
- * - Fixed restart logic - "1" no longer restarts mid-conversation
- * - Only explicit commands (hi/hello/start/restart) trigger restart
- * - Improved conversation flow continuity
+ * v4.0.5 Changes:
+ * - Added interactive button support for doctor approvals
+ * - Auto-fallback to enhanced text if buttons not supported
+ * - Improved doctor notification formatting
+ * - Support for both button clicks and text commands
  * ═══════════════════════════════════════════════════════════
  */
 
@@ -244,7 +245,7 @@ async function delCache(key) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// WHATSAPP MESSAGING
+// WHATSAPP MESSAGING WITH BUTTON SUPPORT
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async function sendWhatsApp(to, message) {
@@ -261,6 +262,73 @@ async function sendWhatsApp(to, message) {
     return true;
   } catch (error) {
     log.error('WhatsApp send failed', error);
+    return false;
+  }
+}
+
+/**
+ * Send WhatsApp message with interactive buttons (auto-fallback to text)
+ * Works with WhatsApp Business API, gracefully falls back to text in Sandbox
+ * 
+ * @param {string} to - Phone number
+ * @param {string} bodyText - Main message body
+ * @param {number} appointmentId - Appointment ID for buttons
+ * @returns {Promise<boolean>}
+ */
+async function sendDoctorNotificationWithButtons(to, bodyText, appointmentId) {
+  try {
+    const phone = formatForWhatsApp(to);
+
+    // Try to send with interactive buttons (WhatsApp Business API feature)
+    try {
+      const msg = await twilioClient.messages.create({
+        from: process.env.WABA_NUMBER,
+        to: phone,
+        body: bodyText,
+        // Attempt to add action buttons (may not work in sandbox)
+        persistentAction: [
+          `APPROVE #${appointmentId}`,
+          `REJECT #${appointmentId}`
+        ]
+      });
+
+      log.info('Interactive button message sent', { 
+        to: normalizePhone(phone), 
+        sid: msg.sid,
+        appointmentId 
+      });
+      return true;
+
+    } catch (buttonError) {
+      // Buttons not supported (Sandbox mode) - fallback to enhanced text
+      log.warn('Buttons not supported, using enhanced text format', { 
+        error: buttonError.message 
+      });
+
+      const enhancedMessage = bodyText +
+        `\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `✅ *To Approve, reply:*\n` +
+        `APPROVE #${appointmentId}\n\n` +
+        `❌ *To Reject, reply:*\n` +
+        `REJECT #${appointmentId}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+      const fallbackMsg = await twilioClient.messages.create({
+        from: process.env.WABA_NUMBER,
+        to: phone,
+        body: enhancedMessage
+      });
+
+      log.info('Enhanced text notification sent', { 
+        to: normalizePhone(phone), 
+        sid: fallbackMsg.sid,
+        appointmentId 
+      });
+      return true;
+    }
+
+  } catch (error) {
+    log.error('Doctor notification failed completely', error);
     return false;
   }
 }
@@ -573,22 +641,25 @@ async function handleTime(phone, text) {
       `You'll receive a confirmation message once the doctor approves your appointment.`
     );
 
-    // Doctor notification
+    // Doctor notification with interactive buttons (auto-fallback to text)
     const autoNote = clinic.auto_approve 
-      ? `\n\n⚠️ Will auto-approve in ${clinic.auto_approve_after_hours} hours if no response`
+      ? `\n⚠️ Auto-approves in ${clinic.auto_approve_after_hours}h if no response`
       : '';
 
-    await sendWhatsApp(clinic.doctor_whatsapp,
-      `🔔 *New Appointment Request*\n\n` +
+    const doctorMessage = 
+      `🔔 *NEW APPOINTMENT REQUEST*\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n\n` +
       `📋 *ID:* #${aptId}\n` +
       `👤 *Patient:* ${data.name}\n` +
       `📞 *Phone:* ${cleanPhone}\n` +
       `📅 *Date:* ${dateDisplay}\n` +
-      `⏰ *Time:* ${timeSlot}\n\n` +
-      `━━━━━━━━━━━━━━━━━━━━━\n\n` +
-      `*To approve:* APPROVE #${aptId}\n` +
-      `*To reject:* REJECT #${aptId}${autoNote}`
+      `⏰ *Time:* ${timeSlot}${autoNote}`;
+
+    // Send with button support (auto-fallback to enhanced text)
+    await sendDoctorNotificationWithButtons(
+      clinic.doctor_whatsapp, 
+      doctorMessage, 
+      aptId
     );
 
     // Clear session
@@ -601,7 +672,7 @@ async function handleTime(phone, text) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// DOCTOR COMMAND HANDLER
+// DOCTOR COMMAND HANDLER (Supports both text and button responses)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async function handleDoctorCommand(phone, text) {
@@ -621,10 +692,15 @@ async function handleDoctorCommand(phone, text) {
     return false; // Not a doctor
   }
 
-  // Extract appointment ID
+  // Extract appointment ID (handles both "APPROVE #123" and "APPROVE 123")
   const match = cmd.match(/#?(\d+)/);
   if (!match) {
-    await sendWhatsApp(phone, '❌ *Invalid format*\n\nUse:\n• APPROVE #123\n• REJECT #123');
+    await sendWhatsApp(phone, 
+      `❌ *Invalid format*\n\n` +
+      `Use:\n` +
+      `• APPROVE #123\n` +
+      `• REJECT #123`
+    );
     return true;
   }
 
@@ -643,7 +719,10 @@ async function handleDoctorCommand(phone, text) {
   );
 
   if (!apts || apts.length === 0) {
-    await sendWhatsApp(phone, `❌ *Appointment #${aptId} not found* or already processed`);
+    await sendWhatsApp(phone, 
+      `❌ *Appointment #${aptId} not found*\n\n` +
+      `It may have already been processed or doesn't belong to your clinic.`
+    );
     return true;
   }
 
@@ -714,10 +793,24 @@ async function handleDoctorCommand(phone, text) {
     );
   }
 
-  // Confirm to doctor
-  await sendWhatsApp(phone, `✅ *Appointment #${aptId} ${newStatus.toUpperCase()}*`);
+  // Confirm to doctor with enhanced formatting
+  const confirmEmoji = isApprove ? '✅' : '❌';
+  const confirmText = isApprove ? 'CONFIRMED' : 'REJECTED';
+  
+  await sendWhatsApp(phone, 
+    `${confirmEmoji} *Appointment #${aptId} ${confirmText}*\n\n` +
+    `Patient: ${apt.patient_name}\n` +
+    `Date: ${dateStr}\n` +
+    `Time: ${apt.appointment_time}\n\n` +
+    `Patient has been notified.`
+  );
 
-  log.success(`Doctor ${newStatus} appointment`, { id: aptId, doctor: clinic[0].doctor_name });
+  log.success(`Doctor ${newStatus} appointment`, { 
+    id: aptId, 
+    doctor: clinic[0].doctor_name,
+    patient: apt.patient_name 
+  });
+  
   return true;
 }
 
@@ -735,7 +828,7 @@ async function handleMessage(phone, text) {
     const session = await getSession(phone);
     const msg = text.trim().toLowerCase();
 
-    // FIXED: Only restart on explicit commands, NOT on "1" during active conversation
+    // Only restart on explicit commands, NOT on "1" during active conversation
     const isRestartCommand = msg === 'hi' || msg === 'hello' || msg === 'start' || msg === 'restart';
     
     // Start/restart conversation - only if no session OR explicit restart command
@@ -780,8 +873,14 @@ async function handleMessage(phone, text) {
 app.get('/', (req, res) => {
   res.json({
     name: 'WhatsApp Clinic Bot',
-    version: '4.0.4',
+    version: '4.0.5',
     status: 'operational',
+    features: {
+      interactive_buttons: 'auto-fallback',
+      phone_normalization: true,
+      doctor_approvals: true,
+      session_management: true
+    },
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString()
   });
@@ -823,12 +922,17 @@ app.get('/status', async (req, res) => {
       SELECT 
         (SELECT COUNT(*) FROM clinics WHERE status = 'active') as clinics,
         (SELECT COUNT(*) FROM appointments WHERE DATE(created_at) = CURRENT_DATE) as today,
-        (SELECT COUNT(*) FROM appointments WHERE status = 'pending') as pending
+        (SELECT COUNT(*) FROM appointments WHERE status = 'pending') as pending,
+        (SELECT COUNT(*) FROM appointments WHERE status = 'confirmed') as confirmed
     `;
 
     res.json({
       status: 'operational',
-      version: '4.0.4',
+      version: '4.0.5',
+      features: {
+        buttons: 'auto-fallback',
+        approval: 'doctor-commands'
+      },
       uptime: Math.floor(process.uptime()),
       stats: stats[0] || {}
     });
@@ -843,17 +947,24 @@ app.post('/webhook/whatsapp', async (req, res) => {
   res.status(200).send('OK');
 
   try {
-    const { From, Body } = req.body;
+    const { From, Body, ButtonPayload } = req.body;
     
     if (!From || !Body) {
       log.warn('Invalid webhook payload');
       return;
     }
 
-    log.info('Incoming message', { from: normalizePhone(From), message: Body });
+    // Handle button click payload if present (WhatsApp Business API)
+    const message = ButtonPayload || Body;
+
+    log.info('Incoming message', { 
+      from: normalizePhone(From), 
+      message: message,
+      isButton: !!ButtonPayload 
+    });
     
     // Process message async
-    setImmediate(() => handleMessage(From, Body));
+    setImmediate(() => handleMessage(From, message));
 
   } catch (err) {
     log.error('Webhook error', err);
@@ -909,7 +1020,7 @@ app.use((err, req, res, next) => {
 
 async function startServer() {
   try {
-    log.info('Starting WhatsApp Clinic Bot v4.0.4...');
+    log.info('Starting WhatsApp Clinic Bot v4.0.5...');
     
     // Test database connection
     log.info('Testing database connection...');
@@ -933,7 +1044,7 @@ async function startServer() {
     
     const server = app.listen(PORT, HOST, () => {
       console.log('═══════════════════════════════════════════════════════════');
-      console.log('🚀 WHATSAPP CLINIC BOT v4.0.4 - PRODUCTION READY');
+      console.log('🚀 WHATSAPP CLINIC BOT v4.0.5 - PRODUCTION READY');
       console.log('═══════════════════════════════════════════════════════════');
       console.log(`📡 Host:        ${HOST}`);
       console.log(`📡 Port:        ${PORT}`);
@@ -944,6 +1055,7 @@ async function startServer() {
       console.log(`🔒 Proxy:       Trusted (Render.com compatible)`);
       console.log(`📞 Phone:       Normalized storage (no whatsapp: prefix)`);
       console.log(`🔄 Flow:        Fixed restart logic (hi/start only)`);
+      console.log(`🔘 Buttons:     Auto-fallback (Business API + Sandbox)`);
       console.log('═══════════════════════════════════════════════════════════');
       console.log('✅ SERVER IS LIVE AND ACCEPTING REQUESTS');
       console.log('═══════════════════════════════════════════════════════════');

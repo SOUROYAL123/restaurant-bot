@@ -1,103 +1,31 @@
 {
   "name": "whatsapp-clinic-bot-ultimate",
   "version": "4.0.0",
-  "description": "Ultimate production WhatsApp multi-clinic bot with auto-approval, reminders, Google Sheets, analytics, monitoring, and enterprise features",
+  "description": "Production WhatsApp multi-clinic bot with auto-approval, reminders, and Google Sheets integration",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "dev": "nodemon bot.js",
-    "test": "npm run test:connection && npm run test:reminders && npm run test:doctor",
-    "test:connection": "node test-connection.js",
-    "test:reminders": "node test-reminder-system.js",
+    "test": "node test-connection.js",
     "test:doctor": "node test-doctor-notification.js",
-    "test:sheets": "node test-google-sheets.js",
-    "test:all": "npm run test && npm run verify",
-    "postinstall": "echo '✅ Dependencies installed successfully' && npm run verify:env",
-    "prestart": "echo '🚀 Starting production server...' && npm run verify:env",
-    "cron:auto-process": "node jobs/autoApproveReject.js",
-    "cron:reminders": "node jobs/sendReminders.js",
-    "cron:cleanup": "node jobs/cleanupSessions.js",
-    "cron:queue": "node jobs/processMessageQueue.js",
-    "cron:sheets": "node jobs/syncGoogleSheets.js",
-    "cron:analytics": "node jobs/generateAnalytics.js",
-    "cron:all": "npm run cron:auto-process && npm run cron:reminders && npm run cron:cleanup",
+    "cron:auto-process": "node autoApproval.js",
+    "cron:reminders": "node sendReminders.js",
     "setup": "node scripts/setupProduction.js",
-    "setup:clinic": "node scripts/setupClinic.js",
-    "setup:sheets": "node scripts/setupGoogleSheets.js",
-    "setup:complete": "npm run setup && npm run setup:sheets && npm run db:migrate",
     "status": "node scripts/checkStatus.js",
     "verify": "node scripts/verifySetup.js",
-    "verify:env": "node scripts/verifyEnv.js",
     "health": "node scripts/healthCheck.js",
-    "health:monitor": "node scripts/healthMonitor.js",
     "analytics": "node scripts/analytics.js",
-    "analytics:export": "node scripts/exportAnalytics.js",
-    "analytics:report": "node scripts/generateReport.js",
     "logs": "node scripts/viewLogs.js",
-    "logs:errors": "node scripts/viewErrorLogs.js",
-    "logs:clean": "node scripts/cleanLogs.js",
-    "db:init": "node scripts/initNeonDB.js",
-    "db:backup": "node scripts/backupNeonDB.js",
-    "db:restore": "node scripts/restoreNeonDB.js",
     "db:migrate": "node scripts/runMigration.js",
-    "db:migrate:up": "node scripts/migrateUp.js",
-    "db:migrate:down": "node scripts/migrateDown.js",
-    "db:reset": "node scripts/resetDatabase.js",
-    "db:seed": "node scripts/seedData.js",
-    "db:cleanup": "node scripts/cleanupDatabase.js",
-    "db:optimize": "node scripts/optimizeDatabase.js",
-    "db:stats": "node scripts/databaseStats.js",
-    "clinic:add": "node scripts/addClinic.js",
-    "clinic:update": "node scripts/updateClinic.js",
-    "clinic:list": "node scripts/listClinics.js",
-    "clinic:stats": "node scripts/clinicStats.js",
-    "doctor:test": "node scripts/testDoctorNotification.js",
-    "doctor:diagnose": "node scripts/diagnoseDoctorIssues.js",
-    "deploy": "npm run verify && npm run test && npm run db:backup && echo '✅ Ready for deployment'",
-    "deploy:prod": "npm run deploy && git push origin main",
-    "deploy:staging": "npm run deploy && git push origin staging",
-    "rollback": "node scripts/rollback.js",
-    "monitor": "node scripts/monitor.js",
-    "monitor:start": "pm2 start ecosystem.config.js",
-    "monitor:stop": "pm2 stop all",
-    "monitor:restart": "pm2 restart all",
-    "monitor:logs": "pm2 logs",
-    "security:audit": "npm audit && npm run security:check",
-    "security:check": "node scripts/securityCheck.js",
-    "security:fix": "npm audit fix",
-    "performance": "node scripts/performanceTest.js",
-    "performance:monitor": "node scripts/performanceMonitor.js",
-    "cache:clear": "node scripts/clearCache.js",
-    "cache:warm": "node scripts/warmCache.js",
-    "queue:process": "node scripts/processQueue.js",
-    "queue:clear": "node scripts/clearQueue.js",
-    "queue:status": "node scripts/queueStatus.js",
-    "notifications:test": "node scripts/testNotifications.js",
-    "notifications:send": "node scripts/sendNotification.js",
-    "reports:daily": "node scripts/generateDailyReport.js",
-    "reports:weekly": "node scripts/generateWeeklyReport.js",
-    "reports:monthly": "node scripts/generateMonthlyReport.js",
-    "clean": "rm -rf node_modules package-lock.json && npm install",
-    "clean:logs": "rm -rf logs/*.log",
-    "clean:backups": "node scripts/cleanOldBackups.js",
-    "clean:all": "npm run clean:logs && npm run clean:backups && npm run cache:clear",
-    "docs:generate": "node scripts/generateDocs.js",
-    "docs:serve": "node scripts/serveDocs.js",
     "lint": "eslint . --ext .js",
     "lint:fix": "eslint . --ext .js --fix",
     "format": "prettier --write '**/*.{js,json,md}'",
-    "format:check": "prettier --check '**/*.{js,json,md}'",
-    "upgrade": "npm-check-updates -u && npm install",
-    "upgrade:interactive": "npm-check-updates -i",
-    "benchmark": "node scripts/benchmark.js",
-    "stress-test": "node scripts/stressTest.js",
-    "load-test": "node scripts/loadTest.js"
+    "deploy": "git push origin main"
   },
   "keywords": [
     "whatsapp",
     "clinic",
     "appointment-booking",
-    "multi-tenant",
     "healthcare",
     "chatbot",
     "twilio",
@@ -105,42 +33,19 @@
     "postgresql",
     "google-sheets",
     "auto-approval",
-    "reminders",
-    "doctor-workflow",
-    "analytics",
-    "monitoring",
-    "serverless",
-    "production-ready",
-    "enterprise",
-    "scalable",
-    "india",
-    "kolkata"
+    "india"
   ],
   "author": {
     "name": "Sourav Roy",
     "email": "sourav@legacylens.com",
-    "company": "Legacylens Automation",
-    "url": "https://legacylens.com",
-    "location": "Kolkata, India"
+    "company": "Legacylens Automation"
   },
-  "contributors": [
-    {
-      "name": "Sourav Roy",
-      "email": "sourav@legacylens.com",
-      "role": "Lead Developer"
-    }
-  ],
   "license": "UNLICENSED",
   "private": true,
   "repository": {
     "type": "git",
     "url": "https://github.com/SOUROYAL123/clinis_database_bot-.git"
   },
-  "bugs": {
-    "url": "https://github.com/SOUROYAL123/clinis_database_bot-/issues",
-    "email": "sourav@legacylens.com"
-  },
-  "homepage": "https://github.com/SOUROYAL123/clinis_database_bot-#readme",
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=9.0.0"
@@ -172,7 +77,7 @@
     "winston-daily-rotate-file": "^5.0.0"
   },
   "devDependencies": {
-    "eslint": "^9.17.0",
+    "eslint": "^8.57.0",
     "eslint-config-airbnb-base": "^15.0.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-import": "^2.31.0",
@@ -182,9 +87,7 @@
     "prettier": "^3.4.2"
   },
   "optionalDependencies": {
-    "pm2": "^5.4.3",
-    "razorpay": "^2.9.4",
-    "stripe": "^17.4.0"
+    "pm2": "^5.4.3"
   },
   "nodemonConfig": {
     "watch": [
@@ -192,53 +95,18 @@
       "handlers/",
       "utils/",
       "config/",
-      "routes/",
       "jobs/",
-      "middleware/",
-      "services/"
+      "middleware/"
     ],
     "ext": "js,json",
     "ignore": [
       "node_modules/",
-      "backups/",
       "logs/",
-      "temp/",
-      "*.log",
-      "*.md"
+      "*.log"
     ],
     "delay": "1000",
-    "verbose": true,
     "env": {
       "NODE_ENV": "development"
     }
-  },
-  "config": {
-    "port": "3000",
-    "timezone": "Asia/Kolkata",
-    "maxConnections": "100",
-    "sessionTimeout": "3600",
-    "rateLimitWindow": "900000",
-    "rateLimitMax": "100",
-    "cacheExpiry": "3600",
-    "logRetentionDays": "30",
-    "backupRetentionDays": "90"
-  },
-  "pm2": {
-    "apps": [
-      {
-        "name": "clinic-bot",
-        "script": "bot.js",
-        "instances": "max",
-        "exec_mode": "cluster",
-        "watch": false,
-        "max_memory_restart": "500M",
-        "env": {
-          "NODE_ENV": "production"
-        },
-        "error_file": "logs/pm2-error.log",
-        "out_file": "logs/pm2-out.log",
-        "log_date_format": "YYYY-MM-DD HH:mm:ss Z"
-      }
-    ]
   }
 }

@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v4.0.2 - ULTIMATE PRODUCTION EDITION
+ * WHATSAPP CLINIC BOT v4.0.3 - ULTIMATE PRODUCTION EDITION
  * 
  * Enterprise-grade multi-clinic appointment booking system
  * 
@@ -8,7 +8,7 @@
  * ✅ Multi-clinic support
  * ✅ Auto-approval workflow  
  * ✅ Doctor commands (APPROVE/REJECT #ID)
- * ✅ Session management
+ * ✅ Session management with phone normalization
  * ✅ Google Sheets logging (optional)
  * ✅ Redis caching (optional)
  * ✅ 24-hour reminders
@@ -18,6 +18,11 @@
  * 
  * Author: Sourav Roy - Legacylens Automation
  * Deployed on: Render.com
+ * 
+ * v4.0.3 Changes:
+ * - Fixed phone number length issue (VARCHAR(20) -> VARCHAR(50))
+ * - Added phone normalization (removes whatsapp: prefix for storage)
+ * - Consistent phone handling throughout application
  * ═══════════════════════════════════════════════════════════
  */
 
@@ -90,6 +95,31 @@ const log = {
     }));
   }
 };
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PHONE NUMBER HELPERS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/**
+ * Normalize phone number - removes whatsapp: prefix for database storage
+ * @param {string} phone - Phone with or without whatsapp: prefix
+ * @returns {string} - Clean phone number (e.g., +918013610018)
+ */
+function normalizePhone(phone) {
+  if (!phone) return '';
+  return phone.replace('whatsapp:', '').trim();
+}
+
+/**
+ * Format phone for WhatsApp - adds whatsapp: prefix if needed
+ * @param {string} phone - Phone number
+ * @returns {string} - Phone with whatsapp: prefix (e.g., whatsapp:+918013610018)
+ */
+function formatForWhatsApp(phone) {
+  if (!phone) return '';
+  const clean = normalizePhone(phone);
+  return clean.startsWith('whatsapp:') ? clean : `whatsapp:${clean}`;
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // OPTIONAL DEPENDENCIES (Won't crash if missing)
@@ -219,10 +249,7 @@ async function delCache(key) {
 
 async function sendWhatsApp(to, message) {
   try {
-    let phone = to;
-    if (!phone.startsWith('whatsapp:')) {
-      phone = `whatsapp:${phone.replace(/[^0-9+]/g, '')}`;
-    }
+    const phone = formatForWhatsApp(to);
 
     const msg = await twilioClient.messages.create({
       from: process.env.WABA_NUMBER,
@@ -230,7 +257,7 @@ async function sendWhatsApp(to, message) {
       body: message
     });
 
-    log.info('WhatsApp sent', { to: phone, sid: msg.sid });
+    log.info('WhatsApp sent', { to: normalizePhone(phone), sid: msg.sid });
     return true;
   } catch (error) {
     log.error('WhatsApp send failed', error);
@@ -243,33 +270,34 @@ async function sendWhatsApp(to, message) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async function getSession(phone) {
-  const cached = await getCache(`session:${phone}`);
+  const cleanPhone = normalizePhone(phone);
+  const cached = await getCache(`session:${cleanPhone}`);
   if (cached) return cached;
 
   const session = await dbQuery(
-    sql`SELECT * FROM sessions WHERE user_phone = ${phone} LIMIT 1`
+    sql`SELECT * FROM sessions WHERE user_phone = ${cleanPhone} LIMIT 1`
   );
 
   if (session && session.length > 0) {
-    await setCache(`session:${phone}`, session[0], 1800);
+    await setCache(`session:${cleanPhone}`, session[0], 1800);
     return session[0];
   }
   return null;
 }
 
 async function setSession(phone, data) {
-  await delCache(`session:${phone}`);
+  const cleanPhone = normalizePhone(phone);
+  await delCache(`session:${cleanPhone}`);
   
   const sessionData = typeof data.session_data === 'string' 
     ? data.session_data 
     : JSON.stringify(data.session_data || {});
 
-  // FIXED: Removed language column to avoid database errors
   await dbQuery(
     sql`
       INSERT INTO sessions (user_phone, stage, clinic_id, session_data, last_activity)
       VALUES (
-        ${phone}, 
+        ${cleanPhone}, 
         ${data.stage || 'initial'}, 
         ${data.clinic_id || null},
         ${sessionData}::jsonb,
@@ -285,8 +313,9 @@ async function setSession(phone, data) {
 }
 
 async function clearSession(phone) {
-  await delCache(`session:${phone}`);
-  await dbQuery(sql`DELETE FROM sessions WHERE user_phone = ${phone}`);
+  const cleanPhone = normalizePhone(phone);
+  await delCache(`session:${cleanPhone}`);
+  await dbQuery(sql`DELETE FROM sessions WHERE user_phone = ${cleanPhone}`);
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -465,6 +494,7 @@ async function handleDate(phone, text) {
 }
 
 async function handleTime(phone, text) {
+  const cleanPhone = normalizePhone(phone);
   const session = await getSession(phone);
   let data = session?.session_data || {};
   
@@ -493,21 +523,21 @@ async function handleTime(phone, text) {
     : `${hour}:00 AM`;
 
   try {
-    // Create appointment
+    // Create appointment (use cleaned phone number)
     const appt = await sql`
       INSERT INTO appointments (
         clinic_id, patient_name, patient_phone,
         appointment_date, appointment_time, appointment_slot,
         status, reminder_sent, auto_processed
       ) VALUES (
-        ${session.clinic_id}, ${data.name}, ${phone},
+        ${session.clinic_id}, ${data.name}, ${cleanPhone},
         ${data.date}, ${timeSlot}, ${timeSlot},
         'pending', false, false
       ) RETURNING *
     `;
 
     const aptId = appt[0].id;
-    log.success('Appointment created', { id: aptId, patient: data.name });
+    log.success('Appointment created', { id: aptId, patient: data.name, phone: cleanPhone });
 
     // Log to Google Sheets (optional)
     try {
@@ -553,7 +583,7 @@ async function handleTime(phone, text) {
       `━━━━━━━━━━━━━━━━━━━━━\n\n` +
       `📋 *ID:* #${aptId}\n` +
       `👤 *Patient:* ${data.name}\n` +
-      `📞 *Phone:* ${phone}\n` +
+      `📞 *Phone:* ${cleanPhone}\n` +
       `📅 *Date:* ${dateDisplay}\n` +
       `⏰ *Time:* ${timeSlot}\n\n` +
       `━━━━━━━━━━━━━━━━━━━━━\n\n` +
@@ -575,15 +605,16 @@ async function handleTime(phone, text) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async function handleDoctorCommand(phone, text) {
+  const cleanPhone = normalizePhone(phone);
   const cmd = text.trim().toUpperCase();
 
   if (!cmd.startsWith('APPROVE') && !cmd.startsWith('REJECT')) {
     return false; // Not a doctor command
   }
 
-  // Check if sender is a doctor
+  // Check if sender is a doctor (use normalized phone)
   const clinic = await dbQuery(
-    sql`SELECT * FROM clinics WHERE doctor_whatsapp = ${phone} LIMIT 1`
+    sql`SELECT * FROM clinics WHERE doctor_whatsapp = ${cleanPhone} LIMIT 1`
   );
 
   if (!clinic || clinic.length === 0) {
@@ -746,7 +777,7 @@ async function handleMessage(phone, text) {
 app.get('/', (req, res) => {
   res.json({
     name: 'WhatsApp Clinic Bot',
-    version: '4.0.2',
+    version: '4.0.3',
     status: 'operational',
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString()
@@ -794,7 +825,7 @@ app.get('/status', async (req, res) => {
 
     res.json({
       status: 'operational',
-      version: '4.0.2',
+      version: '4.0.3',
       uptime: Math.floor(process.uptime()),
       stats: stats[0] || {}
     });
@@ -816,7 +847,7 @@ app.post('/webhook/whatsapp', async (req, res) => {
       return;
     }
 
-    log.info('Incoming message', { from: From });
+    log.info('Incoming message', { from: normalizePhone(From) });
     
     // Process message async
     setImmediate(() => handleMessage(From, Body));
@@ -875,7 +906,7 @@ app.use((err, req, res, next) => {
 
 async function startServer() {
   try {
-    log.info('Starting WhatsApp Clinic Bot v4.0.2...');
+    log.info('Starting WhatsApp Clinic Bot v4.0.3...');
     
     // Test database connection
     log.info('Testing database connection...');
@@ -899,7 +930,7 @@ async function startServer() {
     
     const server = app.listen(PORT, HOST, () => {
       console.log('═══════════════════════════════════════════════════════════');
-      console.log('🚀 WHATSAPP CLINIC BOT v4.0.2 - PRODUCTION READY');
+      console.log('🚀 WHATSAPP CLINIC BOT v4.0.3 - PRODUCTION READY');
       console.log('═══════════════════════════════════════════════════════════');
       console.log(`📡 Host:        ${HOST}`);
       console.log(`📡 Port:        ${PORT}`);
@@ -908,6 +939,7 @@ async function startServer() {
       console.log(`⚡ Cache:       ${cacheEnabled ? 'Enabled ✅' : 'Disabled ⚪'}`);
       console.log(`📊 Sheets:      ${GoogleSheetsLogger.logAppointment ? 'Enabled ✅' : 'Disabled ⚪'}`);
       console.log(`🔒 Proxy:       Trusted (Render.com compatible)`);
+      console.log(`📞 Phone:       Normalized storage (no whatsapp: prefix)`);
       console.log('═══════════════════════════════════════════════════════════');
       console.log('✅ SERVER IS LIVE AND ACCEPTING REQUESTS');
       console.log('═══════════════════════════════════════════════════════════');

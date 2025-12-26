@@ -1,31 +1,22 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v4.0.0 - ULTIMATE EDITION
+ * WHATSAPP CLINIC BOT v4.0.0 - PRODUCTION EDITION
  * 
- * Enterprise-grade multi-clinic appointment booking system
+ * Multi-clinic appointment booking system with auto-approval
  * 
  * Features:
  * - Multi-clinic support
  * - Auto-approval workflow
+ * - Doctor command handling (APPROVE/REJECT)
  * - 24-hour reminders
- * - Google Sheets logging
- * - Redis caching
- * - Winston logging
- * - Email notifications
- * - Helmet security
- * - Rate limiting
- * - Input validation
- * - Health monitoring
- * - Error tracking
+ * - Google Sheets logging (optional)
+ * - Redis caching (optional)
+ * - Session management
+ * - Comprehensive error handling
  * 
  * Author: Sourav Roy - Legacylens Automation
- * Version: 4.0.0
  * ═══════════════════════════════════════════════════════════
  */
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// IMPORTS
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 require('dotenv').config();
 const express = require('express');
@@ -36,14 +27,6 @@ const compression = require('compression');
 const cors = require('cors');
 const { neon } = require('@neondatabase/serverless');
 const twilio = require('twilio');
-const { createClient } = require('redis');
-const winston = require('winston');
-require('winston-daily-rotate-file');
-
-// Import custom modules (create these files)
-// const { logToGoogleSheets } = require('./utils/googleSheets');
-// const { sendReminders } = require('./utils/sendReminders');
-// const { sendEmail, sendAdminAlert } = require('./utils/email');
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // CONFIGURATION
@@ -51,7 +34,7 @@ require('winston-daily-rotate-file');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const NODE_ENV = process.env.NODE_ENV || 'development';
+const NODE_ENV = process.env.NODE_ENV || 'production';
 
 // Database
 const sql = neon(process.env.DATABASE_URL);
@@ -63,66 +46,66 @@ const twilioClient = twilio(
 );
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// WINSTON LOGGING SETUP
+// LOGGER SETUP
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: winston.format.combine(
-    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-    winston.format.errors({ stack: true }),
-    winston.format.splat(),
-    winston.format.json()
-  ),
-  defaultMeta: { service: 'clinic-bot' },
-  transports: [
-    new winston.transports.DailyRotateFile({
-      filename: 'logs/error-%DATE%.log',
-      datePattern: 'YYYY-MM-DD',
-      level: 'error',
-      maxFiles: '30d',
-      maxSize: '20m',
-    }),
-    new winston.transports.DailyRotateFile({
-      filename: 'logs/combined-%DATE%.log',
-      datePattern: 'YYYY-MM-DD',
-      maxFiles: '30d',
-      maxSize: '20m',
-    }),
-  ],
-});
-
-if (NODE_ENV !== 'production') {
-  logger.add(
-    new winston.transports.Console({
-      format: winston.format.combine(winston.format.colorize(), winston.format.simple()),
-    })
-  );
-}
+const logger = {
+  info: (msg, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.log(JSON.stringify({ timestamp, level: 'INFO', message: msg, ...data }));
+  },
+  success: (msg, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.log(JSON.stringify({ timestamp, level: 'SUCCESS', message: msg, ...data }));
+  },
+  warning: (msg, data = {}) => {
+    const timestamp = new Date().toISOString();
+    console.log(JSON.stringify({ timestamp, level: 'WARNING', message: msg, ...data }));
+  },
+  error: (msg, error = {}) => {
+    const timestamp = new Date().toISOString();
+    console.error(JSON.stringify({ 
+      timestamp, 
+      level: 'ERROR', 
+      message: msg, 
+      error: error.message || error,
+      stack: error.stack 
+    }));
+  }
+};
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// REDIS CACHE SETUP (Optional)
+// REDIS CACHE SETUP (OPTIONAL)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 let redisClient = null;
 let cacheEnabled = false;
+let createClient = null;
+
+// Try to load Redis (optional)
+try {
+  const redis = require('redis');
+  createClient = redis.createClient;
+} catch (err) {
+  logger.warning('Redis module not available - caching disabled');
+}
 
 async function initializeCache() {
-  if (!process.env.REDIS_URL) {
-    logger.warn('Redis not configured - caching disabled');
+  if (!createClient || !process.env.REDIS_URL) {
+    logger.warning('Redis not configured - caching disabled');
     return;
   }
 
   try {
     redisClient = createClient({ url: process.env.REDIS_URL });
-    redisClient.on('error', (err) => logger.error('Redis error:', err));
+    redisClient.on('error', (err) => logger.error('Redis error', err));
     redisClient.on('connect', () => {
       logger.info('Redis connected');
       cacheEnabled = true;
     });
     await redisClient.connect();
   } catch (error) {
-    logger.error('Redis initialization failed:', error);
+    logger.error('Redis initialization failed', error);
     cacheEnabled = false;
   }
 }
@@ -133,7 +116,7 @@ async function getCache(key) {
     const value = await redisClient.get(key);
     return value ? JSON.parse(value) : null;
   } catch (error) {
-    logger.error('Cache get error:', error);
+    logger.error('Cache get error', error);
     return null;
   }
 }
@@ -143,7 +126,7 @@ async function setCache(key, value, expirySeconds = 3600) {
   try {
     await redisClient.setEx(key, expirySeconds, JSON.stringify(value));
   } catch (error) {
-    logger.error('Cache set error:', error);
+    logger.error('Cache set error', error);
   }
 }
 
@@ -152,11 +135,29 @@ async function deleteCache(key) {
   try {
     await redisClient.del(key);
   } catch (error) {
-    logger.error('Cache delete error:', error);
+    logger.error('Cache delete error', error);
   }
 }
 
-initializeCache();
+// Initialize cache (async, non-blocking)
+initializeCache().catch(err => logger.error('Cache init failed', err));
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// GOOGLE SHEETS SETUP (OPTIONAL)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+let GoogleSheetsLogger = null;
+
+try {
+  GoogleSheetsLogger = require('./utils/googleSheetsLogger');
+  logger.info('Google Sheets logger loaded');
+} catch (err) {
+  logger.warning('Google Sheets not available - logging to DB only');
+  GoogleSheetsLogger = {
+    logAppointment: async () => false,
+    updateAppointmentStatus: async () => false
+  };
+}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // MIDDLEWARE
@@ -184,11 +185,11 @@ app.use((req, res, next) => {
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100,
   message: 'Too many requests',
 });
-app.use('/api/', limiter);
+app.use('/webhook/', limiter);
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // UTILITY FUNCTIONS
@@ -196,15 +197,22 @@ app.use('/api/', limiter);
 
 async function sendWhatsAppMessage(to, message) {
   try {
+    // Ensure proper WhatsApp format
+    let toNumber = to;
+    if (!toNumber.startsWith('whatsapp:')) {
+      toNumber = `whatsapp:${toNumber.replace(/[^0-9+]/g, '')}`;
+    }
+
     const result = await twilioClient.messages.create({
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: to,
+      from: process.env.WABA_NUMBER,
+      to: toNumber,
       body: message,
     });
-    logger.info('WhatsApp sent', { to, sid: result.sid });
+    
+    logger.info('WhatsApp sent', { to: toNumber, sid: result.sid });
     return { success: true, sid: result.sid };
   } catch (error) {
-    logger.error('WhatsApp failed', { to, error: error.message });
+    logger.error('WhatsApp failed', error);
     return { success: false, error: error.message };
   }
 }
@@ -214,35 +222,80 @@ async function getSession(phoneNumber) {
   const cached = await getCache(cacheKey);
   if (cached) return cached;
 
-  const session = await sql`
-    SELECT * FROM sessions 
-    WHERE phone_number = ${phoneNumber} 
-    AND expires_at > NOW()
-    ORDER BY created_at DESC 
-    LIMIT 1
-  `;
+  try {
+    const session = await sql`
+      SELECT * FROM sessions 
+      WHERE user_phone = ${phoneNumber}
+      ORDER BY last_activity DESC 
+      LIMIT 1
+    `;
 
-  if (session.length > 0) {
-    await setCache(cacheKey, session[0], 300);
-    return session[0];
+    if (session.length > 0) {
+      await setCache(cacheKey, session[0], 300);
+      return session[0];
+    }
+    return null;
+  } catch (error) {
+    logger.error('Get session error', error);
+    return null;
   }
-  return null;
 }
 
 async function updateSession(phoneNumber, updates) {
-  const result = await sql`
-    UPDATE sessions 
-    SET 
-      step = ${updates.step || null},
-      clinic_id = ${updates.clinic_id || null},
-      patient_name = ${updates.patient_name || null},
-      appointment_date = ${updates.appointment_date || null},
-      updated_at = NOW()
-    WHERE phone_number = ${phoneNumber}
-    RETURNING *
-  `;
-  await deleteCache(`session:${phoneNumber}`);
-  return result[0];
+  try {
+    // Build update query dynamically
+    const fields = [];
+    const values = [];
+    let paramIndex = 1;
+
+    if (updates.stage !== undefined) {
+      fields.push(`stage = $${paramIndex++}`);
+      values.push(updates.stage);
+    }
+    if (updates.clinic_id !== undefined) {
+      fields.push(`clinic_id = $${paramIndex++}`);
+      values.push(updates.clinic_id);
+    }
+    if (updates.session_data !== undefined) {
+      fields.push(`session_data = $${paramIndex++}`);
+      values.push(JSON.stringify(updates.session_data));
+    }
+    if (updates.language !== undefined) {
+      fields.push(`language = $${paramIndex++}`);
+      values.push(updates.language);
+    }
+
+    fields.push(`last_activity = NOW()`);
+    values.push(phoneNumber);
+
+    const query = `
+      UPDATE sessions 
+      SET ${fields.join(', ')}
+      WHERE user_phone = $${paramIndex}
+      RETURNING *
+    `;
+
+    const result = await sql.unsafe(query, values);
+    await deleteCache(`session:${phoneNumber}`);
+    
+    return result[0];
+  } catch (error) {
+    logger.error('Update session error', error);
+    return null;
+  }
+}
+
+async function ensureSession(phoneNumber) {
+  try {
+    await sql`
+      INSERT INTO sessions (user_phone, stage, last_activity)
+      VALUES (${phoneNumber}, 'initial', NOW())
+      ON CONFLICT (user_phone) 
+      DO UPDATE SET last_activity = NOW()
+    `;
+  } catch (error) {
+    logger.error('Ensure session error', error);
+  }
 }
 
 async function getActiveClinics() {
@@ -250,14 +303,19 @@ async function getActiveClinics() {
   const cached = await getCache(cacheKey);
   if (cached) return cached;
 
-  const clinics = await sql`
-    SELECT * FROM clinics 
-    WHERE status = 'active' 
-    ORDER BY id
-  `;
+  try {
+    const clinics = await sql`
+      SELECT * FROM clinics 
+      WHERE status = 'active' 
+      ORDER BY id
+    `;
 
-  await setCache(cacheKey, clinics, 3600);
-  return clinics;
+    await setCache(cacheKey, clinics, 3600);
+    return clinics;
+  } catch (error) {
+    logger.error('Get clinics error', error);
+    return [];
+  }
 }
 
 async function getClinicById(clinicId) {
@@ -265,17 +323,22 @@ async function getClinicById(clinicId) {
   const cached = await getCache(cacheKey);
   if (cached) return cached;
 
-  const clinic = await sql`
-    SELECT * FROM clinics 
-    WHERE id = ${clinicId} 
-    AND status = 'active'
-  `;
+  try {
+    const clinic = await sql`
+      SELECT * FROM clinics 
+      WHERE id = ${clinicId} 
+      AND status = 'active'
+    `;
 
-  if (clinic.length > 0) {
-    await setCache(cacheKey, clinic[0], 3600);
-    return clinic[0];
+    if (clinic.length > 0) {
+      await setCache(cacheKey, clinic[0], 3600);
+      return clinic[0];
+    }
+    return null;
+  } catch (error) {
+    logger.error('Get clinic error', error);
+    return null;
   }
-  return null;
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -292,24 +355,25 @@ async function handleGreeting(phoneNumber) {
     return;
   }
 
-  await sql`
-    INSERT INTO sessions (phone_number, step, expires_at)
-    VALUES (${phoneNumber}, 'select_clinic', NOW() + INTERVAL '1 hour')
-    ON CONFLICT (phone_number) 
-    DO UPDATE SET 
-      step = 'select_clinic',
-      expires_at = NOW() + INTERVAL '1 hour',
-      updated_at = NOW()
-  `;
+  await ensureSession(phoneNumber);
+  await updateSession(phoneNumber, { 
+    stage: 'select_clinic',
+    session_data: {}
+  });
 
-  let message = '👋 Welcome to Clinic Appointment System!\n\n';
+  let message = '👋 *Welcome to Clinic Appointment System!*\n\n';
   message += '📋 Select a clinic:\n\n';
 
   clinics.forEach((clinic, index) => {
-    message += `${index + 1}. ${clinic.name}\n`;
+    message += `${index + 1}. *${clinic.name}*\n`;
     message += `   👨‍⚕️ Dr. ${clinic.doctor_name}\n`;
-    message += `   ⏰ ${clinic.business_hours_start} - ${clinic.business_hours_end}\n\n`;
+    if (clinic.business_hours_start && clinic.business_hours_end) {
+      message += `   ⏰ ${clinic.business_hours_start} - ${clinic.business_hours_end}\n`;
+    }
+    message += `\n`;
   });
+
+  message += `Reply with number (1-${clinics.length})`;
 
   await sendWhatsAppMessage(phoneNumber, message);
 }
@@ -325,13 +389,13 @@ async function handleClinicSelection(phoneNumber, message) {
 
   const clinic = clinics[selection - 1];
   await updateSession(phoneNumber, {
-    step: 'enter_name',
+    stage: 'enter_name',
     clinic_id: clinic.id,
   });
 
   await sendWhatsAppMessage(
     phoneNumber,
-    `✅ Selected: ${clinic.name}\n\n👤 Enter your full name:`
+    `✅ Selected: *${clinic.name}*\n\n👤 What is your full name?`
   );
 }
 
@@ -343,9 +407,13 @@ async function handleNameEntry(phoneNumber, message) {
     return;
   }
 
+  const session = await getSession(phoneNumber);
+  const sessionData = session?.session_data || {};
+  sessionData.name = name;
+
   await updateSession(phoneNumber, {
-    step: 'select_date',
-    patient_name: name,
+    stage: 'select_date',
+    session_data: sessionData,
   });
 
   const dates = [];
@@ -355,10 +423,14 @@ async function handleNameEntry(phoneNumber, message) {
     dates.push(date.toISOString().split('T')[0]);
   }
 
-  let msg = `👤 Name: ${name}\n\n📅 Select date:\n\n`;
+  let msg = `👤 Name: *${name}*\n\n📅 Select date:\n\n`;
   dates.forEach((date, i) => {
     const d = new Date(date);
-    msg += `${i + 1}. ${d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}\n`;
+    msg += `${i + 1}. ${d.toLocaleDateString('en-IN', { 
+      weekday: 'short', 
+      month: 'short', 
+      day: 'numeric' 
+    })}\n`;
   });
 
   await sendWhatsAppMessage(phoneNumber, msg);
@@ -377,19 +449,24 @@ async function handleDateSelection(phoneNumber, message) {
   const appointmentDate = date.toISOString().split('T')[0];
 
   const session = await getSession(phoneNumber);
+  const sessionData = session?.session_data || {};
+  sessionData.date = appointmentDate;
+
   const clinic = await getClinicById(session.clinic_id);
 
   await updateSession(phoneNumber, {
-    step: 'select_time',
-    appointment_date: appointmentDate,
+    stage: 'select_time',
+    session_data: sessionData,
   });
 
-  const startHour = parseInt(clinic.business_hours_start.split(':')[0]);
-  const endHour = parseInt(clinic.business_hours_end.split(':')[0]);
+  const startHour = parseInt(clinic.business_hours_start?.split(':')[0] || '9');
+  const endHour = parseInt(clinic.business_hours_end?.split(':')[0] || '18');
 
-  let msg = `📅 ${date.toLocaleDateString()}\n\n⏰ Select time:\n\n`;
+  let msg = `📅 ${date.toLocaleDateString('en-IN')}\n\n⏰ Select time:\n\n`;
   for (let hour = startHour; hour < endHour; hour++) {
-    const time = hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`;
+    const time = hour >= 12 
+      ? `${hour === 12 ? 12 : hour - 12}:00 PM` 
+      : `${hour}:00 AM`;
     msg += `${hour - startHour + 1}. ${time}\n`;
   }
 
@@ -398,11 +475,12 @@ async function handleDateSelection(phoneNumber, message) {
 
 async function handleTimeSelection(phoneNumber, message) {
   const session = await getSession(phoneNumber);
+  const sessionData = session?.session_data || {};
   const clinic = await getClinicById(session.clinic_id);
 
   const selection = parseInt(message.trim());
-  const startHour = parseInt(clinic.business_hours_start.split(':')[0]);
-  const endHour = parseInt(clinic.business_hours_end.split(':')[0]);
+  const startHour = parseInt(clinic.business_hours_start?.split(':')[0] || '9');
+  const endHour = parseInt(clinic.business_hours_end?.split(':')[0] || '18');
   const totalSlots = endHour - startHour;
 
   if (isNaN(selection) || selection < 1 || selection > totalSlots) {
@@ -411,55 +489,71 @@ async function handleTimeSelection(phoneNumber, message) {
   }
 
   const hour = startHour + selection - 1;
-  const time = hour > 12 ? `${hour - 12}:00 PM` : `${hour}:00 AM`;
+  const time = hour >= 12 
+    ? `${hour === 12 ? 12 : hour - 12}:00 PM` 
+    : `${hour}:00 AM`;
 
   try {
     const appt = await sql`
       INSERT INTO appointments (
         clinic_id, patient_name, patient_phone,
         appointment_date, appointment_time, appointment_slot,
-        status, reminder_sent
+        status, reminder_sent, auto_processed
       ) VALUES (
-        ${session.clinic_id}, ${session.patient_name}, ${phoneNumber},
-        ${session.appointment_date}, ${time}, ${time},
-        'pending', false
+        ${session.clinic_id}, ${sessionData.name}, ${phoneNumber},
+        ${sessionData.date}, ${time}, ${time},
+        'pending', false, false
       ) RETURNING *
     `;
 
     logger.info('Appointment created', { id: appt[0].id });
 
+    // Log to Google Sheets (optional)
+    if (clinic.google_sheet_id) {
+      await GoogleSheetsLogger.logAppointment(clinic.google_sheet_id, {
+        ...appt[0],
+        clinic_name: clinic.name,
+        doctor_name: clinic.doctor_name,
+      }).catch(err => logger.warning('Sheets log failed', err));
+    }
+
     // Patient confirmation
     await sendWhatsAppMessage(
       phoneNumber,
-      `✅ Appointment Requested!\n\n` +
-        `📋 ID: #${appt[0].id}\n` +
-        `👤 ${session.patient_name}\n` +
+      `✅ *Appointment Requested!*\n\n` +
+        `📋 Booking ID: #${appt[0].id}\n` +
+        `👤 ${sessionData.name}\n` +
         `🏥 ${clinic.name}\n` +
-        `📅 ${new Date(session.appointment_date).toLocaleDateString()}\n` +
+        `📅 ${new Date(sessionData.date).toLocaleDateString('en-IN')}\n` +
         `⏰ ${time}\n\n` +
         `⏳ Pending doctor approval\n` +
         `You'll be notified once confirmed.`
     );
 
     // Doctor notification
+    const autoInfo = clinic.auto_approve 
+      ? `\n⚠️ Will auto-approve in ${clinic.auto_approve_after_hours}h if no response`
+      : '';
+      
     await sendWhatsAppMessage(
       clinic.doctor_whatsapp,
-      `📅 New Appointment\n\n` +
-        `#${appt[0].id}\n` +
-        `👤 ${session.patient_name}\n` +
-        `📞 ${phoneNumber}\n` +
-        `📅 ${new Date(session.appointment_date).toLocaleDateString()}\n` +
-        `⏰ ${time}\n\n` +
-        `Reply:\n` +
-        `✅ APPROVE\n` +
-        `❌ REJECT`
+      `🔔 *New Appointment Request*\n\n` +
+        `📋 ID: #${appt[0].id}\n` +
+        `👤 Patient: ${sessionData.name}\n` +
+        `📞 Phone: ${phoneNumber}\n` +
+        `📅 Date: ${new Date(sessionData.date).toLocaleDateString('en-IN')}\n` +
+        `🕒 Time: ${time}\n\n` +
+        `━━━━━━━━━━━━━━━━━━━━━\n\n` +
+        `To approve: *APPROVE #${appt[0].id}*\n` +
+        `To reject: *REJECT #${appt[0].id}*${autoInfo}`
     );
 
-    // Cleanup
-    await sql`DELETE FROM sessions WHERE phone_number = ${phoneNumber}`;
+    // Cleanup session
+    await sql`DELETE FROM sessions WHERE user_phone = ${phoneNumber}`;
     await deleteCache(`session:${phoneNumber}`);
+    
   } catch (error) {
-    logger.error('Appointment creation failed:', error);
+    logger.error('Appointment creation failed', error);
     await sendWhatsAppMessage(phoneNumber, '❌ Error creating appointment. Try again.');
   }
 }
@@ -467,62 +561,114 @@ async function handleTimeSelection(phoneNumber, message) {
 async function handleDoctorResponse(phoneNumber, message) {
   const normalized = message.trim().toUpperCase();
 
-  const clinic = await sql`
-    SELECT * FROM clinics 
-    WHERE doctor_whatsapp = ${phoneNumber} 
-    LIMIT 1
-  `;
-
-  if (clinic.length === 0) return;
-
-  const appts = await sql`
-    SELECT * FROM appointments 
-    WHERE clinic_id = ${clinic[0].id} 
-    AND status = 'pending'
-    ORDER BY created_at DESC 
-    LIMIT 1
-  `;
-
-  if (appts.length === 0) {
-    await sendWhatsAppMessage(phoneNumber, '❌ No pending appointments');
-    return;
+  // Check if it's a doctor command
+  if (!normalized.startsWith('APPROVE') && !normalized.startsWith('REJECT')) {
+    return false;
   }
 
-  const appt = appts[0];
-
-  if (normalized === 'APPROVE' || normalized === '✅') {
-    await sql`
-      UPDATE appointments 
-      SET status = 'confirmed', approved_at = NOW()
-      WHERE id = ${appt.id}
+  try {
+    const clinic = await sql`
+      SELECT * FROM clinics 
+      WHERE doctor_whatsapp = ${phoneNumber} 
+      LIMIT 1
     `;
 
-    await sendWhatsAppMessage(
-      appt.patient_phone,
-      `✅ Appointment Confirmed!\n\n` +
-        `#${appt.id}\n` +
+    if (clinic.length === 0) return false;
+
+    // Extract appointment ID
+    const match = normalized.match(/#?(\d+)/);
+    if (!match) {
+      await sendWhatsAppMessage(phoneNumber, '❌ Use: APPROVE #<id> or REJECT #<id>');
+      return true;
+    }
+
+    const appointmentId = parseInt(match[1]);
+    const isApprove = normalized.startsWith('APPROVE');
+    const newStatus = isApprove ? 'confirmed' : 'rejected';
+    const timestamp = new Date();
+
+    const appts = await sql`
+      SELECT * FROM appointments 
+      WHERE id = ${appointmentId}
+      AND clinic_id = ${clinic[0].id}
+      AND status = 'pending'
+    `;
+
+    if (appts.length === 0) {
+      await sendWhatsAppMessage(phoneNumber, `❌ Appointment #${appointmentId} not found or already processed`);
+      return true;
+    }
+
+    const appt = appts[0];
+
+    // Update appointment
+    if (isApprove) {
+      await sql`
+        UPDATE appointments 
+        SET 
+          status = 'confirmed',
+          approved_at = ${timestamp},
+          updated_at = NOW()
+        WHERE id = ${appointmentId}
+      `;
+    } else {
+      await sql`
+        UPDATE appointments 
+        SET 
+          status = 'rejected',
+          rejected_at = ${timestamp},
+          updated_at = NOW()
+        WHERE id = ${appointmentId}
+      `;
+    }
+
+    // Update Google Sheets
+    if (clinic[0].google_sheet_id) {
+      await GoogleSheetsLogger.updateAppointmentStatus(
+        clinic[0].google_sheet_id,
+        appointmentId,
+        newStatus,
+        timestamp.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })
+      ).catch(err => logger.warning('Sheets update failed', err));
+    }
+
+    const formattedDate = new Date(appt.appointment_date).toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric',
+      timeZone: 'Asia/Kolkata'
+    });
+
+    // Notify patient
+    const patientMessage = isApprove
+      ? `✅ *Appointment Confirmed!*\n\n` +
+        `📋 Booking #${appointmentId}\n` +
         `🏥 ${clinic[0].name}\n` +
-        `📅 ${new Date(appt.appointment_date).toLocaleDateString()}\n` +
-        `⏰ ${appt.appointment_time}\n\n` +
+        `📅 ${formattedDate}\n` +
+        `🕒 ${appt.appointment_time}\n\n` +
+        `Please arrive 10 minutes early.\n\n` +
         `See you soon! 😊`
-    );
+      : `❌ *Appointment Not Available*\n\n` +
+        `📋 Booking #${appointmentId}\n\n` +
+        `Your appointment request could not be confirmed.\n` +
+        `Please contact the clinic directly or try another time slot.\n\n` +
+        `Reply "1" to book again.`;
 
-    await sendWhatsAppMessage(phoneNumber, `✅ Appointment #${appt.id} APPROVED`);
-  } else if (normalized === 'REJECT' || normalized === '❌') {
-    await sql`
-      UPDATE appointments 
-      SET status = 'rejected', rejected_at = NOW()
-      WHERE id = ${appt.id}
-    `;
+    await sendWhatsAppMessage(appt.patient_phone, patientMessage);
 
+    // Confirm to doctor
     await sendWhatsAppMessage(
-      appt.patient_phone,
-      `❌ Appointment Not Available\n\n` +
-        `#${appt.id}\n\n` +
-        `Please call us to reschedule.`
+      phoneNumber, 
+      `✅ Appointment #${appointmentId} ${newStatus.toUpperCase()}`
     );
 
-    await sendWhatsAppMessage(phoneNumber, `❌ Appointment #${appt.id} REJECTED`);
+    logger.success(`Doctor ${newStatus} appointment #${appointmentId}`);
+    return true;
+
+  } catch (error) {
+    logger.error('Doctor response error', error);
+    await sendWhatsAppMessage(phoneNumber, '❌ Error processing command. Try again.');
+    return true;
   }
 }
 
@@ -543,7 +689,10 @@ app.get('/health', async (req, res) => {
   const health = {
     status: 'healthy',
     uptime: process.uptime(),
-    checks: { database: 'unknown', cache: cacheEnabled ? 'enabled' : 'disabled' },
+    checks: { 
+      database: 'unknown', 
+      cache: cacheEnabled ? 'enabled' : 'disabled' 
+    },
   };
 
   try {
@@ -559,9 +708,9 @@ app.get('/health', async (req, res) => {
 
 app.get('/status', async (req, res) => {
   try {
-    const [clinics] = await sql`SELECT COUNT(*) FROM clinics WHERE status = 'active'`;
-    const [today] = await sql`SELECT COUNT(*) FROM appointments WHERE DATE(created_at) = CURRENT_DATE`;
-    const [pending] = await sql`SELECT COUNT(*) FROM appointments WHERE status = 'pending'`;
+    const [clinics] = await sql`SELECT COUNT(*) as count FROM clinics WHERE status = 'active'`;
+    const [today] = await sql`SELECT COUNT(*) as count FROM appointments WHERE DATE(created_at) = CURRENT_DATE`;
+    const [pending] = await sql`SELECT COUNT(*) as count FROM appointments WHERE status = 'pending'`;
 
     res.json({
       status: 'operational',
@@ -582,127 +731,74 @@ app.get('/status', async (req, res) => {
 app.post('/webhook/whatsapp', async (req, res) => {
   try {
     const { From: from, Body: body } = req.body;
-    logger.info('Message', { from, body });
+    logger.info('Message received', { from, body });
+    
+    // Always respond 200 immediately
     res.status(200).send('OK');
 
+    // Process message asynchronously
     const session = await getSession(from);
 
     // Check if doctor
-    const doctor = await sql`
-      SELECT * FROM clinics 
-      WHERE doctor_whatsapp = ${from} 
-      LIMIT 1
-    `;
-
-    if (doctor.length > 0) {
-      await handleDoctorResponse(from, body);
-      return;
-    }
+    const isDoctorCommand = await handleDoctorResponse(from, body);
+    if (isDoctorCommand) return;
 
     // Handle patient flow
-    if (!session || body.toLowerCase().trim() === 'hi') {
+    const normalizedMessage = body.toLowerCase().trim();
+    
+    if (!session || normalizedMessage === 'hi' || normalizedMessage === '1') {
       await handleGreeting(from);
-    } else if (session.step === 'select_clinic') {
+    } else if (session.stage === 'select_clinic') {
       await handleClinicSelection(from, body);
-    } else if (session.step === 'enter_name') {
+    } else if (session.stage === 'enter_name') {
       await handleNameEntry(from, body);
-    } else if (session.step === 'select_date') {
+    } else if (session.stage === 'select_date') {
       await handleDateSelection(from, body);
-    } else if (session.step === 'select_time') {
+    } else if (session.stage === 'select_time') {
       await handleTimeSelection(from, body);
     } else {
       await handleGreeting(from);
     }
+    
   } catch (error) {
-    logger.error('Webhook error:', error);
-    res.status(200).send('OK');
+    logger.error('Webhook error', error);
+    // Already responded with 200
   }
 });
 
-app.post('/cron/auto-process', async (req, res) => {
-  const secret = req.headers['x-cron-secret'] || req.query.secret;
-  if (secret !== process.env.CRON_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// CRON ENDPOINTS
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+app.post('/cron/auto-approval', async (req, res) => {
   try {
-    const appts = await sql`
-      SELECT a.*, c.name, c.doctor_name, c.auto_action, c.auto_approve_after_hours
-      FROM appointments a
-      JOIN clinics c ON a.clinic_id = c.id
-      WHERE a.status = 'pending'
-        AND c.auto_approve = true
-        AND a.created_at <= NOW() - (c.auto_approve_after_hours * INTERVAL '1 hour')
-    `;
-
-    let processed = 0;
-    for (const appt of appts) {
-      const action = appt.auto_action || 'approve';
-      const status = action === 'reject' ? 'rejected' : 'confirmed';
-
-      await sql`
-        UPDATE appointments 
-        SET status = ${status}, auto_processed = true, auto_processed_at = NOW()
-        WHERE id = ${appt.id}
-      `;
-
-      if (action === 'approve') {
-        await sendWhatsAppMessage(appt.patient_phone, `✅ Auto-Confirmed! #${appt.id}`);
-      } else {
-        await sendWhatsAppMessage(appt.patient_phone, `❌ Not confirmed #${appt.id}`);
-      }
-
-      processed++;
-    }
-
-    res.json({ processed, total: appts.length });
+    logger.info('Auto-approval cron triggered');
+    
+    const { processAutoApprovals } = require('./autoApproval');
+    const result = await processAutoApprovals();
+    
+    logger.success('Auto-approval cron completed', result);
+    res.json({ success: true, ...result });
+    
   } catch (error) {
-    logger.error('Auto-process error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error('Auto-approval cron failed', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
 app.post('/cron/send-reminders', async (req, res) => {
-  const secret = req.headers['x-cron-secret'] || req.query.secret;
-  if (secret !== process.env.CRON_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
   try {
-    const appts = await sql`
-      SELECT a.*, c.name as clinic_name, c.doctor_name
-      FROM appointments a
-      JOIN clinics c ON a.clinic_id = c.id
-      WHERE a.status = 'confirmed'
-        AND a.reminder_sent = false
-        AND a.appointment_date BETWEEN NOW() + INTERVAL '22 hours' AND NOW() + INTERVAL '26 hours'
-    `;
-
-    let sent = 0;
-    for (const appt of appts) {
-      await sendWhatsAppMessage(
-        appt.patient_phone,
-        `🔔 Reminder\n\n` +
-          `Appointment tomorrow!\n` +
-          `#${appt.id}\n` +
-          `🏥 ${appt.clinic_name}\n` +
-          `📅 ${new Date(appt.appointment_date).toLocaleDateString()}\n` +
-          `⏰ ${appt.appointment_time}`
-      );
-
-      await sql`
-        UPDATE appointments 
-        SET reminder_sent = true, reminder_sent_at = NOW()
-        WHERE id = ${appt.id}
-      `;
-
-      sent++;
-    }
-
-    res.json({ sent, total: appts.length });
+    logger.info('Reminder cron triggered');
+    
+    const { sendReminders } = require('./sendReminders');
+    const result = await sendReminders();
+    
+    logger.success('Reminder cron completed', result);
+    res.json({ success: true, ...result });
+    
   } catch (error) {
-    logger.error('Reminders error:', error);
-    res.status(500).json({ error: error.message });
+    logger.error('Reminder cron failed', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -715,7 +811,7 @@ app.use((req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  logger.error('Error:', err);
+  logger.error('Unhandled error', err);
   res.status(500).json({ error: 'Internal Server Error' });
 });
 
@@ -725,9 +821,11 @@ app.use((err, req, res, next) => {
 
 async function startServer() {
   try {
+    // Test database
     await sql`SELECT NOW()`;
     logger.info('✅ Database connected');
 
+    // Start server
     app.listen(PORT, () => {
       logger.info('═══════════════════════════════════════');
       logger.info(`🚀 Clinic Bot v4.0.0 ULTIMATE`);
@@ -737,15 +835,23 @@ async function startServer() {
       logger.info('═══════════════════════════════════════');
     });
   } catch (error) {
-    logger.error('Startup failed:', error);
+    logger.error('Startup failed', error);
     process.exit(1);
   }
 }
 
 process.on('SIGTERM', async () => {
-  logger.info('Shutting down...');
-  if (redisClient) await redisClient.quit();
+  logger.info('Shutting down gracefully...');
+  if (redisClient) await redisClient.quit().catch(() => {});
   process.exit(0);
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught exception', error);
+});
+
+process.on('unhandledRejection', (error) => {
+  logger.error('Unhandled rejection', error);
 });
 
 startServer();

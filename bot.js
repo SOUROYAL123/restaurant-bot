@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v4.0.1 - ULTIMATE PRODUCTION EDITION
+ * WHATSAPP CLINIC BOT v4.0.2 - ULTIMATE PRODUCTION EDITION
  * 
  * Enterprise-grade multi-clinic appointment booking system
  * 
@@ -150,7 +150,7 @@ app.use(bodyParser.urlencoded({ extended: true, limit: '1mb' }));
 app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
-    if (req.path !== '/health') { // Don't log health checks
+    if (req.path !== '/health' && req.path !== '/ping') { // Don't log health/ping checks
       log.info('HTTP', {
         method: req.method,
         path: req.path,
@@ -264,22 +264,21 @@ async function setSession(phone, data) {
     ? data.session_data 
     : JSON.stringify(data.session_data || {});
 
+  // FIXED: Removed language column to avoid database errors
   await dbQuery(
     sql`
-      INSERT INTO sessions (user_phone, stage, clinic_id, session_data, language, last_activity)
+      INSERT INTO sessions (user_phone, stage, clinic_id, session_data, last_activity)
       VALUES (
         ${phone}, 
         ${data.stage || 'initial'}, 
         ${data.clinic_id || null},
         ${sessionData}::jsonb,
-        ${data.language || 'en'},
         NOW()
       )
       ON CONFLICT (user_phone) DO UPDATE SET
         stage = EXCLUDED.stage,
         clinic_id = EXCLUDED.clinic_id,
         session_data = EXCLUDED.session_data,
-        language = EXCLUDED.language,
         last_activity = NOW()
     `
   );
@@ -747,7 +746,7 @@ async function handleMessage(phone, text) {
 app.get('/', (req, res) => {
   res.json({
     name: 'WhatsApp Clinic Bot',
-    version: '4.0.1',
+    version: '4.0.2',
     status: 'operational',
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString()
@@ -774,6 +773,15 @@ app.get('/health', async (req, res) => {
   res.status(health.status === 'healthy' ? 200 : 503).json(health);
 });
 
+// Ping endpoint (for monitoring)
+app.head('/ping', (req, res) => {
+  res.status(200).send();
+});
+
+app.get('/ping', (req, res) => {
+  res.status(200).json({ pong: true, uptime: Math.floor(process.uptime()) });
+});
+
 // Status
 app.get('/status', async (req, res) => {
   try {
@@ -786,7 +794,7 @@ app.get('/status', async (req, res) => {
 
     res.json({
       status: 'operational',
-      version: '4.0.1',
+      version: '4.0.2',
       uptime: Math.floor(process.uptime()),
       stats: stats[0] || {}
     });
@@ -867,7 +875,7 @@ app.use((err, req, res, next) => {
 
 async function startServer() {
   try {
-    log.info('Starting WhatsApp Clinic Bot v4.0.1...');
+    log.info('Starting WhatsApp Clinic Bot v4.0.2...');
     
     // Test database connection
     log.info('Testing database connection...');
@@ -891,7 +899,7 @@ async function startServer() {
     
     const server = app.listen(PORT, HOST, () => {
       console.log('═══════════════════════════════════════════════════════════');
-      console.log('🚀 WHATSAPP CLINIC BOT v4.0.1 - PRODUCTION READY');
+      console.log('🚀 WHATSAPP CLINIC BOT v4.0.2 - PRODUCTION READY');
       console.log('═══════════════════════════════════════════════════════════');
       console.log(`📡 Host:        ${HOST}`);
       console.log(`📡 Port:        ${PORT}`);

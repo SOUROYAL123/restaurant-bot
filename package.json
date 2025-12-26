@@ -1,26 +1,12 @@
 {
   "name": "whatsapp-clinic-bot-ultimate",
   "version": "4.0.0",
-  "description": "Production WhatsApp multi-clinic bot with auto-approval, reminders, and Google Sheets integration",
+  "description": "Production WhatsApp multi-clinic bot with auto-approval and reminders",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
     "dev": "nodemon bot.js",
-    "test": "node test-connection.js",
-    "test:doctor": "node test-doctor-notification.js",
-    "cron:auto-process": "node autoApproval.js",
-    "cron:reminders": "node sendReminders.js",
-    "setup": "node scripts/setupProduction.js",
-    "status": "node scripts/checkStatus.js",
-    "verify": "node scripts/verifySetup.js",
-    "health": "node scripts/healthCheck.js",
-    "analytics": "node scripts/analytics.js",
-    "logs": "node scripts/viewLogs.js",
-    "db:migrate": "node scripts/runMigration.js",
-    "lint": "eslint . --ext .js",
-    "lint:fix": "eslint . --ext .js --fix",
-    "format": "prettier --write '**/*.{js,json,md}'",
-    "deploy": "git push origin main"
+    "test": "node test-connection.js"
   },
   "keywords": [
     "whatsapp",
@@ -30,10 +16,7 @@
     "chatbot",
     "twilio",
     "neon",
-    "postgresql",
-    "google-sheets",
-    "auto-approval",
-    "india"
+    "postgresql"
   ],
   "author": {
     "name": "Sourav Roy",
@@ -51,62 +34,22 @@
     "npm": ">=9.0.0"
   },
   "dependencies": {
-    "@neondatabase/serverless": "^0.10.6",
-    "axios": "^1.7.9",
+    "@neondatabase/serverless": "^0.9.5",
     "body-parser": "^1.20.3",
     "compression": "^1.7.4",
     "cors": "^2.8.5",
-    "cron": "^3.1.7",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "express-async-errors": "^3.1.1",
     "express-rate-limit": "^7.4.2",
-    "express-validator": "^7.2.0",
     "google-auth-library": "^9.15.1",
     "google-spreadsheet": "^4.1.5",
-    "googleapis": "^140.0.1",
+    "googleapis": "^144.0.0",
     "helmet": "^8.0.0",
-    "joi": "^17.13.3",
-    "morgan": "^1.10.0",
-    "node-cache": "^5.1.2",
-    "nodemailer": "^6.9.16",
-    "redis": "^4.7.0",
     "twilio": "^5.3.7",
-    "uuid": "^11.0.3",
     "winston": "^3.17.0",
     "winston-daily-rotate-file": "^5.0.0"
   },
   "devDependencies": {
-    "eslint": "^8.57.0",
-    "eslint-config-airbnb-base": "^15.0.0",
-    "eslint-config-prettier": "^9.1.0",
-    "eslint-plugin-import": "^2.31.0",
-    "eslint-plugin-node": "^11.1.0",
-    "nodemon": "^3.1.9",
-    "npm-check-updates": "^17.1.12",
-    "prettier": "^3.4.2"
-  },
-  "optionalDependencies": {
-    "pm2": "^5.4.3"
-  },
-  "nodemonConfig": {
-    "watch": [
-      "bot.js",
-      "handlers/",
-      "utils/",
-      "config/",
-      "jobs/",
-      "middleware/"
-    ],
-    "ext": "js,json",
-    "ignore": [
-      "node_modules/",
-      "logs/",
-      "*.log"
-    ],
-    "delay": "1000",
-    "env": {
-      "NODE_ENV": "development"
-    }
+    "nodemon": "^3.1.9"
   }
 }

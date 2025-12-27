@@ -1,32 +1,23 @@
 {
   "name": "whatsapp-clinic-bot-ultimate",
   "version": "5.0.0",
-  "description": "WhatsApp clinic appointment bot with Razorpay payment integration and smart reminders",
+  "description": "WhatsApp clinic appointment bot with Razorpay payment integration",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "dev": "nodemon bot.js",
-    "reminders": "node sendReminders.js",
-    "auto-approval": "node autoApproval.js"
+    "dev": "nodemon bot.js"
   },
   "keywords": [
     "whatsapp",
     "clinic",
     "appointment",
-    "booking",
     "bot",
-    "razorpay",
-    "payment",
-    "automation"
+    "razorpay"
   ],
   "author": "Sourav Roy - Legacylens Automation",
   "license": "ISC",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/SOUROYAL123/clinis_database_bot-"
-  },
   "dependencies": {
-    "@neondatabase/serverless": "^0.10.5",
+    "@neondatabase/serverless": "^0.9.5",
     "body-parser": "^1.20.3",
     "compression": "^1.7.4",
     "cors": "^2.8.5",
@@ -36,14 +27,12 @@
     "googleapis": "^144.0.0",
     "helmet": "^8.0.0",
     "razorpay": "^2.9.4",
-    "redis": "^4.7.0",
     "twilio": "^5.3.5"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=9.0.0"
+    "node": ">=18.0.0"
   }
 }

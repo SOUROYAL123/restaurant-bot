@@ -2,9 +2,9 @@
   "name": "whatsapp-clinic-bot-production",
   "version": "6.0.0",
   "description": "Production-ready WhatsApp clinic appointment bot with enhanced security",
-  "main": "bot-secure.js",
+  "main": "bot.js",
   "scripts": {
-    "start": "node bot-secure.js",
+    "start": "node bot.js",
     "dev": "NODE_ENV=development nodemon bot-secure.js",
     "validate": "node config/validateEnv.js",
     "test:security": "node test-security.js",

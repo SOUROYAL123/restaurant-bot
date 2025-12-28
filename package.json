@@ -1,30 +1,40 @@
 {
-  "name": "whatsapp-clinic-bot-ultimate",
-  "version": "5.0.0",
-  "description": "WhatsApp clinic appointment bot with Razorpay payment integration",
-  "main": "bot.js",
+  "name": "whatsapp-clinic-bot-production",
+  "version": "6.0.0",
+  "description": "Production-ready WhatsApp clinic appointment bot with enhanced security",
+  "main": "bot-secure.js",
   "scripts": {
-    "start": "node bot.js",
-    "dev": "nodemon bot.js"
+    "start": "node bot-secure.js",
+    "dev": "NODE_ENV=development nodemon bot-secure.js",
+    "validate": "node config/validateEnv.js",
+    "test:security": "node test-security.js",
+    "db:migrate": "node scripts/runMigration.js",
+    "db:backup": "node scripts/database/backupNeonDB.js",
+    "health": "curl http://localhost:10000/health",
+    "logs": "pm2 logs",
+    "monitor": "pm2 monit"
   },
   "keywords": [
     "whatsapp",
     "clinic",
     "appointment",
     "bot",
-    "razorpay"
+    "razorpay",
+    "production",
+    "secure"
   ],
   "author": "Sourav Roy - Legacylens Automation",
   "license": "ISC",
   "dependencies": {
     "@neondatabase/serverless": "^0.9.5",
     "body-parser": "^1.20.3",
+    "chalk": "^4.1.2",
     "compression": "^1.7.4",
     "cors": "^2.8.5",
+    "crypto": "^1.0.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
-    "googleapis": "^144.0.0",
     "helmet": "^8.0.0",
     "razorpay": "^2.9.4",
     "twilio": "^5.3.5"
@@ -33,6 +43,14 @@
     "nodemon": "^3.1.9"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SOUROYAL123/clinis_database_bot-.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SOUROYAL123/clinis_database_bot-/issues"
   }
 }

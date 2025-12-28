@@ -1097,6 +1097,348 @@ app.post('/webhook/whatsapp',
 );
 
 // ═══════════════════════════════════════════════════════════
+// 18. GOOGLE SHEETS INTEGRATION - PER CLINIC
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Middleware for Google Sheets API authentication
+ * Each clinic has their own API key stored in the database
+ */
+const requireSheetsApiKey = async (req, res, next) => {
+    try {
+        const apiKey = req.headers['x-api-key'] || req.query.apiKey;
+        const clinicId = req.params.clinicId || req.query.clinicId;
+        
+        if (!apiKey) {
+            return res.status(401).json({ error: 'API key required' });
+        }
+        
+        if (!clinicId) {
+            return res.status(400).json({ error: 'Clinic ID required' });
+        }
+        
+        // Verify API key matches clinic
+        const clinic = await dbQuery(sql`
+            SELECT * FROM clinics 
+            WHERE id = ${parseInt(clinicId)} 
+            AND sheets_api_key = ${apiKey}
+            LIMIT 1
+        `);
+        
+        if (!clinic || clinic.length === 0) {
+            return res.status(401).json({ error: 'Invalid API key for this clinic' });
+        }
+        
+        req.clinic = clinic[0];
+        next();
+        
+    } catch (error) {
+        log.error('Sheets API auth error', error);
+        res.status(500).json({ error: 'Authentication failed' });
+    }
+};
+
+/**
+ * GET /api/sheets/:clinicId/appointments
+ * Get all appointments for a specific clinic
+ */
+app.get('/api/sheets/:clinicId/appointments', requireSheetsApiKey, async (req, res) => {
+    try {
+        const clinicId = parseInt(req.params.clinicId);
+        const { status, startDate, endDate, limit } = req.query;
+        
+        let conditions = [sql`a.clinic_id = ${clinicId}`];
+        
+        if (status) {
+            conditions.push(sql`a.status = ${status}`);
+        }
+        
+        if (startDate) {
+            conditions.push(sql`a.appointment_date >= ${startDate}`);
+        }
+        
+        if (endDate) {
+            conditions.push(sql`a.appointment_date <= ${endDate}`);
+        }
+        
+        const whereClause = conditions.length > 0 
+            ? sql` WHERE ${sql.join(conditions, sql` AND `)}`
+            : sql``;
+        
+        const limitClause = limit ? sql` LIMIT ${parseInt(limit)}` : sql``;
+        
+        const appointments = await sql`
+            SELECT 
+                a.id,
+                a.patient_name,
+                a.patient_phone,
+                a.appointment_date,
+                a.appointment_time,
+                a.status,
+                a.created_at,
+                a.approved_at,
+                a.rejected_at,
+                a.cancelled_at,
+                a.auto_processed
+            FROM appointments a
+            ${whereClause}
+            ORDER BY a.created_at DESC
+            ${limitClause}
+        `;
+        
+        // Format for Google Sheets
+        const formatted = appointments.map(apt => ({
+            'ID': apt.id,
+            'Patient Name': apt.patient_name,
+            'Patient Phone': apt.patient_phone.replace('whatsapp:', ''),
+            'Date': new Date(apt.appointment_date).toLocaleDateString('en-IN', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric'
+            }),
+            'Time': apt.appointment_time,
+            'Status': apt.status.toUpperCase(),
+            'Booked At': new Date(apt.created_at).toLocaleString('en-IN', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            }),
+            'Approved At': apt.approved_at ? new Date(apt.approved_at).toLocaleString('en-IN', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            }) : '',
+            'Auto Approved': apt.auto_processed ? 'Yes' : 'No'
+        }));
+        
+        res.json({
+            success: true,
+            clinic: req.clinic.name,
+            count: formatted.length,
+            data: formatted
+        });
+        
+    } catch (error) {
+        log.error('Sheets API error - appointments', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/sheets/:clinicId/stats
+ * Get statistics for a specific clinic
+ */
+app.get('/api/sheets/:clinicId/stats', requireSheetsApiKey, async (req, res) => {
+    try {
+        const clinicId = parseInt(req.params.clinicId);
+        
+        const stats = await sql`
+            SELECT 
+                COUNT(*) as total_appointments,
+                COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+                COUNT(CASE WHEN status = 'confirmed' THEN 1 END) as confirmed,
+                COUNT(CASE WHEN status = 'rejected' THEN 1 END) as rejected,
+                COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled,
+                COUNT(CASE WHEN auto_processed = true THEN 1 END) as auto_approved,
+                COUNT(CASE WHEN DATE(appointment_date) = CURRENT_DATE THEN 1 END) as today,
+                COUNT(CASE WHEN DATE(appointment_date) = CURRENT_DATE + INTERVAL '1 day' THEN 1 END) as tomorrow,
+                COUNT(CASE WHEN DATE(created_at) >= CURRENT_DATE - INTERVAL '7 days' THEN 1 END) as last_7_days,
+                COUNT(CASE WHEN DATE(created_at) >= CURRENT_DATE - INTERVAL '30 days' THEN 1 END) as last_30_days,
+                COUNT(CASE WHEN DATE(appointment_date) >= CURRENT_DATE 
+                    AND DATE(appointment_date) <= CURRENT_DATE + INTERVAL '7 days' THEN 1 END) as next_7_days
+            FROM appointments
+            WHERE clinic_id = ${clinicId}
+        `;
+        
+        const formatted = [{
+            'Metric': 'Total Appointments',
+            'Value': stats[0].total_appointments
+        }, {
+            'Metric': 'Pending',
+            'Value': stats[0].pending
+        }, {
+            'Metric': 'Confirmed',
+            'Value': stats[0].confirmed
+        }, {
+            'Metric': 'Rejected',
+            'Value': stats[0].rejected
+        }, {
+            'Metric': 'Cancelled',
+            'Value': stats[0].cancelled
+        }, {
+            'Metric': 'Auto-Approved',
+            'Value': stats[0].auto_approved
+        }, {
+            'Metric': 'Today',
+            'Value': stats[0].today
+        }, {
+            'Metric': 'Tomorrow',
+            'Value': stats[0].tomorrow
+        }, {
+            'Metric': 'Next 7 Days',
+            'Value': stats[0].next_7_days
+        }, {
+            'Metric': 'Last 7 Days',
+            'Value': stats[0].last_7_days
+        }, {
+            'Metric': 'Last 30 Days',
+            'Value': stats[0].last_30_days
+        }];
+        
+        res.json({
+            success: true,
+            clinic: req.clinic.name,
+            data: formatted
+        });
+        
+    } catch (error) {
+        log.error('Sheets API error - stats', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/sheets/:clinicId/today
+ * Get today's appointments for a specific clinic
+ */
+app.get('/api/sheets/:clinicId/today', requireSheetsApiKey, async (req, res) => {
+    try {
+        const clinicId = parseInt(req.params.clinicId);
+        
+        const appointments = await sql`
+            SELECT 
+                a.id,
+                a.patient_name,
+                a.patient_phone,
+                a.appointment_time,
+                a.status,
+                a.created_at,
+                a.approved_at
+            FROM appointments a
+            WHERE a.clinic_id = ${clinicId}
+            AND DATE(a.appointment_date) = CURRENT_DATE
+            ORDER BY a.appointment_time
+        `;
+        
+        const formatted = appointments.map(apt => ({
+            'ID': apt.id,
+            'Time': apt.appointment_time,
+            'Patient Name': apt.patient_name,
+            'Patient Phone': apt.patient_phone.replace('whatsapp:', ''),
+            'Status': apt.status.toUpperCase(),
+            'Booked At': new Date(apt.created_at).toLocaleTimeString('en-IN', {
+                hour: '2-digit',
+                minute: '2-digit'
+            })
+        }));
+        
+        res.json({
+            success: true,
+            clinic: req.clinic.name,
+            date: new Date().toLocaleDateString('en-IN'),
+            count: formatted.length,
+            data: formatted
+        });
+        
+    } catch (error) {
+        log.error('Sheets API error - today', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/sheets/:clinicId/range
+ * Get appointments for a date range
+ */
+app.get('/api/sheets/:clinicId/range', requireSheetsApiKey, async (req, res) => {
+    try {
+        const clinicId = parseInt(req.params.clinicId);
+        const { start, end } = req.query;
+        
+        if (!start || !end) {
+            return res.status(400).json({ 
+                error: 'start and end date required (YYYY-MM-DD format)' 
+            });
+        }
+        
+        const appointments = await sql`
+            SELECT 
+                a.id,
+                a.patient_name,
+                a.patient_phone,
+                a.appointment_date,
+                a.appointment_time,
+                a.status
+            FROM appointments a
+            WHERE a.clinic_id = ${clinicId}
+            AND a.appointment_date BETWEEN ${start} AND ${end}
+            ORDER BY a.appointment_date, a.appointment_time
+        `;
+        
+        const formatted = appointments.map(apt => ({
+            'ID': apt.id,
+            'Date': new Date(apt.appointment_date).toLocaleDateString('en-IN'),
+            'Time': apt.appointment_time,
+            'Patient': apt.patient_name,
+            'Phone': apt.patient_phone.replace('whatsapp:', ''),
+            'Status': apt.status.toUpperCase()
+        }));
+        
+        res.json({
+            success: true,
+            clinic: req.clinic.name,
+            dateRange: `${start} to ${end}`,
+            count: formatted.length,
+            data: formatted
+        });
+        
+    } catch (error) {
+        log.error('Sheets API error - range', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/sheets/:clinicId/info
+ * Get clinic information
+ */
+app.get('/api/sheets/:clinicId/info', requireSheetsApiKey, async (req, res) => {
+    try {
+        const clinic = req.clinic;
+        
+        const formatted = [{
+            'Field': 'Clinic Name',
+            'Value': clinic.name
+        }, {
+            'Field': 'Doctor Name',
+            'Value': `Dr. ${clinic.doctor_name}`
+        }, {
+            'Field': 'Doctor WhatsApp',
+            'Value': clinic.doctor_whatsapp ? clinic.doctor_whatsapp.replace('whatsapp:', '') : ''
+        }, {
+            'Field': 'Business Hours',
+            'Value': `${clinic.business_hours_start} - ${clinic.business_hours_end}`
+        }, {
+            'Field': 'Status',
+            'Value': clinic.status.toUpperCase()
+        }];
+        
+        res.json({
+            success: true,
+            data: formatted
+        });
+        
+    } catch (error) {
+        log.error('Sheets API error - info', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════
 // 19. CRON ENDPOINTS (API KEY REQUIRED)
 // ═══════════════════════════════════════════════════════════
 app.post('/cron/auto-approval', requireApiKey, async (req, res) => {

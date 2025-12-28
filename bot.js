@@ -796,13 +796,32 @@ async function handleDoctorCommand(phone, text) {
     
     if (!cmd.startsWith('APPROVE') && !cmd.startsWith('REJECT')) return false;
     
-    const clinic = await dbQuery(sql`
-        SELECT * FROM clinics 
-        WHERE doctor_whatsapp = ${cleanPhone} 
-        LIMIT 1
-    `);
+    // Try both formats: with and without whatsapp: prefix
+    const phoneFormats = [
+        `whatsapp:${cleanPhone}`,
+        cleanPhone
+    ];
     
-    if (!clinic || clinic.length === 0) return false;
+    let clinic = null;
+    for (const phoneFormat of phoneFormats) {
+        const result = await dbQuery(sql`
+            SELECT * FROM clinics 
+            WHERE doctor_whatsapp = ${phoneFormat} 
+            LIMIT 1
+        `);
+        if (result && result.length > 0) {
+            clinic = result;
+            break;
+        }
+    }
+    
+    if (!clinic || clinic.length === 0) {
+        log.info('Doctor command from non-doctor number', { phone: cleanPhone });
+        return false;
+    }
+    
+    // Clear any active session for the doctor
+    await clearSession(phone);
     
     const match = cmd.match(/#?(\d+)/);
     
@@ -842,6 +861,11 @@ async function handleDoctorCommand(phone, text) {
                 updated_at = NOW() 
             WHERE id = ${aptId}
         `);
+        
+        log.success('Doctor approved appointment', { 
+            id: aptId, 
+            doctor: clinic[0].doctor_name 
+        });
     } else {
         await dbQuery(sql`
             UPDATE appointments 
@@ -850,6 +874,11 @@ async function handleDoctorCommand(phone, text) {
                 updated_at = NOW() 
             WHERE id = ${aptId}
         `);
+        
+        log.success('Doctor rejected appointment', { 
+            id: aptId, 
+            doctor: clinic[0].doctor_name 
+        });
     }
     
     const dateStr = new Date(apt.appointment_date).toLocaleDateString('en-IN', { 
@@ -878,11 +907,6 @@ async function handleDoctorCommand(phone, text) {
         phone, 
         `${isApprove ? '✅' : '❌'} *Appointment #${aptId} ${isApprove ? 'APPROVED' : 'REJECTED'}*\n\n━━━━━━━━━━━━━━━━━━━━━\n👤 Patient: ${apt.patient_name}\n📞 Phone: ${apt.patient_phone}\n📅 Date: ${dateStr}\n⏰ Time: ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━━\n\n✓ Patient has been notified`
     );
-    
-    log.success(`Doctor ${isApprove ? 'approved' : 'rejected'} appointment`, { 
-        id: aptId, 
-        doctor: clinic[0].doctor_name 
-    });
     
     return true;
 }

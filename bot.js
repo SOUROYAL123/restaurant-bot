@@ -894,6 +894,10 @@ async function handleMessage(phone, text) {
     try {
         const cmd = text.trim().toUpperCase();
         
+        // Doctor commands - CHECK FIRST before anything else!
+        const isDoctorCmd = await handleDoctorCommand(phone, text);
+        if (isDoctorCmd) return;
+        
         // Interactive commands
         if (cmd.startsWith('CONFIRM')) {
             const match = cmd.match(/CONFIRM\s+#?(\d+)/);
@@ -926,10 +930,6 @@ async function handleMessage(phone, text) {
                 return;
             }
         }
-        
-        // Doctor commands
-        const isDoctorCmd = await handleDoctorCommand(phone, text);
-        if (isDoctorCmd) return;
         
         // Session flow
         const session = await getSession(phone);

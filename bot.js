@@ -1,4 +1,3 @@
-
 /**
  * ═══════════════════════════════════════════════════════════
  * WHATSAPP CLINIC BOT v6.0.0 - PILOT VERSION
@@ -965,9 +964,12 @@ async function handleMessage(phone, text) {
         // Session flow
         const session = await getSession(phone);
         const msg = text.trim().toLowerCase();
-        const isRestart = msg === 'hi' || msg === 'hello' || msg === 'start' || msg === 'restart' || msg === '1';
         
-        if (!session || isRestart) { 
+        // FIX: Only restart if explicitly hi/hello/start/restart AND no active session
+        // Don't treat numbers as restart commands!
+        const isExplicitRestart = msg === 'hi' || msg === 'hello' || msg === 'start' || msg === 'restart';
+        
+        if (!session || isExplicitRestart) { 
             await handleStart(phone); 
             return; 
         }

@@ -77,7 +77,7 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 
 // Auto-approval settings
 const AUTO_APPROVAL_ENABLED = process.env.AUTO_APPROVAL_ENABLED !== 'false'; // Default: true
-const AUTO_APPROVAL_DELAY_MINUTES = parseInt(process.env.AUTO_APPROVAL_DELAY_MINUTES) || 5; // Default: 5 minutes
+const AUTO_APPROVAL_DELAY_MINUTES = parseInt(process.env.AUTO_APPROVAL_DELAY_MINUTES) || 1440; // Default: 1440 minutes (24 hours)
 
 // ═══════════════════════════════════════════════════════════
 // 5. LOGGING
@@ -263,9 +263,14 @@ async function sendWhatsApp(to, message) {
 async function sendDoctorNotification(to, appointmentDetails, appointmentId) {
     try {
         const phone = formatForWhatsApp(to);
-        const { patientName, patientPhone, date, time } = appointmentDetails;
+        const { patientName, patientPhone, date, time, clinicName } = appointmentDetails;
         
-        const bodyText = `🔔 *NEW APPOINTMENT REQUEST*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *ID:* #${appointmentId}\n👤 *Patient:* ${patientName}\n📞 *Phone:* ${patientPhone}\n📅 *Date:* ${date}\n⏰ *Time:* ${time}\n━━━━━━━━━━━━━━━━━━━━━\n\n*Quick Actions:*\n\n✅ Reply: *APPROVE #${appointmentId}*\n❌ Reply: *REJECT #${appointmentId}*\n\n${AUTO_APPROVAL_ENABLED ? `⏰ Auto-approves in ${AUTO_APPROVAL_DELAY_MINUTES} minutes if no action taken` : '⚠️ Manual approval required'}`;
+        // Format auto-approval time
+        const approvalTime = AUTO_APPROVAL_DELAY_MINUTES >= 60 
+            ? `${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60)} hour${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60) > 1 ? 's' : ''}`
+            : `${AUTO_APPROVAL_DELAY_MINUTES} minute${AUTO_APPROVAL_DELAY_MINUTES > 1 ? 's' : ''}`;
+        
+        const bodyText = `🔔 *NEW APPOINTMENT REQUEST*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Appointment ID:* #${appointmentId}\n🏥 *Clinic:* ${clinicName || 'N/A'}\n\n*PATIENT DETAILS:*\n👤 *Name:* ${patientName}\n📞 *Phone:* ${patientPhone}\n\n*APPOINTMENT DETAILS:*\n📅 *Date:* ${date}\n⏰ *Time:* ${time}\n━━━━━━━━━━━━━━━━━━━━━\n\n*ACTIONS REQUIRED:*\n\n✅ *APPROVE:* Reply *APPROVE #${appointmentId}*\n❌ *REJECT:* Reply *REJECT #${appointmentId}*\n\n${AUTO_APPROVAL_ENABLED ? `⏰ *Auto-approves in ${approvalTime}* if no action taken` : '⚠️ *Manual approval required*'}`;
         
         await twilioClient.messages.create({ 
             from: process.env.WABA_NUMBER, 
@@ -284,68 +289,19 @@ async function sendDoctorNotification(to, appointmentDetails, appointmentId) {
 // ═══════════════════════════════════════════════════════════
 // 9. AUTO-APPROVAL SYSTEM
 // ═══════════════════════════════════════════════════════════
+/**
+ * Schedule auto-approval - just logs it
+ * Actual processing happens via CRON job calling processAutoApprovals.js
+ */
 async function scheduleAutoApproval(appointmentId) {
     if (!AUTO_APPROVAL_ENABLED) {
         log.info('Auto-approval disabled', { appointmentId });
         return;
     }
     
-    const delayMs = AUTO_APPROVAL_DELAY_MINUTES * 60 * 1000;
-    
-    setTimeout(async () => {
-        try {
-            // Check if still pending
-            const appts = await sql`
-                SELECT a.*, c.name as clinic_name, c.doctor_name 
-                FROM appointments a 
-                JOIN clinics c ON a.clinic_id = c.id 
-                WHERE a.id = ${appointmentId} 
-                AND a.status = 'pending' 
-                LIMIT 1
-            `;
-            
-            if (appts.length === 0) {
-                log.info('Appointment already processed', { appointmentId });
-                return;
-            }
-            
-            const appt = appts[0];
-            
-            // Auto-approve
-            await sql`
-                UPDATE appointments 
-                SET status = 'confirmed', 
-                    approved_at = NOW(), 
-                    auto_processed = true,
-                    updated_at = NOW() 
-                WHERE id = ${appointmentId}
-            `;
-            
-            const dateStr = new Date(appt.appointment_date).toLocaleDateString('en-IN', { 
-                weekday: 'long', 
-                day: 'numeric', 
-                month: 'long', 
-                year: 'numeric' 
-            });
-            
-            // Notify patient
-            await sendWhatsApp(
-                appt.patient_phone,
-                `✅ *APPOINTMENT CONFIRMED!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Booking:* #${appointmentId}\n🏥 *Clinic:* ${appt.clinic_name}\n👨‍⚕️ *Doctor:* Dr. ${appt.doctor_name}\n📅 *Date:* ${dateStr}\n⏰ *Time:* ${appt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━━\n\n✓ *Auto-approved* (doctor didn't respond)\n✓ Please arrive 10 minutes early\n\nSee you soon! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n*Need to change?*\n📞 CANCEL #${appointmentId}\n🔄 RESCHEDULE #${appointmentId}`
-            );
-            
-            log.success('Auto-approved appointment', { 
-                appointmentId, 
-                patient: appt.patient_name,
-                delayMinutes: AUTO_APPROVAL_DELAY_MINUTES 
-            });
-            
-        } catch (error) {
-            log.error('Auto-approval failed', error);
-        }
-    }, delayMs);
-    
-    log.info('Auto-approval scheduled', { 
+    // Just log that it's scheduled
+    // The actual auto-approval happens via CRON job
+    log.info('Auto-approval will process via cron', { 
         appointmentId, 
         delayMinutes: AUTO_APPROVAL_DELAY_MINUTES 
     });
@@ -472,13 +428,21 @@ async function handleWaitlistAcceptance(phone, waitlistId) {
             `✅ *Slot Booked!*\n\n📋 ID: #${appt[0].id}\n📅 ${dateStr}\n⏰ ${w.appointment_slot}\n\n⏳ Awaiting doctor approval...`
         );
         
+        const dateDisplay = new Date(w.appointment_date).toLocaleDateString('en-IN', { 
+            weekday: 'long', 
+            day: 'numeric', 
+            month: 'long', 
+            year: 'numeric' 
+        });
+        
         await sendDoctorNotification(
             clinic.doctor_whatsapp,
             {
                 patientName: w.patient_name,
                 patientPhone: w.patient_phone,
-                date: dateStr,
-                time: w.appointment_slot
+                date: dateDisplay,
+                time: w.appointment_slot,
+                clinicName: clinic.name
             },
             appt[0].id
         );
@@ -790,9 +754,14 @@ async function handleTime(phone, text) {
             year: 'numeric' 
         });
         
+        // Format approval time for patient message
+        const approvalTime = AUTO_APPROVAL_DELAY_MINUTES >= 60 
+            ? `${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60)} hour${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60) > 1 ? 's' : ''}`
+            : `${AUTO_APPROVAL_DELAY_MINUTES} minute${AUTO_APPROVAL_DELAY_MINUTES > 1 ? 's' : ''}`;
+        
         await sendWhatsApp(
             phone, 
-            `✅ *Appointment Booked!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *ID:* #${aptId}\n👤 *Name:* ${data.name}\n🏥 *Clinic:* ${clinic.name}\n📅 *Date:* ${dateDisplay}\n⏰ *Time:* ${timeSlot}\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ *Status:* Pending approval\n${AUTO_APPROVAL_ENABLED ? `⏰ Auto-approves in ${AUTO_APPROVAL_DELAY_MINUTES} min if doctor doesn't respond` : '⚠️ Manual approval required'}\n\nYou'll receive confirmation soon!\n\n━━━━━━━━━━━━━━━━━━━━━\n*Need to change?*\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`
+            `✅ *Appointment Booked!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *ID:* #${aptId}\n👤 *Name:* ${data.name}\n🏥 *Clinic:* ${clinic.name}\n📅 *Date:* ${dateDisplay}\n⏰ *Time:* ${timeSlot}\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ *Status:* Pending approval\n${AUTO_APPROVAL_ENABLED ? `⏰ Auto-approves in ${approvalTime} if doctor doesn't respond` : '⚠️ Manual approval required'}\n\nYou'll receive confirmation soon!\n\n━━━━━━━━━━━━━━━━━━━━━\n*Need to change?*\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`
         );
         
         await sendDoctorNotification(
@@ -801,7 +770,8 @@ async function handleTime(phone, text) {
                 patientName: data.name,
                 patientPhone: cleanPhone,
                 date: dateDisplay,
-                time: timeSlot
+                time: timeSlot,
+                clinicName: clinic.name
             },
             aptId
         );
@@ -1105,6 +1075,17 @@ app.post('/webhook/whatsapp',
 // ═══════════════════════════════════════════════════════════
 // 19. CRON ENDPOINTS (API KEY REQUIRED)
 // ═══════════════════════════════════════════════════════════
+app.post('/cron/auto-approval', requireApiKey, async (req, res) => {
+    try {
+        const { processAutoApprovals } = require('./processAutoApprovals');
+        const result = await processAutoApprovals();
+        res.json({ success: true, result });
+    } catch (error) {
+        log.error('Auto-approval cron failed', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.post('/cron/send-reminders', requireApiKey, async (req, res) => { 
     try { 
         const { sendReminders } = require('./sendReminders'); 

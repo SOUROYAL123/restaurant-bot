@@ -593,10 +593,10 @@ async function handleStart(phone) {
     
     await setSession(phone, { stage: 'select_clinic', session_data: {} });
     
-    let msg = '👋 *Welcome to Clinic Appointment System!*\n\n🎉 *FREE PILOT - No Payment Required*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Select a clinic:*\n\n';
+    let msg = '👋 *Welcome to Clinic Appointment System!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Select a clinic:*\n\n';
     
     clinics.forEach((clinic, i) => { 
-        msg += `*${i + 1}.* ${clinic.name}\n   👨‍⚕️ Dr. ${clinic.doctor_name}\n`;
+        msg += `*${i + 1}.* ${clinic.name}\n   👨‍⚕️ ${clinic.doctor_name}\n`;
         if (clinic.business_hours_start) {
             msg += `   ⏰ ${clinic.business_hours_start} - ${clinic.business_hours_end}\n`;
         }

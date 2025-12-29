@@ -1104,7 +1104,45 @@ app.post('/webhook/whatsapp',
 // ═══════════════════════════════════════════════════════════
 
 /**
- * Middleware for Google Sheets API authentication
+ * Middleware for Google Sheets API authentication - ADMIN (no clinic ID needed)
+ * Used for centralized dashboard endpoints
+ */
+const requireAdminSheetsApiKey = async (req, res, next) => {
+    try {
+        const apiKey = req.headers['x-api-key'] || req.query.apiKey;
+        
+        if (!apiKey) {
+            return res.status(401).json({ error: 'API key required' });
+        }
+        
+        // Check ADMIN_API_KEY from environment
+        if (process.env.ADMIN_API_KEY && apiKey === process.env.ADMIN_API_KEY) {
+            log.info('Admin API key validated (from environment)');
+            return next();
+        }
+        
+        // Also accept any valid clinic API key for backwards compatibility
+        const clinic = await dbQuery(sql`
+            SELECT * FROM clinics 
+            WHERE sheets_api_key = ${apiKey}
+            LIMIT 1
+        `);
+        
+        if (clinic && clinic.length > 0) {
+            log.info('Valid clinic API key used for admin endpoint', { clinicId: clinic[0].id });
+            return next();
+        }
+        
+        return res.status(401).json({ error: 'Invalid API key' });
+        
+    } catch (error) {
+        log.error('Admin Sheets API auth error', error);
+        res.status(500).json({ error: 'Authentication failed' });
+    }
+};
+
+/**
+ * Middleware for Google Sheets API authentication - PER CLINIC
  * Each clinic has their own API key stored in the database
  */
 const requireSheetsApiKey = async (req, res, next) => {
@@ -1450,7 +1488,7 @@ app.get('/api/sheets/:clinicId/info', requireSheetsApiKey, async (req, res) => {
  * Get list of all clinics for dropdown selector
  * Used by centralized dashboard
  */
-app.get('/api/sheets/all-clinics', requireApiKey, async (req, res) => {
+app.get('/api/sheets/all-clinics', requireAdminSheetsApiKey, async (req, res) => {
     try {
         const clinics = await sql`
             SELECT 
@@ -1482,7 +1520,7 @@ app.get('/api/sheets/all-clinics', requireApiKey, async (req, res) => {
  * Get statistics for all clinics
  * Used by centralized dashboard for overview
  */
-app.get('/api/sheets/bulk/stats', requireApiKey, async (req, res) => {
+app.get('/api/sheets/bulk/stats', requireAdminSheetsApiKey, async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 1;
         const limit = parseInt(req.query.limit) || 100;
@@ -1543,7 +1581,7 @@ app.get('/api/sheets/bulk/stats', requireApiKey, async (req, res) => {
  * Get today's appointments across all clinics
  * Used for cross-clinic daily overview
  */
-app.get('/api/sheets/bulk/today', requireApiKey, async (req, res) => {
+app.get('/api/sheets/bulk/today', requireAdminSheetsApiKey, async (req, res) => {
     try {
         const appointments = await sql`
             SELECT 
@@ -1592,7 +1630,7 @@ app.get('/api/sheets/bulk/today', requireApiKey, async (req, res) => {
  * Search for patients across all clinics
  * Requires query parameter: q (search term)
  */
-app.get('/api/sheets/search', requireApiKey, async (req, res) => {
+app.get('/api/sheets/search', requireAdminSheetsApiKey, async (req, res) => {
     try {
         const searchTerm = req.query.q;
         

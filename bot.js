@@ -1207,27 +1207,25 @@ app.get('/api/sheets/:clinicId/appointments', requireSheetsApiKey, async (req, r
         const clinicId = parseInt(req.params.clinicId);
         const { status, startDate, endDate, limit } = req.query;
         
-        let conditions = [sql`a.clinic_id = ${clinicId}`];
+        // Build WHERE conditions as simple strings
+        let whereConditions = [`a.clinic_id = ${clinicId}`];
         
         if (status) {
-            conditions.push(sql`a.status = ${status}`);
+            whereConditions.push(`a.status = '${status}'`);
         }
         
         if (startDate) {
-            conditions.push(sql`a.appointment_date >= ${startDate}`);
+            whereConditions.push(`a.appointment_date >= '${startDate}'`);
         }
         
         if (endDate) {
-            conditions.push(sql`a.appointment_date <= ${endDate}`);
+            whereConditions.push(`a.appointment_date <= '${endDate}'`);
         }
         
-        const whereClause = conditions.length > 0 
-            ? sql` WHERE ${sql.join(conditions, sql` AND `)}`
-            : sql``;
+        const whereClause = 'WHERE ' + whereConditions.join(' AND ');
+        const limitClause = limit ? `LIMIT ${parseInt(limit)}` : '';
         
-        const limitClause = limit ? sql` LIMIT ${parseInt(limit)}` : sql``;
-        
-        const appointments = await sql`
+        const query = `
             SELECT 
                 a.id,
                 a.patient_name,
@@ -1245,6 +1243,8 @@ app.get('/api/sheets/:clinicId/appointments', requireSheetsApiKey, async (req, r
             ORDER BY a.created_at DESC
             ${limitClause}
         `;
+        
+        const appointments = await sql(query);
         
         // Format for Google Sheets
         const formatted = appointments.map(apt => ({

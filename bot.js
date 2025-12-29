@@ -1144,6 +1144,7 @@ const requireAdminSheetsApiKey = async (req, res, next) => {
 /**
  * Middleware for Google Sheets API authentication - PER CLINIC
  * Each clinic has their own API key stored in the database
+ * Also accepts ADMIN_API_KEY for convenience
  */
 const requireSheetsApiKey = async (req, res, next) => {
     try {
@@ -1158,7 +1159,25 @@ const requireSheetsApiKey = async (req, res, next) => {
             return res.status(400).json({ error: 'Clinic ID required' });
         }
         
-        // Verify API key matches clinic
+        // Check if using ADMIN_API_KEY (works for all clinics)
+        if (process.env.ADMIN_API_KEY && apiKey === process.env.ADMIN_API_KEY) {
+            // Load clinic info without checking API key
+            const clinic = await dbQuery(sql`
+                SELECT * FROM clinics 
+                WHERE id = ${parseInt(clinicId)}
+                LIMIT 1
+            `);
+            
+            if (!clinic || clinic.length === 0) {
+                return res.status(404).json({ error: 'Clinic not found' });
+            }
+            
+            log.info('Admin API key used for clinic endpoint', { clinicId });
+            req.clinic = clinic[0];
+            return next();
+        }
+        
+        // Otherwise, verify API key matches clinic
         const clinic = await dbQuery(sql`
             SELECT * FROM clinics 
             WHERE id = ${parseInt(clinicId)} 

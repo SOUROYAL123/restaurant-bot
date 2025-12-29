@@ -1,12 +1,15 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v6.0.0 - PILOT VERSION
+ * WHATSAPP CLINIC BOT v7.0.0 - ULTIMATE EDITION
  * 
- * ✅ NO PAYMENT - Free Pilot Mode
- * ✅ Auto-Approval System
+ * ✅ WhatsApp Appointment Booking
+ * ✅ Auto-Approval System (24hr)
  * ✅ Manual Approve/Reject by Doctor
+ * ✅ Google Sheets Integration (Individual)
+ * ✅ Google Sheets Integration (Centralized for 1000+)
+ * ✅ Bulk Operations & Search
  * ✅ Security Hardened
- * ✅ Ready for Testing
+ * ✅ Production Ready
  * 
  * Author: Sourav Roy - Legacylens Automation
  * ═══════════════════════════════════════════════════════════
@@ -1439,7 +1442,221 @@ app.get('/api/sheets/:clinicId/info', requireSheetsApiKey, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// 19. CRON ENDPOINTS (API KEY REQUIRED)
+// 19. BULK ENDPOINTS FOR CENTRALIZED DASHBOARD (1000+ CLINICS)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * GET /api/sheets/all-clinics
+ * Get list of all clinics for dropdown selector
+ * Used by centralized dashboard
+ */
+app.get('/api/sheets/all-clinics', requireApiKey, async (req, res) => {
+    try {
+        const clinics = await sql`
+            SELECT 
+                id,
+                name,
+                doctor_name,
+                status,
+                business_hours_start,
+                business_hours_end
+            FROM clinics
+            WHERE status = 'active'
+            ORDER BY name
+        `;
+        
+        res.json({
+            success: true,
+            count: clinics.length,
+            data: clinics
+        });
+        
+    } catch (error) {
+        log.error('Get all clinics error', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/sheets/bulk/stats
+ * Get statistics for all clinics
+ * Used by centralized dashboard for overview
+ */
+app.get('/api/sheets/bulk/stats', requireApiKey, async (req, res) => {
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 100;
+        const offset = (page - 1) * limit;
+        
+        const stats = await sql`
+            SELECT 
+                c.id,
+                c.name,
+                c.doctor_name,
+                COUNT(a.id) as total_appointments,
+                COUNT(CASE WHEN a.status = 'pending' THEN 1 END) as pending,
+                COUNT(CASE WHEN a.status = 'confirmed' THEN 1 END) as confirmed,
+                COUNT(CASE WHEN a.status = 'rejected' THEN 1 END) as rejected,
+                COUNT(CASE WHEN a.status = 'cancelled' THEN 1 END) as cancelled,
+                COUNT(CASE WHEN DATE(a.appointment_date) = CURRENT_DATE THEN 1 END) as today,
+                COUNT(CASE WHEN DATE(a.appointment_date) = CURRENT_DATE + INTERVAL '1 day' THEN 1 END) as tomorrow,
+                COUNT(CASE WHEN DATE(a.appointment_date) >= CURRENT_DATE 
+                    AND DATE(a.appointment_date) <= CURRENT_DATE + INTERVAL '7 days' THEN 1 END) as next_7_days,
+                COUNT(CASE WHEN DATE(a.created_at) >= CURRENT_DATE - INTERVAL '7 days' THEN 1 END) as last_7_days,
+                COUNT(CASE WHEN DATE(a.created_at) >= CURRENT_DATE - INTERVAL '30 days' THEN 1 END) as last_30_days
+            FROM clinics c
+            LEFT JOIN appointments a ON c.id = a.clinic_id
+            WHERE c.status = 'active'
+            GROUP BY c.id, c.name, c.doctor_name
+            ORDER BY c.name
+            LIMIT ${limit}
+            OFFSET ${offset}
+        `;
+        
+        const totalResult = await sql`
+            SELECT COUNT(*) as count 
+            FROM clinics 
+            WHERE status = 'active'
+        `;
+        
+        res.json({
+            success: true,
+            count: stats.length,
+            total: totalResult[0].count,
+            data: stats,
+            pagination: {
+                page,
+                limit,
+                total: totalResult[0].count,
+                pages: Math.ceil(totalResult[0].count / limit)
+            }
+        });
+        
+    } catch (error) {
+        log.error('Bulk stats error', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/sheets/bulk/today
+ * Get today's appointments across all clinics
+ * Used for cross-clinic daily overview
+ */
+app.get('/api/sheets/bulk/today', requireApiKey, async (req, res) => {
+    try {
+        const appointments = await sql`
+            SELECT 
+                c.name as clinic_name,
+                a.id,
+                a.patient_name,
+                a.patient_phone,
+                a.appointment_time,
+                a.status,
+                a.created_at
+            FROM appointments a
+            JOIN clinics c ON a.clinic_id = c.id
+            WHERE DATE(a.appointment_date) = CURRENT_DATE
+            AND c.status = 'active'
+            ORDER BY a.appointment_time, c.name
+        `;
+        
+        const formatted = appointments.map(apt => ({
+            'Clinic': apt.clinic_name,
+            'ID': apt.id,
+            'Time': apt.appointment_time,
+            'Patient Name': apt.patient_name,
+            'Patient Phone': apt.patient_phone.replace('whatsapp:', ''),
+            'Status': apt.status.toUpperCase(),
+            'Booked At': new Date(apt.created_at).toLocaleTimeString('en-IN', {
+                hour: '2-digit',
+                minute: '2-digit'
+            })
+        }));
+        
+        res.json({
+            success: true,
+            date: new Date().toLocaleDateString('en-IN'),
+            count: formatted.length,
+            data: formatted
+        });
+        
+    } catch (error) {
+        log.error('Bulk today error', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+/**
+ * GET /api/sheets/search
+ * Search for patients across all clinics
+ * Requires query parameter: q (search term)
+ */
+app.get('/api/sheets/search', requireApiKey, async (req, res) => {
+    try {
+        const searchTerm = req.query.q;
+        
+        if (!searchTerm || searchTerm.trim().length < 2) {
+            return res.status(400).json({ 
+                error: 'Search term required (minimum 2 characters)' 
+            });
+        }
+        
+        const search = `%${searchTerm.toLowerCase()}%`;
+        
+        const results = await sql`
+            SELECT 
+                c.name as clinic_name,
+                a.id,
+                a.patient_name,
+                a.patient_phone,
+                a.appointment_date,
+                a.appointment_time,
+                a.status,
+                a.created_at
+            FROM appointments a
+            JOIN clinics c ON a.clinic_id = c.id
+            WHERE (
+                LOWER(a.patient_name) LIKE ${search}
+                OR LOWER(a.patient_phone) LIKE ${search}
+            )
+            AND c.status = 'active'
+            ORDER BY a.created_at DESC
+            LIMIT 100
+        `;
+        
+        const formatted = results.map(apt => ({
+            'Clinic': apt.clinic_name,
+            'ID': apt.id,
+            'Patient Name': apt.patient_name,
+            'Patient Phone': apt.patient_phone.replace('whatsapp:', ''),
+            'Date': new Date(apt.appointment_date).toLocaleDateString('en-IN'),
+            'Time': apt.appointment_time,
+            'Status': apt.status.toUpperCase(),
+            'Booked At': new Date(apt.created_at).toLocaleString('en-IN', {
+                day: '2-digit',
+                month: '2-digit',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            })
+        }));
+        
+        res.json({
+            success: true,
+            searchTerm: searchTerm,
+            count: formatted.length,
+            data: formatted
+        });
+        
+    } catch (error) {
+        log.error('Search error', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════
+// 20. CRON ENDPOINTS (API KEY REQUIRED)
 // ═══════════════════════════════════════════════════════════
 app.post('/cron/auto-approval', requireApiKey, async (req, res) => {
     try {
@@ -1478,19 +1695,19 @@ app.use((err, req, res, next) => {
 // ═══════════════════════════════════════════════════════════
 async function startServer() {
     try {
-        log.info('Starting server v6.0.0-pilot...');
+        log.info('Starting server v7.0.0-ultimate...');
         
         await sql`SELECT NOW()`;
         log.success('Database connected');
         
         app.listen(PORT, HOST, () => {
             console.log('\n═══════════════════════════════════════════════════════════');
-            console.log('🚀 WHATSAPP CLINIC BOT v6.0.0 - PILOT MODE');
+            console.log('🚀 WHATSAPP CLINIC BOT v7.0.0 - ULTIMATE EDITION');
             console.log('═══════════════════════════════════════════════════════════');
             console.log(`📡 Port: ${PORT}`);
             console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
             console.log(`💾 Database: Connected ✅`);
-            console.log(`🎉 Mode: PILOT (No Payment Required) ✅`);
+            console.log(`🎉 Mode: PRODUCTION - All Features Active ✅`);
             console.log(`🔒 Security: Enhanced ✅`);
             console.log(`   ├─ Environment Validation: Active ✅`);
             console.log(`   ├─ Twilio Signature: ${process.env.SKIP_TWILIO_VERIFICATION === 'true' ? 'DISABLED ⚠️' : 'Enabled ✅'}`);
@@ -1499,9 +1716,11 @@ async function startServer() {
             console.log(`   └─ Security Headers: Active ✅`);
             console.log(`⏰ Auto-Approval: ${AUTO_APPROVAL_ENABLED ? `Enabled (${AUTO_APPROVAL_DELAY_MINUTES} min) ✅` : 'Disabled ⚠️'}`);
             console.log(`📋 Manual Approval: Enabled ✅`);
-            console.log(`📨 Features: All Active (No Payment) ✅`);
+            console.log(`📊 Google Sheets: Individual + Centralized ✅`);
+            console.log(`🔍 Bulk Operations: Search, Stats, Overview ✅`);
+            console.log(`📈 Scalability: Ready for 1000+ Clinics ✅`);
             console.log('═══════════════════════════════════════════════════════════');
-            console.log('✅ PILOT SERVER READY - ALL SYSTEMS OPERATIONAL');
+            console.log('✅ ULTIMATE SERVER READY - ALL SYSTEMS OPERATIONAL');
             console.log('═══════════════════════════════════════════════════════════\n');
         });
         

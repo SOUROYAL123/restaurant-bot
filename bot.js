@@ -1,8 +1,9 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v7.0.0 - ULTIMATE EDITION
+ * WHATSAPP CLINIC BOT v8.0.0 - ULTIMATE EDITION WITH SPECIALIZATION
  * 
  * ✅ WhatsApp Appointment Booking
+ * ✅ Doctor Specialization Selection (NEW!)
  * ✅ Auto-Approval System (24hr)
  * ✅ Manual Approve/Reject by Doctor
  * ✅ Google Sheets Integration (Individual)
@@ -266,14 +267,21 @@ async function sendWhatsApp(to, message) {
 async function sendDoctorNotification(to, appointmentDetails, appointmentId) {
     try {
         const phone = formatForWhatsApp(to);
-        const { patientName, patientPhone, date, time, clinicName } = appointmentDetails;
+        const { patientName, patientPhone, date, time, clinicName, doctorName, specialization } = appointmentDetails;
         
         // Format auto-approval time
         const approvalTime = AUTO_APPROVAL_DELAY_MINUTES >= 60 
             ? `${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60)} hour${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60) > 1 ? 's' : ''}`
             : `${AUTO_APPROVAL_DELAY_MINUTES} minute${AUTO_APPROVAL_DELAY_MINUTES > 1 ? 's' : ''}`;
         
-        const bodyText = `🔔 *NEW APPOINTMENT REQUEST*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Appointment ID:* #${appointmentId}\n🏥 *Clinic:* ${clinicName || 'N/A'}\n\n*PATIENT DETAILS:*\n👤 *Name:* ${patientName}\n📞 *Phone:* ${patientPhone}\n\n*APPOINTMENT DETAILS:*\n📅 *Date:* ${date}\n⏰ *Time:* ${time}\n━━━━━━━━━━━━━━━━━━━━━\n\n*ACTIONS REQUIRED:*\n\n✅ *APPROVE:* Reply *APPROVE #${appointmentId}*\n❌ *REJECT:* Reply *REJECT #${appointmentId}*\n\n${AUTO_APPROVAL_ENABLED ? `⏰ *Auto-approves in ${approvalTime}* if no action taken` : '⚠️ *Manual approval required*'}`;
+        let bodyText = `🔔 *NEW APPOINTMENT REQUEST*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Appointment ID:* #${appointmentId}\n🏥 *Clinic:* ${clinicName || 'N/A'}\n`;
+        
+        if (doctorName && specialization) {
+            bodyText += `👨\u200d⚕️ *Doctor:* Dr. ${doctorName}\n`;
+            bodyText += `🩺 *Specialization:* ${specialization}\n`;
+        }
+        
+        bodyText += `\n*PATIENT DETAILS:*\n👤 *Name:* ${patientName}\n📞 *Phone:* ${patientPhone}\n\n*APPOINTMENT DETAILS:*\n📅 *Date:* ${date}\n⏰ *Time:* ${time}\n━━━━━━━━━━━━━━━━━━━━━\n\n*ACTIONS REQUIRED:*\n\n✅ *APPROVE:* Reply *APPROVE #${appointmentId}*\n❌ *REJECT:* Reply *REJECT #${appointmentId}*\n\n${AUTO_APPROVAL_ENABLED ? `⏰ *Auto-approves in ${approvalTime}* if no action taken` : '⚠️ *Manual approval required*'}`;
         
         await twilioClient.messages.create({ 
             from: process.env.WABA_NUMBER, 
@@ -281,7 +289,7 @@ async function sendDoctorNotification(to, appointmentDetails, appointmentId) {
             body: bodyText 
         });
         
-        log.info('Doctor notification sent', { to: normalizePhone(phone), appointmentId });
+        log.info('Doctor notification sent', { to: normalizePhone(phone), appointmentId, doctor: doctorName });
         return true;
     } catch (error) {
         log.error('Doctor notification failed', error);
@@ -347,6 +355,49 @@ async function getClinic(id) {
     const clinic = await dbQuery(sql`SELECT * FROM clinics WHERE id = ${id} AND status = 'active' LIMIT 1`);
     return (clinic && clinic.length > 0) ? clinic[0] : null;
 }
+// ═══════════════════════════════════════════════════════════
+// 11B. DOCTOR SPECIALIZATION HELPERS (NEW v8.0.0)
+// ═══════════════════════════════════════════════════════════
+async function getDoctorsByClinic(clinicId) {
+    const doctors = await dbQuery(sql`
+        SELECT id, name, specialization, qualification, whatsapp
+        FROM doctors
+        WHERE clinic_id = ${clinicId} AND status = 'active'
+        ORDER BY specialization, name
+    `);
+    return doctors || [];
+}
+
+async function getSpecializationsByClinic(clinicId) {
+    const specs = await dbQuery(sql`
+        SELECT DISTINCT specialization 
+        FROM doctors 
+        WHERE clinic_id = ${clinicId} 
+        AND status = 'active'
+        AND specialization IS NOT NULL
+        ORDER BY specialization
+    `);
+    return specs || [];
+}
+
+async function getDoctorsBySpecialization(clinicId, specialization) {
+    const doctors = await dbQuery(sql`
+        SELECT id, name, specialization, qualification, whatsapp
+        FROM doctors
+        WHERE clinic_id = ${clinicId}
+        AND specialization = ${specialization}
+        AND status = 'active'
+        ORDER BY name
+    `);
+    return doctors || [];
+}
+
+async function getDoctor(id) {
+    const doctor = await dbQuery(sql`SELECT * FROM doctors WHERE id = ${id} AND status = 'active' LIMIT 1`);
+    return (doctor && doctor.length > 0) ? doctor[0] : null;
+}
+
+
 
 // ═══════════════════════════════════════════════════════════
 // 12. WAITLIST MANAGEMENT
@@ -593,10 +644,10 @@ async function handleStart(phone) {
     
     await setSession(phone, { stage: 'select_clinic', session_data: {} });
     
-    let msg = '👋 *Welcome to Clinic Appointment System!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Select a clinic:*\n\n';
+    let msg = '👋 *Welcome to Clinic Appointment System!*\n\n🎉 *FREE PILOT - No Payment Required*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Select a clinic:*\n\n';
     
     clinics.forEach((clinic, i) => { 
-        msg += `*${i + 1}.* ${clinic.name}\n   👨‍⚕️ ${clinic.doctor_name}\n`;
+        msg += `*${i + 1}.* ${clinic.name}\n   👨‍⚕️ Dr. ${clinic.doctor_name}\n`;
         if (clinic.business_hours_start) {
             msg += `   ⏰ ${clinic.business_hours_start} - ${clinic.business_hours_end}\n`;
         }
@@ -619,13 +670,171 @@ async function handleClinicSelect(phone, text) {
     
     const clinic = clinics[choice - 1];
     
+    // NEW v8.0.0: Check if clinic has doctors with specializations
+    const specializations = await getSpecializationsByClinic(clinic.id);
+    
+    if (specializations.length === 0) {
+        // No specializations - original flow
+        await setSession(phone, { 
+            stage: 'enter_name', 
+            clinic_id: clinic.id, 
+            session_data: {} 
+        });
+        await sendWhatsApp(phone, `✅ *${clinic.name}* selected\n\n👤 *What is your full name?*`);
+    } else {
+        // NEW: Show specialization selection
+        await setSession(phone, { 
+            stage: 'select_specialization', 
+            clinic_id: clinic.id, 
+            session_data: {} 
+        });
+        
+        let msg = `✅ *${clinic.name}* selected\n\n🩺 *Select Doctor Specialization:*\n\n`;
+        
+        specializations.forEach((spec, i) => {
+            msg += `*${i + 1}.* ${spec.specialization}\n`;
+        });
+        msg += `*${specializations.length + 1}.* View All Doctors\n`;
+        msg += `\nReply with number *1-${specializations.length + 1}*`;
+        
+        await sendWhatsApp(phone, msg);
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════
+// 14B. SPECIALIZATION & DOCTOR HANDLERS (NEW v8.0.0)
+// ═══════════════════════════════════════════════════════════
+async function handleSpecializationSelect(phone, text) {
+    const session = await getSession(phone);
+    const specializations = await getSpecializationsByClinic(session.clinic_id);
+    const choice = parseInt(text.trim());
+    
+    if (isNaN(choice) || choice < 1 || choice > specializations.length + 1) { 
+        await sendWhatsApp(phone, `❌ Invalid choice. Reply *1-${specializations.length + 1}*`); 
+        return; 
+    }
+    
+    let data = session?.session_data || {};
+    if (typeof data === 'string') { 
+        try { data = JSON.parse(data); } catch (e) { data = {}; } 
+    }
+    
+    if (choice === specializations.length + 1) {
+        data.showAllDoctors = true;
+        data.selectedSpecialization = null;
+    } else {
+        const selectedSpec = specializations[choice - 1].specialization;
+        data.selectedSpecialization = selectedSpec;
+        data.showAllDoctors = false;
+    }
+    
     await setSession(phone, { 
-        stage: 'enter_name', 
-        clinic_id: clinic.id, 
-        session_data: {} 
+        stage: 'select_doctor', 
+        clinic_id: session.clinic_id, 
+        session_data: data 
     });
     
-    await sendWhatsApp(phone, `✅ *${clinic.name}* selected\n\n👤 *What is your full name?*`);
+    await showDoctorsList(phone);
+}
+
+async function showDoctorsList(phone) {
+    const session = await getSession(phone);
+    let data = session?.session_data || {};
+    
+    if (typeof data === 'string') { 
+        try { data = JSON.parse(data); } catch (e) { data = {}; } 
+    }
+    
+    let doctors;
+    let msg = '👨\u200d⚕️ *Select Your Doctor:*\n\n';
+    
+    if (data.showAllDoctors) {
+        doctors = await getDoctorsByClinic(session.clinic_id);
+        
+        const grouped = {};
+        doctors.forEach(doc => {
+            const spec = doc.specialization || 'General Physician';
+            if (!grouped[spec]) grouped[spec] = [];
+            grouped[spec].push(doc);
+        });
+        
+        let doctorIndex = 1;
+        const doctorsList = [];
+        
+        Object.keys(grouped).sort().forEach(spec => {
+            msg += `🩺 *${spec}*\n`;
+            grouped[spec].forEach(doc => {
+                msg += `*${doctorIndex}.* Dr. ${doc.name}\n`;
+                msg += `   📋 ${doc.qualification || 'MBBS'}\n`;
+                doctorsList.push(doc);
+                doctorIndex++;
+            });
+            msg += '\n';
+        });
+        
+        data.doctorsList = doctorsList;
+        msg += `Reply with doctor number *1-${doctorsList.length}*`;
+        
+    } else {
+        doctors = await getDoctorsBySpecialization(session.clinic_id, data.selectedSpecialization);
+        
+        msg += `🩺 *${data.selectedSpecialization}s Available:*\n\n`;
+        doctors.forEach((doc, i) => {
+            msg += `*${i + 1}.* Dr. ${doc.name}\n`;
+            msg += `   📋 ${doc.qualification || 'MBBS'}\n\n`;
+        });
+        
+        data.doctorsList = doctors;
+        msg += `Reply with number *1-${doctors.length}*`;
+    }
+    
+    await setSession(phone, { 
+        stage: 'select_doctor', 
+        clinic_id: session.clinic_id, 
+        session_data: data 
+    });
+    
+    await sendWhatsApp(phone, msg);
+}
+
+async function handleDoctorSelect(phone, text) {
+    const session = await getSession(phone);
+    let data = session?.session_data || {};
+    
+    if (typeof data === 'string') { 
+        try { data = JSON.parse(data); } catch (e) { data = {}; } 
+    }
+    
+    const doctors = data.doctorsList || [];
+    const choice = parseInt(text.trim());
+    
+    if (isNaN(choice) || choice < 1 || choice > doctors.length) { 
+        await sendWhatsApp(phone, `❌ Invalid choice. Reply *1-${doctors.length}*`); 
+        return; 
+    }
+    
+    const selectedDoctor = doctors[choice - 1];
+    
+    data.doctorId = selectedDoctor.id;
+    data.doctorName = selectedDoctor.name;
+    data.doctorSpecialization = selectedDoctor.specialization;
+    data.doctorWhatsApp = selectedDoctor.whatsapp;
+    
+    await setSession(phone, { 
+        stage: 'enter_name', 
+        clinic_id: session.clinic_id, 
+        session_data: data 
+    });
+    
+    let msg = `✅ *Doctor Selected:*\n\n`;
+    msg += `👨\u200d⚕️ Dr. ${selectedDoctor.name}\n`;
+    msg += `🩺 ${selectedDoctor.specialization}\n`;
+    msg += `🎓 ${selectedDoctor.qualification}\n\n`;
+    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `👤 *What is your full name?*`;
+    
+    await sendWhatsApp(phone, msg);
 }
 
 async function handleName(phone, text) {
@@ -734,13 +943,13 @@ async function handleTime(phone, text) {
     try {
         const appt = await sql`
             INSERT INTO appointments (
-                clinic_id, patient_name, patient_phone, 
+                clinic_id, doctor_id, patient_name, patient_phone, 
                 appointment_date, appointment_time, appointment_slot, 
                 status, reminder_sent, auto_processed, 
                 reminder_24h_sent, reminder_2h_sent
             ) 
             VALUES (
-                ${session.clinic_id}, ${data.name}, ${cleanPhone}, 
+                ${session.clinic_id}, ${data.doctorId || null}, ${data.name}, ${cleanPhone}, 
                 ${data.date}, ${timeSlot}, ${timeSlot}, 
                 'pending', false, false, false, false
             ) 
@@ -762,19 +971,29 @@ async function handleTime(phone, text) {
             ? `${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60)} hour${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60) > 1 ? 's' : ''}`
             : `${AUTO_APPROVAL_DELAY_MINUTES} minute${AUTO_APPROVAL_DELAY_MINUTES > 1 ? 's' : ''}`;
         
-        await sendWhatsApp(
-            phone, 
-            `✅ *Appointment Booked!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *ID:* #${aptId}\n👤 *Name:* ${data.name}\n🏥 *Clinic:* ${clinic.name}\n📅 *Date:* ${dateDisplay}\n⏰ *Time:* ${timeSlot}\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ *Status:* Pending approval\n${AUTO_APPROVAL_ENABLED ? `⏰ Auto-approves in ${approvalTime} if doctor doesn't respond` : '⚠️ Manual approval required'}\n\nYou'll receive confirmation soon!\n\n━━━━━━━━━━━━━━━━━━━━━\n*Need to change?*\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`
-        );
+        let confirmMsg = `✅ *Appointment Booked!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *ID:* #${aptId}\n👤 *Name:* ${data.name}\n🏥 *Clinic:* ${clinic.name}\n`;
+        
+        if (data.doctorName) {
+            confirmMsg += `👨\u200d⚕️ *Doctor:* Dr. ${data.doctorName}\n`;
+            confirmMsg += `🩺 *Specialization:* ${data.doctorSpecialization}\n`;
+        }
+        
+        confirmMsg += `📅 *Date:* ${dateDisplay}\n⏰ *Time:* ${timeSlot}\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ *Status:* Pending approval\n${AUTO_APPROVAL_ENABLED ? `⏰ Auto-approves in ${approvalTime} if doctor doesn't respond` : '⚠️ Manual approval required'}\n\nYou'll receive confirmation soon!\n\n━━━━━━━━━━━━━━━━━━━━━\n*Need to change?*\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`;
+        
+        await sendWhatsApp(phone, confirmMsg);
+        
+        const doctorPhone = data.doctorWhatsApp || clinic.doctor_whatsapp;
         
         await sendDoctorNotification(
-            clinic.doctor_whatsapp,
+            doctorPhone,
             {
                 patientName: data.name,
                 patientPhone: cleanPhone,
                 date: dateDisplay,
                 time: timeSlot,
-                clinicName: clinic.name
+                clinicName: clinic.name,
+                doctorName: data.doctorName || clinic.doctor_name,
+                specialization: data.doctorSpecialization || 'General'
             },
             aptId
         );
@@ -975,6 +1194,12 @@ async function handleMessage(phone, text) {
             case 'select_clinic': 
                 await handleClinicSelect(phone, text); 
                 break;
+            case 'select_specialization':
+                await handleSpecializationSelect(phone, text);
+                break;
+            case 'select_doctor':
+                await handleDoctorSelect(phone, text);
+                break;
             case 'enter_name': 
                 await handleName(phone, text); 
                 break;
@@ -999,7 +1224,7 @@ async function handleMessage(phone, text) {
 // ═══════════════════════════════════════════════════════════
 app.get('/', (req, res) => res.json({ 
     name: 'WhatsApp Clinic Bot - PILOT', 
-    version: '6.0.0-pilot', 
+    version: '8.0.0-ultimate', 
     status: 'operational', 
     mode: 'pilot',
     payment_required: false,
@@ -1053,7 +1278,7 @@ app.get('/status', requireApiKey, async (req, res) => {
         
         res.json({ 
             status: 'ok', 
-            version: '6.0.0-pilot',
+            version: '8.0.0-ultimate',
             mode: 'pilot',
             auto_approval: {
                 enabled: AUTO_APPROVAL_ENABLED,
@@ -1759,7 +1984,7 @@ async function startServer() {
         
         app.listen(PORT, HOST, () => {
             console.log('\n═══════════════════════════════════════════════════════════');
-            console.log('🚀 WHATSAPP CLINIC BOT v7.0.0 - ULTIMATE EDITION');
+            console.log('🚀 WHATSAPP CLINIC BOT v8.0.0 - ULTIMATE EDITION WITH SPECIALIZATION');
             console.log('═══════════════════════════════════════════════════════════');
             console.log(`📡 Port: ${PORT}`);
             console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);

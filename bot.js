@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v8.0.1 - ULTIMATE EDITION WITH CHUNKING
+ * WHATSAPP CLINIC BOT v8.0.2 - ULTIMATE EDITION
  * 
  * ✅ WhatsApp Appointment Booking
  * ✅ Doctor Specialization Selection
@@ -9,7 +9,8 @@
  * ✅ Google Sheets Integration (Individual)
  * ✅ Google Sheets Integration (Centralized for 1000+)
  * ✅ Bulk Operations & Search
- * ✅ Message Chunking (1600 char limit fix) - NEW!
+ * ✅ Message Chunking (1600 char limit fix)
+ * ✅ Duplicate Dr. prefix fix - NEW!
  * ✅ Security Hardened
  * ✅ Production Ready
  * 
@@ -329,6 +330,19 @@ function formatForWhatsApp(phone) {
     return clean.startsWith('whatsapp:') ? clean : `whatsapp:${clean}`;
 }
 
+/**
+ * Format doctor name - removes duplicate Dr. prefix
+ */
+function formatDoctorName(name) {
+    if (!name) return '';
+    
+    // Remove existing Dr./Dr prefix (case insensitive)
+    const cleaned = name.trim().replace(/^(Dr\.?\s*|DR\.?\s*|dr\.?\s*)/i, '');
+    
+    // Return with proper Dr. prefix
+    return `Dr. ${cleaned}`;
+}
+
 async function dbQuery(query, errorMsg = 'Database query failed') {
     try { 
         return await query; 
@@ -381,7 +395,7 @@ async function sendDoctorNotification(to, appointmentDetails, appointmentId) {
         let bodyText = `🔔 *NEW APPOINTMENT REQUEST*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Appointment ID:* #${appointmentId}\n🏥 *Clinic:* ${clinicName || 'N/A'}\n`;
         
         if (doctorName && specialization) {
-            bodyText += `👨\u200d⚕️ *Doctor:* Dr. ${doctorName}\n`;
+            bodyText += `👨\u200d⚕️ *Doctor:* ${formatDoctorName(doctorName)}\n`;
             bodyText += `🩺 *Specialization:* ${specialization}\n`;
         }
         
@@ -753,7 +767,7 @@ async function handleStart(phone) {
     
     clinics.forEach((clinic, i) => { 
         msg += `*${i + 1}.* ${clinic.name}\n`;
-        msg += `   👨‍⚕️ Dr. ${clinic.doctor_name}\n`;
+        msg += `   👨‍⚕️ ${formatDoctorName(clinic.doctor_name)}\n`;
         if (clinic.business_hours_start) {
             msg += `   ⏰ ${clinic.business_hours_start}-${clinic.business_hours_end}\n`;
         }
@@ -870,7 +884,7 @@ async function showDoctorsList(phone) {
         Object.keys(grouped).sort().forEach(spec => {
             msg += `🩺 *${spec}*\n`;
             grouped[spec].forEach(doc => {
-                msg += `*${doctorIndex}.* Dr. ${doc.name}\n`;
+                msg += `*${doctorIndex}.* ${formatDoctorName(doc.name)}\n`;
                 if (doc.qualification) msg += `   📋 ${doc.qualification}\n`;
                 doctorsList.push(doc);
                 doctorIndex++;
@@ -886,7 +900,7 @@ async function showDoctorsList(phone) {
         
         msg += `🩺 *${data.selectedSpecialization}s:*\n\n`;
         doctors.forEach((doc, i) => {
-            msg += `*${i + 1}.* Dr. ${doc.name}\n`;
+            msg += `*${i + 1}.* ${formatDoctorName(doc.name)}\n`;
             if (doc.qualification) msg += `   📋 ${doc.qualification}\n\n`;
         });
         
@@ -933,7 +947,7 @@ async function handleDoctorSelect(phone, text) {
     });
     
     let msg = `✅ *Doctor Selected:*\n\n`;
-    msg += `👨\u200d⚕️ Dr. ${selectedDoctor.name}\n`;
+    msg += `👨\u200d⚕️ ${formatDoctorName(selectedDoctor.name)}\n`;
     msg += `🩺 ${selectedDoctor.specialization}\n`;
     if (selectedDoctor.qualification) msg += `🎓 ${selectedDoctor.qualification}\n`;
     msg += `\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
@@ -1079,7 +1093,7 @@ async function handleTime(phone, text) {
         let confirmMsg = `✅ *Booked!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 #${aptId}\n👤 ${data.name}\n🏥 ${clinic.name}\n`;
         
         if (data.doctorName) {
-            confirmMsg += `👨\u200d⚕️ Dr. ${data.doctorName}\n`;
+            confirmMsg += `👨\u200d⚕️ ${formatDoctorName(data.doctorName)}\n`;
             confirmMsg += `🩺 ${data.doctorSpecialization}\n`;
         }
         
@@ -1218,7 +1232,7 @@ async function handleDoctorCommand(phone, text) {
     if (isApprove) {
         await sendWhatsApp(
             apt.patient_phone, 
-            `✅ *CONFIRMED!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 #${aptId}\n🏥 ${clinic[0].name}\n👨‍⚕️ Dr. ${clinic[0].doctor_name}\n📅 ${dateStr}\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━━\n\n✓ Doctor approved\n✓ Arrive 10 min early\n\nSee you soon! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`
+            `✅ *CONFIRMED!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 #${aptId}\n🏥 ${clinic[0].name}\n👨‍⚕️ ${formatDoctorName(clinic[0].doctor_name)}\n📅 ${dateStr}\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━━\n\n✓ Doctor approved\n✓ Arrive 10 min early\n\nSee you soon! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`
         );
     } else {
         await sendWhatsApp(
@@ -1328,7 +1342,7 @@ async function handleMessage(phone, text) {
 // ═══════════════════════════════════════════════════════════
 app.get('/', (req, res) => res.json({ 
     name: 'WhatsApp Clinic Bot - PILOT', 
-    version: '8.0.1-ultimate-chunking', 
+    version: '8.0.2-ultimate', 
     status: 'operational', 
     mode: 'pilot',
     payment_required: false,
@@ -1342,6 +1356,7 @@ app.get('/', (req, res) => res.json({
         interactive_commands: true, 
         waitlist: true,
         message_chunking: true,
+        duplicate_dr_fix: true,
         signature_verification: true
     }, 
     uptime: Math.floor(process.uptime()) 
@@ -1383,7 +1398,7 @@ app.get('/status', requireApiKey, async (req, res) => {
         
         res.json({ 
             status: 'ok', 
-            version: '8.0.1-ultimate-chunking',
+            version: '8.0.2-ultimate',
             mode: 'pilot',
             auto_approval: {
                 enabled: AUTO_APPROVAL_ENABLED,
@@ -1790,7 +1805,7 @@ app.get('/api/sheets/:clinicId/info', requireSheetsApiKey, async (req, res) => {
             'Value': clinic.name
         }, {
             'Field': 'Doctor Name',
-            'Value': `Dr. ${clinic.doctor_name}`
+            'Value': formatDoctorName(clinic.doctor_name)
         }, {
             'Field': 'Doctor WhatsApp',
             'Value': clinic.doctor_whatsapp ? clinic.doctor_whatsapp.replace('whatsapp:', '') : ''
@@ -2059,14 +2074,14 @@ app.use((err, req, res, next) => {
 // ═══════════════════════════════════════════════════════════
 async function startServer() {
     try {
-        log.info('Starting server v8.0.1...');
+        log.info('Starting server v8.0.2...');
         
         await sql`SELECT NOW()`;
         log.success('Database connected');
         
         app.listen(PORT, HOST, () => {
             console.log('\n═══════════════════════════════════════════════════════════');
-            console.log('🚀 WHATSAPP CLINIC BOT v8.0.1 - WITH MESSAGE CHUNKING');
+            console.log('🚀 WHATSAPP CLINIC BOT v8.0.2 - ULTIMATE EDITION');
             console.log('═══════════════════════════════════════════════════════════');
             console.log(`📡 Port: ${PORT}`);
             console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
@@ -2079,6 +2094,7 @@ async function startServer() {
             console.log(`   ├─ Rate Limiting: Active ✅`);
             console.log(`   └─ Security Headers: Active ✅`);
             console.log(`📨 Message Chunking: Enabled (1500 char limit) ✅`);
+            console.log(`👨‍⚕️ Duplicate Dr. Fix: Enabled ✅`);
             console.log(`⏰ Auto-Approval: ${AUTO_APPROVAL_ENABLED ? `Enabled (${AUTO_APPROVAL_DELAY_MINUTES} min) ✅` : 'Disabled ⚠️'}`);
             console.log(`📋 Manual Approval: Enabled ✅`);
             console.log(`📊 Google Sheets: Individual + Centralized ✅`);

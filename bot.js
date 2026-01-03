@@ -1,14 +1,15 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v8.0.0 - ULTIMATE EDITION WITH SPECIALIZATION
+ * WHATSAPP CLINIC BOT v8.0.1 - ULTIMATE EDITION WITH CHUNKING
  * 
  * ✅ WhatsApp Appointment Booking
- * ✅ Doctor Specialization Selection (NEW!)
+ * ✅ Doctor Specialization Selection
  * ✅ Auto-Approval System (24hr)
  * ✅ Manual Approve/Reject by Doctor
  * ✅ Google Sheets Integration (Individual)
  * ✅ Google Sheets Integration (Centralized for 1000+)
  * ✅ Bulk Operations & Search
+ * ✅ Message Chunking (1600 char limit fix) - NEW!
  * ✅ Security Hardened
  * ✅ Production Ready
  * 
@@ -226,7 +227,96 @@ app.use((req, res, next) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// 8. UTILITY FUNCTIONS
+// 8. MESSAGE CHUNKING UTILITIES (NEW v8.0.1)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Split long messages into chunks under WhatsApp's 1600 character limit
+ * Uses 1500 as safety margin
+ */
+function chunkMessage(message, maxLength = 1500) {
+    if (message.length <= maxLength) {
+        return [message];
+    }
+
+    const chunks = [];
+    let currentChunk = '';
+    const lines = message.split('\n');
+
+    for (const line of lines) {
+        // If single line exceeds limit, split it at word boundaries
+        if (line.length > maxLength) {
+            if (currentChunk) {
+                chunks.push(currentChunk.trim());
+                currentChunk = '';
+            }
+            
+            const words = line.split(' ');
+            let tempLine = '';
+            
+            for (const word of words) {
+                if ((tempLine + word).length > maxLength) {
+                    chunks.push(tempLine.trim());
+                    tempLine = word + ' ';
+                } else {
+                    tempLine += word + ' ';
+                }
+            }
+            
+            if (tempLine) {
+                currentChunk = tempLine;
+            }
+            continue;
+        }
+
+        // Check if adding this line exceeds limit
+        if ((currentChunk + '\n' + line).length > maxLength) {
+            chunks.push(currentChunk.trim());
+            currentChunk = line + '\n';
+        } else {
+            currentChunk += (currentChunk ? '\n' : '') + line;
+        }
+    }
+
+    if (currentChunk.trim()) {
+        chunks.push(currentChunk.trim());
+    }
+
+    return chunks;
+}
+
+/**
+ * Send long message in multiple parts with delay
+ */
+async function sendLongMessage(to, message, delayMs = 1000) {
+    const chunks = chunkMessage(message);
+    
+    log.info(`Chunking message`, { to: normalizePhone(to), chunks: chunks.length, originalLength: message.length });
+    
+    for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const prefix = chunks.length > 1 ? `[${i + 1}/${chunks.length}]\n\n` : '';
+        
+        const phone = formatForWhatsApp(to);
+        await twilioClient.messages.create({
+            from: process.env.WABA_NUMBER,
+            to: phone,
+            body: prefix + chunk
+        });
+        
+        log.info('Message chunk sent', { to: normalizePhone(phone), chunk: i + 1, total: chunks.length });
+        
+        // Add delay between messages to avoid rate limiting
+        if (i < chunks.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+    }
+    
+    return chunks.length;
+}
+
+// ═══════════════════════════════════════════════════════════
+// 9. UTILITY FUNCTIONS
 // ═══════════════════════════════════════════════════════════
 function normalizePhone(phone) {
     if (!phone) return '';
@@ -248,14 +338,28 @@ async function dbQuery(query, errorMsg = 'Database query failed') {
     }
 }
 
+/**
+ * UPDATED sendWhatsApp - Now handles long messages automatically with chunking
+ */
 async function sendWhatsApp(to, message) {
     try {
         const phone = formatForWhatsApp(to);
+        
+        // Auto-chunk long messages (NEW v8.0.1)
+        if (message.length > 1500) {
+            log.warn(`Message exceeds limit`, { length: message.length, chunking: true });
+            const chunksSent = await sendLongMessage(to, message);
+            log.success('Long message sent in chunks', { chunks: chunksSent });
+            return true;
+        }
+
+        // Normal single message
         const msg = await twilioClient.messages.create({
             from: process.env.WABA_NUMBER,
             to: phone,
             body: message
         });
+        
         log.info('WhatsApp sent', { to: normalizePhone(phone), sid: msg.sid });
         return true;
     } catch (error) {
@@ -283,11 +387,8 @@ async function sendDoctorNotification(to, appointmentDetails, appointmentId) {
         
         bodyText += `\n*PATIENT DETAILS:*\n👤 *Name:* ${patientName}\n📞 *Phone:* ${patientPhone}\n\n*APPOINTMENT DETAILS:*\n📅 *Date:* ${date}\n⏰ *Time:* ${time}\n━━━━━━━━━━━━━━━━━━━━━\n\n*ACTIONS REQUIRED:*\n\n✅ *APPROVE:* Reply *APPROVE #${appointmentId}*\n❌ *REJECT:* Reply *REJECT #${appointmentId}*\n\n${AUTO_APPROVAL_ENABLED ? `⏰ *Auto-approves in ${approvalTime}* if no action taken` : '⚠️ *Manual approval required*'}`;
         
-        await twilioClient.messages.create({ 
-            from: process.env.WABA_NUMBER, 
-            to: phone, 
-            body: bodyText 
-        });
+        // Use sendWhatsApp which now has auto-chunking
+        await sendWhatsApp(to, bodyText);
         
         log.info('Doctor notification sent', { to: normalizePhone(phone), appointmentId, doctor: doctorName });
         return true;
@@ -298,7 +399,7 @@ async function sendDoctorNotification(to, appointmentDetails, appointmentId) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 9. AUTO-APPROVAL SYSTEM
+// 10. AUTO-APPROVAL SYSTEM
 // ═══════════════════════════════════════════════════════════
 /**
  * Schedule auto-approval - just logs it
@@ -319,7 +420,7 @@ async function scheduleAutoApproval(appointmentId) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 10. SESSION MANAGEMENT
+// 11. SESSION MANAGEMENT
 // ═══════════════════════════════════════════════════════════
 async function getSession(phone) {
     const cleanPhone = normalizePhone(phone);
@@ -344,7 +445,7 @@ async function clearSession(phone) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 11. CLINIC HELPERS
+// 12. CLINIC HELPERS
 // ═══════════════════════════════════════════════════════════
 async function getActiveClinics() {
     const clinics = await dbQuery(sql`SELECT * FROM clinics WHERE status = 'active' ORDER BY id`);
@@ -355,8 +456,9 @@ async function getClinic(id) {
     const clinic = await dbQuery(sql`SELECT * FROM clinics WHERE id = ${id} AND status = 'active' LIMIT 1`);
     return (clinic && clinic.length > 0) ? clinic[0] : null;
 }
+
 // ═══════════════════════════════════════════════════════════
-// 11B. DOCTOR SPECIALIZATION HELPERS (NEW v8.0.0)
+// 13. DOCTOR SPECIALIZATION HELPERS
 // ═══════════════════════════════════════════════════════════
 async function getDoctorsByClinic(clinicId) {
     const doctors = await dbQuery(sql`
@@ -397,10 +499,8 @@ async function getDoctor(id) {
     return (doctor && doctor.length > 0) ? doctor[0] : null;
 }
 
-
-
 // ═══════════════════════════════════════════════════════════
-// 12. WAITLIST MANAGEMENT
+// 14. WAITLIST MANAGEMENT
 // ═══════════════════════════════════════════════════════════
 async function notifyWaitlist(clinicId, date, slot) {
     try {
@@ -511,7 +611,7 @@ async function handleWaitlistAcceptance(phone, waitlistId) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 13. INTERACTIVE COMMANDS
+// 15. INTERACTIVE COMMANDS
 // ═══════════════════════════════════════════════════════════
 async function handleConfirmCommand(phone, appointmentId) {
     try {
@@ -632,8 +732,12 @@ async function handleRescheduleCommand(phone, appointmentId) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 14. CONVERSATION FLOW
+// 16. CONVERSATION FLOW
 // ═══════════════════════════════════════════════════════════
+
+/**
+ * UPDATED handleStart - Shortened to avoid 1600 char limit
+ */
 async function handleStart(phone) {
     const clinics = await getActiveClinics();
     
@@ -644,17 +748,19 @@ async function handleStart(phone) {
     
     await setSession(phone, { stage: 'select_clinic', session_data: {} });
     
-    let msg = '👋 *Welcome to Clinic Appointment System!*\n\n🎉 *FREE PILOT - No Payment Required*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Select a clinic:*\n\n';
+    // Shortened welcome message to stay under 1500 chars
+    let msg = '👋 *Welcome to Clinic Appointments!*\n\n🎉 *FREE PILOT*\n\n📋 *Select clinic:*\n\n';
     
     clinics.forEach((clinic, i) => { 
-        msg += `*${i + 1}.* ${clinic.name}\n   👨‍⚕️ Dr. ${clinic.doctor_name}\n`;
+        msg += `*${i + 1}.* ${clinic.name}\n`;
+        msg += `   👨‍⚕️ Dr. ${clinic.doctor_name}\n`;
         if (clinic.business_hours_start) {
-            msg += `   ⏰ ${clinic.business_hours_start} - ${clinic.business_hours_end}\n`;
+            msg += `   ⏰ ${clinic.business_hours_start}-${clinic.business_hours_end}\n`;
         }
         msg += '\n';
     });
     
-    msg += `Reply with number *1-${clinics.length}*`;
+    msg += `Reply *1-${clinics.length}*`;
     
     await sendWhatsApp(phone, msg);
 }
@@ -670,7 +776,7 @@ async function handleClinicSelect(phone, text) {
     
     const clinic = clinics[choice - 1];
     
-    // NEW v8.0.0: Check if clinic has doctors with specializations
+    // Check if clinic has doctors with specializations
     const specializations = await getSpecializationsByClinic(clinic.id);
     
     if (specializations.length === 0) {
@@ -682,28 +788,27 @@ async function handleClinicSelect(phone, text) {
         });
         await sendWhatsApp(phone, `✅ *${clinic.name}* selected\n\n👤 *What is your full name?*`);
     } else {
-        // NEW: Show specialization selection
+        // Show specialization selection
         await setSession(phone, { 
             stage: 'select_specialization', 
             clinic_id: clinic.id, 
             session_data: {} 
         });
         
-        let msg = `✅ *${clinic.name}* selected\n\n🩺 *Select Doctor Specialization:*\n\n`;
+        let msg = `✅ *${clinic.name}* selected\n\n🩺 *Select Specialization:*\n\n`;
         
         specializations.forEach((spec, i) => {
             msg += `*${i + 1}.* ${spec.specialization}\n`;
         });
         msg += `*${specializations.length + 1}.* View All Doctors\n`;
-        msg += `\nReply with number *1-${specializations.length + 1}*`;
+        msg += `\nReply *1-${specializations.length + 1}*`;
         
         await sendWhatsApp(phone, msg);
     }
 }
 
-
 // ═══════════════════════════════════════════════════════════
-// 14B. SPECIALIZATION & DOCTOR HANDLERS (NEW v8.0.0)
+// 17. SPECIALIZATION & DOCTOR HANDLERS
 // ═══════════════════════════════════════════════════════════
 async function handleSpecializationSelect(phone, text) {
     const session = await getSession(phone);
@@ -747,14 +852,14 @@ async function showDoctorsList(phone) {
     }
     
     let doctors;
-    let msg = '👨\u200d⚕️ *Select Your Doctor:*\n\n';
+    let msg = '👨\u200d⚕️ *Select Doctor:*\n\n';
     
     if (data.showAllDoctors) {
         doctors = await getDoctorsByClinic(session.clinic_id);
         
         const grouped = {};
         doctors.forEach(doc => {
-            const spec = doc.specialization || 'General Physician';
+            const spec = doc.specialization || 'General';
             if (!grouped[spec]) grouped[spec] = [];
             grouped[spec].push(doc);
         });
@@ -766,7 +871,7 @@ async function showDoctorsList(phone) {
             msg += `🩺 *${spec}*\n`;
             grouped[spec].forEach(doc => {
                 msg += `*${doctorIndex}.* Dr. ${doc.name}\n`;
-                msg += `   📋 ${doc.qualification || 'MBBS'}\n`;
+                if (doc.qualification) msg += `   📋 ${doc.qualification}\n`;
                 doctorsList.push(doc);
                 doctorIndex++;
             });
@@ -774,19 +879,19 @@ async function showDoctorsList(phone) {
         });
         
         data.doctorsList = doctorsList;
-        msg += `Reply with doctor number *1-${doctorsList.length}*`;
+        msg += `Reply *1-${doctorsList.length}*`;
         
     } else {
         doctors = await getDoctorsBySpecialization(session.clinic_id, data.selectedSpecialization);
         
-        msg += `🩺 *${data.selectedSpecialization}s Available:*\n\n`;
+        msg += `🩺 *${data.selectedSpecialization}s:*\n\n`;
         doctors.forEach((doc, i) => {
             msg += `*${i + 1}.* Dr. ${doc.name}\n`;
-            msg += `   📋 ${doc.qualification || 'MBBS'}\n\n`;
+            if (doc.qualification) msg += `   📋 ${doc.qualification}\n\n`;
         });
         
         data.doctorsList = doctors;
-        msg += `Reply with number *1-${doctors.length}*`;
+        msg += `Reply *1-${doctors.length}*`;
     }
     
     await setSession(phone, { 
@@ -830,9 +935,9 @@ async function handleDoctorSelect(phone, text) {
     let msg = `✅ *Doctor Selected:*\n\n`;
     msg += `👨\u200d⚕️ Dr. ${selectedDoctor.name}\n`;
     msg += `🩺 ${selectedDoctor.specialization}\n`;
-    msg += `🎓 ${selectedDoctor.qualification}\n\n`;
-    msg += `━━━━━━━━━━━━━━━━━━━━━\n\n`;
-    msg += `👤 *What is your full name?*`;
+    if (selectedDoctor.qualification) msg += `🎓 ${selectedDoctor.qualification}\n`;
+    msg += `\n━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `👤 *Your full name?*`;
     
     await sendWhatsApp(phone, msg);
 }
@@ -860,7 +965,7 @@ async function handleName(phone, text) {
         session_data: data 
     });
     
-    let msg = `👤 *Name:* ${name}\n\n📅 *Select date:*\n\n`;
+    let msg = `👤 ${name}\n\n📅 *Select date:*\n\n`;
     
     for (let i = 1; i <= 7; i++) { 
         const d = new Date(); 
@@ -904,7 +1009,7 @@ async function handleDate(phone, text) {
     const startHour = parseInt(clinic?.business_hours_start?.split(':')[0] || '9');
     const endHour = parseInt(clinic?.business_hours_end?.split(':')[0] || '18');
     
-    let msg = `📅 *Date:* ${d.toLocaleDateString('en-IN')}\n\n⏰ *Select time:*\n\n`;
+    let msg = `📅 ${d.toLocaleDateString('en-IN')}\n\n⏰ *Select time:*\n\n`;
     
     for (let h = startHour; h < endHour; h++) { 
         const time = h >= 12 ? `${h === 12 ? 12 : h - 12}:00 PM` : `${h}:00 AM`; 
@@ -966,19 +1071,19 @@ async function handleTime(phone, text) {
             year: 'numeric' 
         });
         
-        // Format approval time for patient message
+        // Format approval time
         const approvalTime = AUTO_APPROVAL_DELAY_MINUTES >= 60 
             ? `${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60)} hour${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60) > 1 ? 's' : ''}`
             : `${AUTO_APPROVAL_DELAY_MINUTES} minute${AUTO_APPROVAL_DELAY_MINUTES > 1 ? 's' : ''}`;
         
-        let confirmMsg = `✅ *Appointment Booked!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *ID:* #${aptId}\n👤 *Name:* ${data.name}\n🏥 *Clinic:* ${clinic.name}\n`;
+        let confirmMsg = `✅ *Booked!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 #${aptId}\n👤 ${data.name}\n🏥 ${clinic.name}\n`;
         
         if (data.doctorName) {
-            confirmMsg += `👨\u200d⚕️ *Doctor:* Dr. ${data.doctorName}\n`;
-            confirmMsg += `🩺 *Specialization:* ${data.doctorSpecialization}\n`;
+            confirmMsg += `👨\u200d⚕️ Dr. ${data.doctorName}\n`;
+            confirmMsg += `🩺 ${data.doctorSpecialization}\n`;
         }
         
-        confirmMsg += `📅 *Date:* ${dateDisplay}\n⏰ *Time:* ${timeSlot}\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ *Status:* Pending approval\n${AUTO_APPROVAL_ENABLED ? `⏰ Auto-approves in ${approvalTime} if doctor doesn't respond` : '⚠️ Manual approval required'}\n\nYou'll receive confirmation soon!\n\n━━━━━━━━━━━━━━━━━━━━━\n*Need to change?*\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`;
+        confirmMsg += `📅 ${dateDisplay}\n⏰ ${timeSlot}\n━━━━━━━━━━━━━━━━━━━━━\n\n⏳ *Pending approval*\n${AUTO_APPROVAL_ENABLED ? `⏰ Auto-approves in ${approvalTime}` : '⚠️ Manual approval required'}\n\nYou'll get confirmation soon!\n\n━━━━━━━━━━━━━━━━━━━━━\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`;
         
         await sendWhatsApp(phone, confirmMsg);
         
@@ -1005,12 +1110,12 @@ async function handleTime(phone, text) {
         
     } catch (error) {
         log.error('Appointment creation failed', error);
-        await sendWhatsApp(phone, '❌ Error creating appointment. Please try again or contact support.');
+        await sendWhatsApp(phone, '❌ Error creating appointment. Try again or contact support.');
     }
 }
 
 // ═══════════════════════════════════════════════════════════
-// 15. DOCTOR COMMANDS
+// 18. DOCTOR COMMANDS
 // ═══════════════════════════════════════════════════════════
 async function handleDoctorCommand(phone, text) {
     const cleanPhone = normalizePhone(phone);
@@ -1113,12 +1218,12 @@ async function handleDoctorCommand(phone, text) {
     if (isApprove) {
         await sendWhatsApp(
             apt.patient_phone, 
-            `✅ *APPOINTMENT CONFIRMED!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Booking:* #${aptId}\n🏥 *Clinic:* ${clinic[0].name}\n👨‍⚕️ *Doctor:* Dr. ${clinic[0].doctor_name}\n📅 *Date:* ${dateStr}\n⏰ *Time:* ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━━\n\n✓ Doctor has approved your appointment\n✓ Please arrive 10 minutes early\n\nSee you soon! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n*Need to change?*\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`
+            `✅ *CONFIRMED!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 #${aptId}\n🏥 ${clinic[0].name}\n👨‍⚕️ Dr. ${clinic[0].doctor_name}\n📅 ${dateStr}\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━━\n\n✓ Doctor approved\n✓ Arrive 10 min early\n\nSee you soon! 😊\n\n━━━━━━━━━━━━━━━━━━━━━\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`
         );
     } else {
         await sendWhatsApp(
             apt.patient_phone, 
-            `❌ *Appointment Not Available*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Booking:* #${aptId}\n━━━━━━━━━━━━━━━━━━━━━\n\nSorry, the requested time slot is no longer available.\n\nPlease reply *hi* to book a different slot.`
+            `❌ *Not Available*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 #${aptId}\n━━━━━━━━━━━━━━━━━━━━━\n\nSlot unavailable.\n\nReply *hi* to book another.`
         );
         
         // Notify waitlist
@@ -1127,14 +1232,14 @@ async function handleDoctorCommand(phone, text) {
     
     await sendWhatsApp(
         phone, 
-        `${isApprove ? '✅' : '❌'} *Appointment #${aptId} ${isApprove ? 'APPROVED' : 'REJECTED'}*\n\n━━━━━━━━━━━━━━━━━━━━━\n👤 Patient: ${apt.patient_name}\n📞 Phone: ${apt.patient_phone}\n📅 Date: ${dateStr}\n⏰ Time: ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━━\n\n✓ Patient has been notified`
+        `${isApprove ? '✅' : '❌'} *#${aptId} ${isApprove ? 'APPROVED' : 'REJECTED'}*\n\n━━━━━━━━━━━━━━━━━━━━━\n👤 ${apt.patient_name}\n📞 ${apt.patient_phone}\n📅 ${dateStr}\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━━\n\n✓ Patient notified`
     );
     
     return true;
 }
 
 // ═══════════════════════════════════════════════════════════
-// 16. MESSAGE ROUTER
+// 19. MESSAGE ROUTER
 // ═══════════════════════════════════════════════════════════
 async function handleMessage(phone, text) {
     try {
@@ -1181,8 +1286,7 @@ async function handleMessage(phone, text) {
         const session = await getSession(phone);
         const msg = text.trim().toLowerCase();
         
-        // FIX: Only restart if explicitly hi/hello/start/restart AND no active session
-        // Don't treat numbers as restart commands!
+        // Only restart if explicitly hi/hello/start/restart AND no active session
         const isExplicitRestart = msg === 'hi' || msg === 'hello' || msg === 'start' || msg === 'restart';
         
         if (!session || isExplicitRestart) { 
@@ -1220,11 +1324,11 @@ async function handleMessage(phone, text) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 17. PUBLIC ROUTES
+// 20. PUBLIC ROUTES
 // ═══════════════════════════════════════════════════════════
 app.get('/', (req, res) => res.json({ 
     name: 'WhatsApp Clinic Bot - PILOT', 
-    version: '8.0.0-ultimate', 
+    version: '8.0.1-ultimate-chunking', 
     status: 'operational', 
     mode: 'pilot',
     payment_required: false,
@@ -1237,6 +1341,7 @@ app.get('/', (req, res) => res.json({
         smart_reminders: true, 
         interactive_commands: true, 
         waitlist: true,
+        message_chunking: true,
         signature_verification: true
     }, 
     uptime: Math.floor(process.uptime()) 
@@ -1278,7 +1383,7 @@ app.get('/status', requireApiKey, async (req, res) => {
         
         res.json({ 
             status: 'ok', 
-            version: '8.0.0-ultimate',
+            version: '8.0.1-ultimate-chunking',
             mode: 'pilot',
             auto_approval: {
                 enabled: AUTO_APPROVAL_ENABLED,
@@ -1292,7 +1397,7 @@ app.get('/status', requireApiKey, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// 18. WEBHOOK ROUTE (SIGNATURE VERIFIED)
+// 21. WEBHOOK ROUTE (SIGNATURE VERIFIED)
 // ═══════════════════════════════════════════════════════════
 app.post('/webhook/whatsapp', 
     webhookRateLimiter,
@@ -1325,12 +1430,11 @@ app.post('/webhook/whatsapp',
 );
 
 // ═══════════════════════════════════════════════════════════
-// 18. GOOGLE SHEETS INTEGRATION - PER CLINIC
+// 22. GOOGLE SHEETS INTEGRATION - PER CLINIC
 // ═══════════════════════════════════════════════════════════
 
 /**
- * Middleware for Google Sheets API authentication - ADMIN (no clinic ID needed)
- * Used for centralized dashboard endpoints
+ * Middleware for Google Sheets API authentication - ADMIN
  */
 const requireAdminSheetsApiKey = async (req, res, next) => {
     try {
@@ -1340,13 +1444,11 @@ const requireAdminSheetsApiKey = async (req, res, next) => {
             return res.status(401).json({ error: 'API key required' });
         }
         
-        // Check ADMIN_API_KEY from environment
         if (process.env.ADMIN_API_KEY && apiKey === process.env.ADMIN_API_KEY) {
-            log.info('Admin API key validated (from environment)');
+            log.info('Admin API key validated');
             return next();
         }
         
-        // Also accept any valid clinic API key for backwards compatibility
         const clinic = await dbQuery(sql`
             SELECT * FROM clinics 
             WHERE sheets_api_key = ${apiKey}
@@ -1368,8 +1470,6 @@ const requireAdminSheetsApiKey = async (req, res, next) => {
 
 /**
  * Middleware for Google Sheets API authentication - PER CLINIC
- * Each clinic has their own API key stored in the database
- * Also accepts ADMIN_API_KEY for convenience
  */
 const requireSheetsApiKey = async (req, res, next) => {
     try {
@@ -1384,9 +1484,7 @@ const requireSheetsApiKey = async (req, res, next) => {
             return res.status(400).json({ error: 'Clinic ID required' });
         }
         
-        // Check if using ADMIN_API_KEY (works for all clinics)
         if (process.env.ADMIN_API_KEY && apiKey === process.env.ADMIN_API_KEY) {
-            // Load clinic info without checking API key
             const clinic = await dbQuery(sql`
                 SELECT * FROM clinics 
                 WHERE id = ${parseInt(clinicId)}
@@ -1402,7 +1500,6 @@ const requireSheetsApiKey = async (req, res, next) => {
             return next();
         }
         
-        // Otherwise, verify API key matches clinic
         const clinic = await dbQuery(sql`
             SELECT * FROM clinics 
             WHERE id = ${parseInt(clinicId)} 
@@ -1425,14 +1522,12 @@ const requireSheetsApiKey = async (req, res, next) => {
 
 /**
  * GET /api/sheets/:clinicId/appointments
- * Get all appointments for a specific clinic
  */
 app.get('/api/sheets/:clinicId/appointments', requireSheetsApiKey, async (req, res) => {
     try {
         const clinicId = parseInt(req.params.clinicId);
         const { status, startDate, endDate, limit } = req.query;
         
-        // Build WHERE conditions as simple strings
         let whereConditions = [`a.clinic_id = ${clinicId}`];
         
         if (status) {
@@ -1471,7 +1566,6 @@ app.get('/api/sheets/:clinicId/appointments', requireSheetsApiKey, async (req, r
         
         const appointments = await sql(query);
         
-        // Format for Google Sheets
         const formatted = appointments.map(apt => ({
             'ID': apt.id,
             'Patient Name': apt.patient_name,
@@ -1515,7 +1609,6 @@ app.get('/api/sheets/:clinicId/appointments', requireSheetsApiKey, async (req, r
 
 /**
  * GET /api/sheets/:clinicId/stats
- * Get statistics for a specific clinic
  */
 app.get('/api/sheets/:clinicId/stats', requireSheetsApiKey, async (req, res) => {
     try {
@@ -1588,7 +1681,6 @@ app.get('/api/sheets/:clinicId/stats', requireSheetsApiKey, async (req, res) => 
 
 /**
  * GET /api/sheets/:clinicId/today
- * Get today's appointments for a specific clinic
  */
 app.get('/api/sheets/:clinicId/today', requireSheetsApiKey, async (req, res) => {
     try {
@@ -1637,7 +1729,6 @@ app.get('/api/sheets/:clinicId/today', requireSheetsApiKey, async (req, res) => 
 
 /**
  * GET /api/sheets/:clinicId/range
- * Get appointments for a date range
  */
 app.get('/api/sheets/:clinicId/range', requireSheetsApiKey, async (req, res) => {
     try {
@@ -1689,7 +1780,6 @@ app.get('/api/sheets/:clinicId/range', requireSheetsApiKey, async (req, res) => 
 
 /**
  * GET /api/sheets/:clinicId/info
- * Get clinic information
  */
 app.get('/api/sheets/:clinicId/info', requireSheetsApiKey, async (req, res) => {
     try {
@@ -1724,13 +1814,11 @@ app.get('/api/sheets/:clinicId/info', requireSheetsApiKey, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// 19. BULK ENDPOINTS FOR CENTRALIZED DASHBOARD (1000+ CLINICS)
+// 23. BULK ENDPOINTS FOR CENTRALIZED DASHBOARD
 // ═══════════════════════════════════════════════════════════
 
 /**
  * GET /api/sheets/all-clinics
- * Get list of all clinics for dropdown selector
- * Used by centralized dashboard
  */
 app.get('/api/sheets/all-clinics', requireAdminSheetsApiKey, async (req, res) => {
     try {
@@ -1761,8 +1849,6 @@ app.get('/api/sheets/all-clinics', requireAdminSheetsApiKey, async (req, res) =>
 
 /**
  * GET /api/sheets/bulk/stats
- * Get statistics for all clinics
- * Used by centralized dashboard for overview
  */
 app.get('/api/sheets/bulk/stats', requireAdminSheetsApiKey, async (req, res) => {
     try {
@@ -1822,8 +1908,6 @@ app.get('/api/sheets/bulk/stats', requireAdminSheetsApiKey, async (req, res) => 
 
 /**
  * GET /api/sheets/bulk/today
- * Get today's appointments across all clinics
- * Used for cross-clinic daily overview
  */
 app.get('/api/sheets/bulk/today', requireAdminSheetsApiKey, async (req, res) => {
     try {
@@ -1871,8 +1955,6 @@ app.get('/api/sheets/bulk/today', requireAdminSheetsApiKey, async (req, res) => 
 
 /**
  * GET /api/sheets/search
- * Search for patients across all clinics
- * Requires query parameter: q (search term)
  */
 app.get('/api/sheets/search', requireAdminSheetsApiKey, async (req, res) => {
     try {
@@ -1938,7 +2020,7 @@ app.get('/api/sheets/search', requireAdminSheetsApiKey, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// 20. CRON ENDPOINTS (API KEY REQUIRED)
+// 24. CRON ENDPOINTS
 // ═══════════════════════════════════════════════════════════
 app.post('/cron/auto-approval', requireApiKey, async (req, res) => {
     try {
@@ -1963,7 +2045,7 @@ app.post('/cron/send-reminders', requireApiKey, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// 20. ERROR HANDLERS
+// 25. ERROR HANDLERS
 // ═══════════════════════════════════════════════════════════
 app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
 
@@ -1973,29 +2055,30 @@ app.use((err, req, res, next) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// 21. SERVER STARTUP
+// 26. SERVER STARTUP
 // ═══════════════════════════════════════════════════════════
 async function startServer() {
     try {
-        log.info('Starting server v7.0.0-ultimate...');
+        log.info('Starting server v8.0.1...');
         
         await sql`SELECT NOW()`;
         log.success('Database connected');
         
         app.listen(PORT, HOST, () => {
             console.log('\n═══════════════════════════════════════════════════════════');
-            console.log('🚀 WHATSAPP CLINIC BOT v8.0.0 - ULTIMATE EDITION WITH SPECIALIZATION');
+            console.log('🚀 WHATSAPP CLINIC BOT v8.0.1 - WITH MESSAGE CHUNKING');
             console.log('═══════════════════════════════════════════════════════════');
             console.log(`📡 Port: ${PORT}`);
             console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
             console.log(`💾 Database: Connected ✅`);
-            console.log(`🎉 Mode: PRODUCTION - All Features Active ✅`);
+            console.log(`🎉 Mode: PRODUCTION ✅`);
             console.log(`🔒 Security: Enhanced ✅`);
             console.log(`   ├─ Environment Validation: Active ✅`);
             console.log(`   ├─ Twilio Signature: ${process.env.SKIP_TWILIO_VERIFICATION === 'true' ? 'DISABLED ⚠️' : 'Enabled ✅'}`);
             console.log(`   ├─ API Key Protection: ${process.env.ADMIN_API_KEY ? 'Enabled ✅' : 'Disabled ⚠️'}`);
             console.log(`   ├─ Rate Limiting: Active ✅`);
             console.log(`   └─ Security Headers: Active ✅`);
+            console.log(`📨 Message Chunking: Enabled (1500 char limit) ✅`);
             console.log(`⏰ Auto-Approval: ${AUTO_APPROVAL_ENABLED ? `Enabled (${AUTO_APPROVAL_DELAY_MINUTES} min) ✅` : 'Disabled ⚠️'}`);
             console.log(`📋 Manual Approval: Enabled ✅`);
             console.log(`📊 Google Sheets: Individual + Centralized ✅`);

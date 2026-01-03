@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v8.0.2 - ULTIMATE EDITION
+ * WHATSAPP CLINIC BOT v8.0.3 - ULTIMATE EDITION
  * 
  * ✅ WhatsApp Appointment Booking
  * ✅ Doctor Specialization Selection
@@ -10,7 +10,9 @@
  * ✅ Google Sheets Integration (Centralized for 1000+)
  * ✅ Bulk Operations & Search
  * ✅ Message Chunking (1600 char limit fix)
- * ✅ Duplicate Dr. prefix fix - NEW!
+ * ✅ Duplicate Dr. prefix fix
+ * ✅ FREE PILOT removed from welcome - NEW!
+ * ✅ Specializations in clinic list - NEW!
  * ✅ Security Hardened
  * ✅ Production Ready
  * 
@@ -762,12 +764,19 @@ async function handleStart(phone) {
     
     await setSession(phone, { stage: 'select_clinic', session_data: {} });
     
-    // Shortened welcome message to stay under 1500 chars
-    let msg = '👋 *Welcome to Clinic Appointments!*\n\n🎉 *FREE PILOT*\n\n📋 *Select clinic:*\n\n';
+    // Shortened welcome message without FREE PILOT and with specializations
+    let msg = '👋 *Welcome to Clinic Appointments!*\n\n📋 *Select clinic:*\n\n';
     
     clinics.forEach((clinic, i) => { 
         msg += `*${i + 1}.* ${clinic.name}\n`;
-        msg += `   👨‍⚕️ ${formatDoctorName(clinic.doctor_name)}\n`;
+        msg += `   👨‍⚕️ ${formatDoctorName(clinic.doctor_name)}`;
+        
+        // Add specialization if available
+        if (clinic.specialization) {
+            msg += ` - ${clinic.specialization}`;
+        }
+        msg += '\n';
+        
         if (clinic.business_hours_start) {
             msg += `   ⏰ ${clinic.business_hours_start}-${clinic.business_hours_end}\n`;
         }
@@ -1342,7 +1351,7 @@ async function handleMessage(phone, text) {
 // ═══════════════════════════════════════════════════════════
 app.get('/', (req, res) => res.json({ 
     name: 'WhatsApp Clinic Bot - PILOT', 
-    version: '8.0.2-ultimate', 
+    version: '8.0.3-ultimate', 
     status: 'operational', 
     mode: 'pilot',
     payment_required: false,
@@ -1357,6 +1366,7 @@ app.get('/', (req, res) => res.json({
         waitlist: true,
         message_chunking: true,
         duplicate_dr_fix: true,
+        specializations_in_list: true,
         signature_verification: true
     }, 
     uptime: Math.floor(process.uptime()) 
@@ -1398,7 +1408,7 @@ app.get('/status', requireApiKey, async (req, res) => {
         
         res.json({ 
             status: 'ok', 
-            version: '8.0.2-ultimate',
+            version: '8.0.3-ultimate',
             mode: 'pilot',
             auto_approval: {
                 enabled: AUTO_APPROVAL_ENABLED,
@@ -2074,14 +2084,14 @@ app.use((err, req, res, next) => {
 // ═══════════════════════════════════════════════════════════
 async function startServer() {
     try {
-        log.info('Starting server v8.0.2...');
+        log.info('Starting server v8.0.3...');
         
         await sql`SELECT NOW()`;
         log.success('Database connected');
         
         app.listen(PORT, HOST, () => {
             console.log('\n═══════════════════════════════════════════════════════════');
-            console.log('🚀 WHATSAPP CLINIC BOT v8.0.2 - ULTIMATE EDITION');
+            console.log('🚀 WHATSAPP CLINIC BOT v8.0.3 - ULTIMATE EDITION');
             console.log('═══════════════════════════════════════════════════════════');
             console.log(`📡 Port: ${PORT}`);
             console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
@@ -2095,6 +2105,7 @@ async function startServer() {
             console.log(`   └─ Security Headers: Active ✅`);
             console.log(`📨 Message Chunking: Enabled (1500 char limit) ✅`);
             console.log(`👨‍⚕️ Duplicate Dr. Fix: Enabled ✅`);
+            console.log(`🏥 Specializations in Clinic List: Enabled ✅`);
             console.log(`⏰ Auto-Approval: ${AUTO_APPROVAL_ENABLED ? `Enabled (${AUTO_APPROVAL_DELAY_MINUTES} min) ✅` : 'Disabled ⚠️'}`);
             console.log(`📋 Manual Approval: Enabled ✅`);
             console.log(`📊 Google Sheets: Individual + Centralized ✅`);

@@ -1,0 +1,42 @@
+// ═══════════════════════════════════════════════════════════
+// EMERGENCY FIX - Replace handleStart in bot.js with this
+// ═══════════════════════════════════════════════════════════
+
+async function handleStart(phone) {
+    try {
+        // Get clinic count
+        const clinicCount = await pool.query('SELECT COUNT(*) FROM clinics');
+        const total = clinicCount.rows[0].count || 0;
+
+        // SHORT welcome message (under 300 chars)
+        const message = `🏥 *Clinic Database*
+
+${total} clinics available
+
+*Commands:*
+• search cardiology
+• area salt lake
+• list - view all
+• help - more info
+
+What do you need?`;
+
+        await sendWhatsApp(phone, message);
+
+        // Log interaction
+        await pool.query(
+            `INSERT INTO interactions (phone, message, response, timestamp) 
+             VALUES ($1, $2, $3, NOW())`,
+            [phone, 'start', 'Welcome message sent']
+        );
+
+    } catch (error) {
+        console.error('handleStart error:', error);
+        await sendWhatsApp(phone, '❌ Error. Try: help');
+    }
+}
+
+// ═══════════════════════════════════════════════════════════
+// This is only 180 characters - well under WhatsApp's 1600 limit
+// Deploy this immediately, then implement full chunking later
+// ═══════════════════════════════════════════════════════════

@@ -346,12 +346,78 @@ function formatDoctorName(name) {
     return `Dr. ${cleaned}`;
 }
 
-async function dbQuery(query, errorMsg = 'Database query failed') {
-    try { 
-        return await query; 
-    } catch (error) { 
-        log.error(errorMsg, error); 
-        return null; 
+/**
+ * ENHANCED: Send notification with retry logic
+ */
+async function sendDoctorNotification(to, appointmentDetails, appointmentId, retryCount = 0) {
+    const MAX_RETRIES = 2;
+    
+    try {
+        // Validate phone number
+        if (!to) {
+            log.error('❌ No doctor phone number', { appointmentId });
+            return false;
+        }
+        
+        const phone = formatForWhatsApp(to);
+        const { patientName, patientPhone, date, time, clinicName, doctorName, specialization } = appointmentDetails;
+        
+        log.info(`📞 Sending doctor notification (attempt ${retryCount + 1})`, {
+            to: normalizePhone(phone),
+            appointmentId,
+            doctor: doctorName
+        });
+        
+        // Format auto-approval time
+        const approvalTime = AUTO_APPROVAL_DELAY_MINUTES >= 60 
+            ? `${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60)} hour${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60) > 1 ? 's' : ''}`
+            : `${AUTO_APPROVAL_DELAY_MINUTES} minute${AUTO_APPROVAL_DELAY_MINUTES > 1 ? 's' : ''}`;
+        
+        let bodyText = `🔔 *NEW APPOINTMENT REQUEST*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 *Appointment ID:* #${appointmentId}\n🏥 *Clinic:* ${clinicName || 'N/A'}\n`;
+        
+        if (doctorName && specialization) {
+            bodyText += `👨\u200d⚕️ *Doctor:* ${formatDoctorName(doctorName)}\n`;
+            bodyText += `🩺 *Specialization:* ${specialization}\n`;
+        }
+        
+        bodyText += `\n*PATIENT DETAILS:*\n👤 *Name:* ${patientName}\n📞 *Phone:* ${patientPhone}\n\n*APPOINTMENT DETAILS:*\n📅 *Date:* ${date}\n⏰ *Time:* ${time}\n━━━━━━━━━━━━━━━━━━━━━\n\n*ACTIONS REQUIRED:*\n\n✅ *APPROVE:* Reply *APPROVE #${appointmentId}*\n❌ *REJECT:* Reply *REJECT #${appointmentId}*\n\n${AUTO_APPROVAL_ENABLED ? `⏰ *Auto-approves in ${approvalTime}* if no action taken` : '⚠️ *Manual approval required*'}`;
+        
+        // Send via WhatsApp
+        const success = await sendWhatsApp(to, bodyText);
+        
+        if (success) {
+            log.success('✅ Doctor notification sent!', { 
+                to: normalizePhone(phone), 
+                appointmentId, 
+                doctor: doctorName 
+            });
+            return true;
+        } else {
+            throw new Error('sendWhatsApp returned false');
+        }
+        
+    } catch (error) {
+        log.error('❌ Doctor notification failed', {
+            error: error.message,
+            appointmentId,
+            attempt: retryCount + 1
+        });
+        
+        // Retry logic
+        if (retryCount < MAX_RETRIES) {
+            log.info(`⏳ Retrying in 2 seconds (${retryCount + 2}/${MAX_RETRIES + 1})...`);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            return await sendDoctorNotification(to, appointmentDetails, appointmentId, retryCount + 1);
+        }
+        
+        // All retries failed
+        log.error('🚨 CRITICAL: Notification failed after all retries!', {
+            appointmentId,
+            doctorPhone: normalizePhone(to),
+            totalAttempts: MAX_RETRIES + 1
+        });
+        
+        return false;
     }
 }
 
@@ -2301,3 +2367,4 @@ process.on('unhandledRejection', (reason) => {
 
 startServer();
 module.exports = app;
+

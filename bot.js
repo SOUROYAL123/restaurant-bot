@@ -303,12 +303,12 @@ async function sendLongMessage(to, message, delayMs = 1000) {
 // 9. UTILITY FUNCTIONS
 // ═══════════════════════════════════════════════════════════
 function normalizePhone(phone) {
-    if (!name) return '';
+    if (!phone) return '';
     return phone.replace('whatsapp:', '').trim();
 }
 
 function formatForWhatsApp(phone) {
-    if (!name) return '';
+    if (!phone) return '';
     const clean = normalizePhone(phone);
     return clean.startsWith('whatsapp:') ? clean : `whatsapp:${clean}`;
 }

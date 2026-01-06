@@ -325,9 +325,6 @@ function formatDoctorName(name) {
     return `Dr. ${cleaned}`;
 }
 
-/**
- * Database query helper with error handling
- */
 async function dbQuery(query, errorMsg = 'Database query failed') {
     try { 
         return await query; 
@@ -362,9 +359,6 @@ async function sendWhatsApp(to, message) {
     }
 }
 
-/**
- * ENHANCED: Send doctor notification with retry logic
- */
 async function sendDoctorNotification(to, appointmentDetails, appointmentId, retryCount = 0) {
     const MAX_RETRIES = 2;
     
@@ -2157,19 +2151,11 @@ app.get('/api/sheets/bulk/report', requireAdminSheetsApiKey, async (req, res) =>
 });
 
 // ═══════════════════════════════════════════════════════════
-// 24. CRON ENDPOINTS - AUTO-APPROVAL + REMINDERS ✨
+// 24. CRON ENDPOINTS - AUTO-APPROVAL + REMINDERS
 // ═══════════════════════════════════════════════════════════
 
-/**
- * 🔔 AUTO-APPROVAL CRON ENDPOINT
- * 
- * SETUP:
- * 1. Go to cron-job.org
- * 2. Create new cron job:
- *    - URL: POST https://your-bot.onrender.com/cron/auto-approval
- *    - Schedule: */10 * * * * (every 10 minutes)
- * 3. Enable and save
- */
+// AUTO-APPROVAL CRON ENDPOINT
+// SETUP: cron-job.org - Every 10 minutes
 app.post('/cron/auto-approval', async (req, res) => {
     const startTime = Date.now();
     
@@ -2323,18 +2309,9 @@ app.post('/cron/auto-approval', async (req, res) => {
     }
 });
 
-/**
- * 🔔 REMINDER CRON ENDPOINT ✨ NEW
- * 
- * Sends 24-hour and 2-hour reminders
- * 
- * SETUP:
- * 1. Go to cron-job.org
- * 2. Create new cron job:
- *    - URL: POST https://your-bot.onrender.com/cron/send-reminders
- *    - Schedule: 0 */2 * * * (every 2 hours)
- * 3. Enable and save
- */
+// REMINDER CRON ENDPOINT
+// Sends 24-hour and 2-hour reminders
+// SETUP: cron-job.org - Every 2 hours
 app.post('/cron/send-reminders', async (req, res) => {
     const startTime = Date.now();
     
@@ -2345,9 +2322,7 @@ app.post('/cron/send-reminders', async (req, res) => {
         let sent2h = 0;
         let errors = 0;
         
-        // ═══════════════════════════════════════════════════════
         // 24-HOUR REMINDERS
-        // ═══════════════════════════════════════════════════════
         if (REMINDER_24H_ENABLED) {
             const tomorrow = new Date();
             tomorrow.setDate(tomorrow.getDate() + 1);
@@ -2412,9 +2387,7 @@ app.post('/cron/send-reminders', async (req, res) => {
             }
         }
         
-        // ═══════════════════════════════════════════════════════
         // 2-HOUR REMINDERS
-        // ═══════════════════════════════════════════════════════
         if (REMINDER_2H_ENABLED) {
             const now = new Date();
             const todayDate = now.toISOString().split('T')[0];
@@ -2443,21 +2416,18 @@ app.post('/cron/send-reminders', async (req, res) => {
             
             for (const apt of reminder2h) {
                 try {
-                    // Parse appointment time
                     const timeMatch = apt.appointment_time.match(/(\d+):(\d+)\s*(AM|PM)/i);
                     if (!timeMatch) continue;
                     
                     let hour = parseInt(timeMatch[1]);
                     const period = timeMatch[3].toUpperCase();
                     
-                    // Convert to 24-hour format
                     if (period === 'PM' && hour !== 12) {
                         hour += 12;
                     } else if (period === 'AM' && hour === 12) {
                         hour = 0;
                     }
                     
-                    // Check if appointment is within 2-3 hours
                     const hourDiff = hour - currentHour;
                     
                     if (hourDiff >= 2 && hourDiff <= 3) {
@@ -2553,7 +2523,7 @@ app.get('/cron/auto-approval/test', async (req, res) => {
             setup: {
                 step1: 'Go to cron-job.org',
                 step2: `Add URL: POST ${process.env.BASE_URL}/cron/auto-approval`,
-                step3: 'Schedule: */10 * * * * (every 10 minutes)',
+                step3: 'Schedule: Every 10 minutes',
                 step4: 'Enable and save'
             }
         });
@@ -2603,7 +2573,7 @@ app.get('/cron/send-reminders/test', async (req, res) => {
             setup: {
                 step1: 'Go to cron-job.org',
                 step2: `Add URL: POST ${process.env.BASE_URL}/cron/send-reminders`,
-                step3: 'Schedule: 0 */2 * * * (every 2 hours)',
+                step3: 'Schedule: Every 2 hours',
                 step4: 'Enable and save'
             }
         });
@@ -2647,12 +2617,12 @@ async function startServer() {
             console.log(`📨 Message Chunking: Enabled ✅`);
             console.log(`⏰ Auto-Approval: ${AUTO_APPROVAL_ENABLED ? `Enabled (${AUTO_APPROVAL_DELAY_MINUTES} min)` : 'Disabled'} ✅`);
             console.log(`   ├─ Endpoint: POST /cron/auto-approval ✅`);
-            console.log(`   └─ Setup: cron-job.org (*/10 * * * *) ⚠️`);
+            console.log(`   └─ Setup: cron-job.org (every 10 minutes) ⚠️`);
             console.log(`📋 Manual Approval: Enabled ✅`);
             console.log(`🔔 Reminders (24h): ${REMINDER_24H_ENABLED ? 'Enabled' : 'Disabled'} ✅`);
             console.log(`🔔 Reminders (2h): ${REMINDER_2H_ENABLED ? 'Enabled' : 'Disabled'} ✅`);
             console.log(`   ├─ Endpoint: POST /cron/send-reminders ✅`);
-            console.log(`   └─ Setup: cron-job.org (0 */2 * * *) ⚠️`);
+            console.log(`   └─ Setup: cron-job.org (every 2 hours) ⚠️`);
             console.log(`📊 Google Sheets: Individual + Centralized ✅`);
             console.log(`⚡ Bulk Report: Enabled ✅`);
             console.log('═══════════════════════════════════════════════════════════');
@@ -2662,11 +2632,11 @@ async function startServer() {
             console.log('\n1️⃣ AUTO-APPROVAL CRON:');
             console.log('   Visit: https://cron-job.org');
             console.log(`   URL: POST ${process.env.BASE_URL}/cron/auto-approval`);
-            console.log('   Schedule: */10 * * * * (every 10 minutes)');
+            console.log('   Schedule: Every 10 minutes');
             console.log('\n2️⃣ REMINDER CRON:');
             console.log('   Visit: https://cron-job.org');
             console.log(`   URL: POST ${process.env.BASE_URL}/cron/send-reminders`);
-            console.log('   Schedule: 0 */2 * * * (every 2 hours)\n');
+            console.log('   Schedule: Every 2 hours\n');
         });
         
     } catch (e) { 

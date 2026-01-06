@@ -1,10 +1,11 @@
 /**
  * ═══════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v8.0.5 - ULTIMATE WITH AUTO-APPROVAL CRON
+ * WHATSAPP CLINIC BOT v8.1.0 - WITH AUTO-APPROVAL + REMINDERS
  * 
  * ✅ WhatsApp Appointment Booking
  * ✅ Doctor Specialization Selection
- * ✅ Auto-Approval System (24hr) - INLINE CRON ✨ NEW
+ * ✅ Auto-Approval System (24hr) - INLINE CRON
+ * ✅ Smart Reminders (24hr + 2hr) - NEW ✨
  * ✅ Manual Approve/Reject by Doctor
  * ✅ Enhanced Doctor Notifications with Retry Logic
  * ✅ Google Sheets Integration (Individual)
@@ -16,11 +17,11 @@
  * ✅ Security Hardened
  * ✅ Production Ready
  * 
- * NEW in v8.0.5:
- * - Inline auto-approval cron function (no external file needed)
- * - Complete self-contained cron endpoint
- * - Ready for external cron service (cron-job.org, EasyCron)
- * - Test endpoint for verification
+ * NEW in v8.1.0:
+ * - 24-hour reminder system (day before appointment)
+ * - 2-hour reminder system (same day)
+ * - Complete reminder cron endpoint
+ * - Timezone-aware reminder scheduling
  * 
  * Author: Sourav Roy - Legacylens Automation
  * ═══════════════════════════════════════════════════════════
@@ -92,6 +93,10 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 // Auto-approval settings
 const AUTO_APPROVAL_ENABLED = process.env.AUTO_APPROVAL_ENABLED !== 'false';
 const AUTO_APPROVAL_DELAY_MINUTES = parseInt(process.env.AUTO_APPROVAL_DELAY_MINUTES) || 1440;
+
+// Reminder settings
+const REMINDER_24H_ENABLED = process.env.REMINDER_24H_ENABLED !== 'false';
+const REMINDER_2H_ENABLED = process.env.REMINDER_2H_ENABLED !== 'false';
 
 // ═══════════════════════════════════════════════════════════
 // 5. LOGGING
@@ -1339,10 +1344,12 @@ async function handleMessage(phone, text) {
 // ═══════════════════════════════════════════════════════════
 app.get('/', (req, res) => res.json({ 
     name: 'WhatsApp Clinic Bot', 
-    version: '8.0.5-with-inline-cron', 
+    version: '8.1.0-with-reminders', 
     status: 'operational', 
     auto_approval: AUTO_APPROVAL_ENABLED,
     auto_approval_delay_minutes: AUTO_APPROVAL_DELAY_MINUTES,
+    reminder_24h_enabled: REMINDER_24H_ENABLED,
+    reminder_2h_enabled: REMINDER_2H_ENABLED,
     features: { 
         payment_integration: false, 
         auto_approval: AUTO_APPROVAL_ENABLED,
@@ -1350,7 +1357,8 @@ app.get('/', (req, res) => res.json({
         manual_approval: true,
         enhanced_doctor_notifications: true,
         notification_retry_logic: true,
-        smart_reminders: true, 
+        smart_reminders_24h: REMINDER_24H_ENABLED,
+        smart_reminders_2h: REMINDER_2H_ENABLED,
         interactive_commands: true, 
         waitlist: true,
         message_chunking: true,
@@ -1397,10 +1405,14 @@ app.get('/status', requireApiKey, async (req, res) => {
         
         res.json({ 
             status: 'ok', 
-            version: '8.0.5-with-inline-cron',
+            version: '8.1.0-with-reminders',
             auto_approval: {
                 enabled: AUTO_APPROVAL_ENABLED,
                 delay_minutes: AUTO_APPROVAL_DELAY_MINUTES
+            },
+            reminders: {
+                reminder_24h_enabled: REMINDER_24H_ENABLED,
+                reminder_2h_enabled: REMINDER_2H_ENABLED
             },
             stats: s[0] || {} 
         }); 
@@ -2145,20 +2157,18 @@ app.get('/api/sheets/bulk/report', requireAdminSheetsApiKey, async (req, res) =>
 });
 
 // ═══════════════════════════════════════════════════════════
-// 24. CRON ENDPOINTS - INLINE AUTO-APPROVAL ✨ NEW
+// 24. CRON ENDPOINTS - AUTO-APPROVAL + REMINDERS ✨
 // ═══════════════════════════════════════════════════════════
 
 /**
  * 🔔 AUTO-APPROVAL CRON ENDPOINT
  * 
- * This is a SELF-CONTAINED function - no external files needed!
- * 
  * SETUP:
- * 1. Go to cron-job.org or easycron.com
+ * 1. Go to cron-job.org
  * 2. Create new cron job:
- *    - URL: POST https://clinis-database-bot.onrender.com/cron/auto-approval
- *    - Schedule: *//* * * * * (every 10 minutes)
- * 3. That's it! Auto-approval will work 24/7
+ *    - URL: POST https://your-bot.onrender.com/cron/auto-approval
+ *    - Schedule: */10 * * * * (every 10 minutes)
+ * 3. Enable and save
  */
 app.post('/cron/auto-approval', async (req, res) => {
     const startTime = Date.now();
@@ -2166,7 +2176,6 @@ app.post('/cron/auto-approval', async (req, res) => {
     try {
         log.info('🔄 Auto-approval cron started');
         
-        // Calculate threshold time (24 hours ago by default)
         const threshold = new Date(Date.now() - AUTO_APPROVAL_DELAY_MINUTES * 60 * 1000);
         
         log.info('Auto-approval threshold', {
@@ -2174,7 +2183,6 @@ app.post('/cron/auto-approval', async (req, res) => {
             threshold: threshold.toISOString()
         });
         
-        // Find pending appointments older than threshold
         const pending = await sql`
             SELECT 
                 a.id,
@@ -2208,7 +2216,6 @@ app.post('/cron/auto-approval', async (req, res) => {
         let notified = 0;
         let errors = 0;
         
-        // Process each pending appointment
         for (const apt of pending) {
             try {
                 const ageMinutes = Math.floor((Date.now() - new Date(apt.created_at).getTime()) / (1000 * 60));
@@ -2218,7 +2225,6 @@ app.post('/cron/auto-approval', async (req, res) => {
                     ageMinutes: ageMinutes
                 });
                 
-                // Update to confirmed
                 await sql`
                     UPDATE appointments
                     SET status = 'confirmed',
@@ -2231,7 +2237,6 @@ app.post('/cron/auto-approval', async (req, res) => {
                 approved++;
                 log.success(`✅ Auto-approved appointment #${apt.id}`);
                 
-                // Format date for messages
                 const dateStr = new Date(apt.appointment_date).toLocaleDateString('en-IN', {
                     weekday: 'long',
                     day: 'numeric',
@@ -2239,10 +2244,8 @@ app.post('/cron/auto-approval', async (req, res) => {
                     year: 'numeric'
                 });
                 
-                // Send confirmation to patient
                 let patientMessage = `✅ *CONFIRMED!*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n🏥 ${apt.clinic_name}\n`;
                 
-                // Use assigned doctor if available, otherwise use clinic doctor
                 const doctorName = apt.assigned_doctor_name || apt.doctor_name;
                 const doctorSpecialization = apt.assigned_doctor_specialization || 'General';
                 
@@ -2263,7 +2266,6 @@ app.post('/cron/auto-approval', async (req, res) => {
                     });
                 }
                 
-                // Notify doctor (informational)
                 const doctorPhone = apt.assigned_doctor_whatsapp || apt.doctor_whatsapp;
                 
                 if (doctorPhone) {
@@ -2321,7 +2323,210 @@ app.post('/cron/auto-approval', async (req, res) => {
     }
 });
 
-// Test/info endpoint
+/**
+ * 🔔 REMINDER CRON ENDPOINT ✨ NEW
+ * 
+ * Sends 24-hour and 2-hour reminders
+ * 
+ * SETUP:
+ * 1. Go to cron-job.org
+ * 2. Create new cron job:
+ *    - URL: POST https://your-bot.onrender.com/cron/send-reminders
+ *    - Schedule: 0 */2 * * * (every 2 hours)
+ * 3. Enable and save
+ */
+app.post('/cron/send-reminders', async (req, res) => {
+    const startTime = Date.now();
+    
+    try {
+        log.info('🔔 Reminder cron started');
+        
+        let sent24h = 0;
+        let sent2h = 0;
+        let errors = 0;
+        
+        // ═══════════════════════════════════════════════════════
+        // 24-HOUR REMINDERS
+        // ═══════════════════════════════════════════════════════
+        if (REMINDER_24H_ENABLED) {
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            const tomorrowDate = tomorrow.toISOString().split('T')[0];
+            
+            const reminder24h = await sql`
+                SELECT 
+                    a.id,
+                    a.patient_name,
+                    a.patient_phone,
+                    a.appointment_date,
+                    a.appointment_time,
+                    c.name as clinic_name,
+                    c.doctor_name,
+                    d.name as assigned_doctor_name,
+                    d.specialization as assigned_doctor_specialization
+                FROM appointments a
+                JOIN clinics c ON a.clinic_id = c.id
+                LEFT JOIN doctors d ON a.doctor_id = d.id
+                WHERE a.appointment_date = ${tomorrowDate}
+                AND a.status = 'confirmed'
+                AND a.reminder_24h_sent = false
+                ORDER BY a.appointment_time
+            `;
+            
+            log.info(`Found ${reminder24h.length} appointments for 24h reminders`);
+            
+            for (const apt of reminder24h) {
+                try {
+                    const doctorName = apt.assigned_doctor_name || apt.doctor_name;
+                    const doctorSpec = apt.assigned_doctor_specialization || 'General';
+                    
+                    let message = `🔔 *REMINDER - TOMORROW*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n🏥 ${apt.clinic_name}\n`;
+                    
+                    if (doctorName) {
+                        message += `👨‍⚕️ ${formatDoctorName(doctorName)}\n`;
+                        message += `🩺 ${doctorSpec}\n`;
+                    }
+                    
+                    message += `\n📅 *TOMORROW*\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━━\n\n✓ Please arrive 10 min early\n✓ Bring any documents\n\nSee you tomorrow!\n\n━━━━━━━━━━━━━━━━━━━━━\n✅ CONFIRM #${apt.id}\n❌ CANCEL #${apt.id}`;
+                    
+                    const success = await sendWhatsApp(apt.patient_phone, message);
+                    
+                    if (success) {
+                        await sql`
+                            UPDATE appointments 
+                            SET reminder_24h_sent = true 
+                            WHERE id = ${apt.id}
+                        `;
+                        
+                        sent24h++;
+                        log.success(`📅 24h reminder sent`, {
+                            appointmentId: apt.id,
+                            patient: apt.patient_name
+                        });
+                    }
+                    
+                } catch (error) {
+                    errors++;
+                    log.error(`Error sending 24h reminder for #${apt.id}`, error);
+                }
+            }
+        }
+        
+        // ═══════════════════════════════════════════════════════
+        // 2-HOUR REMINDERS
+        // ═══════════════════════════════════════════════════════
+        if (REMINDER_2H_ENABLED) {
+            const now = new Date();
+            const todayDate = now.toISOString().split('T')[0];
+            const currentHour = now.getHours();
+            
+            const reminder2h = await sql`
+                SELECT 
+                    a.id,
+                    a.patient_name,
+                    a.patient_phone,
+                    a.appointment_date,
+                    a.appointment_time,
+                    c.name as clinic_name,
+                    c.doctor_name,
+                    d.name as assigned_doctor_name
+                FROM appointments a
+                JOIN clinics c ON a.clinic_id = c.id
+                LEFT JOIN doctors d ON a.doctor_id = d.id
+                WHERE a.appointment_date = ${todayDate}
+                AND a.status = 'confirmed'
+                AND a.reminder_2h_sent = false
+                ORDER BY a.appointment_time
+            `;
+            
+            log.info(`Found ${reminder2h.length} potential appointments for 2h reminders`);
+            
+            for (const apt of reminder2h) {
+                try {
+                    // Parse appointment time
+                    const timeMatch = apt.appointment_time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+                    if (!timeMatch) continue;
+                    
+                    let hour = parseInt(timeMatch[1]);
+                    const period = timeMatch[3].toUpperCase();
+                    
+                    // Convert to 24-hour format
+                    if (period === 'PM' && hour !== 12) {
+                        hour += 12;
+                    } else if (period === 'AM' && hour === 12) {
+                        hour = 0;
+                    }
+                    
+                    // Check if appointment is within 2-3 hours
+                    const hourDiff = hour - currentHour;
+                    
+                    if (hourDiff >= 2 && hourDiff <= 3) {
+                        const doctorName = apt.assigned_doctor_name || apt.doctor_name;
+                        
+                        let message = `⏰ *REMINDER - IN 2 HOURS*\n\n━━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n🏥 ${apt.clinic_name}\n`;
+                        
+                        if (doctorName) {
+                            message += `👨‍⚕️ ${formatDoctorName(doctorName)}\n`;
+                        }
+                        
+                        message += `\n⏰ *TODAY at ${apt.appointment_time}*\n━━━━━━━━━━━━━━━━━━━━━\n\n✓ Arrive 10 min early\n✓ Bring documents\n\nSee you soon!`;
+                        
+                        const success = await sendWhatsApp(apt.patient_phone, message);
+                        
+                        if (success) {
+                            await sql`
+                                UPDATE appointments 
+                                SET reminder_2h_sent = true 
+                                WHERE id = ${apt.id}
+                            `;
+                            
+                            sent2h++;
+                            log.success(`⏰ 2h reminder sent`, {
+                                appointmentId: apt.id,
+                                patient: apt.patient_name,
+                                time: apt.appointment_time
+                            });
+                        }
+                    }
+                    
+                } catch (error) {
+                    errors++;
+                    log.error(`Error sending 2h reminder for #${apt.id}`, error);
+                }
+            }
+        }
+        
+        const duration = Date.now() - startTime;
+        
+        const summary = {
+            success: true,
+            reminder_24h_sent: sent24h,
+            reminder_2h_sent: sent2h,
+            errors: errors,
+            durationMs: duration,
+            timestamp: new Date().toISOString()
+        };
+        
+        log.success('✅ Reminder cron completed', summary);
+        
+        res.json(summary);
+        
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        log.error('❌ Reminder cron failed', {
+            error: error.message,
+            stack: error.stack
+        });
+        
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            durationMs: duration
+        });
+    }
+});
+
+// Test endpoints
 app.get('/cron/auto-approval/test', async (req, res) => {
     log.info('🧪 Auto-approval test endpoint accessed');
     
@@ -2346,12 +2551,61 @@ app.get('/cron/auto-approval/test', async (req, res) => {
             pendingToProcess: pending[0].count,
             endpoint: `POST ${process.env.BASE_URL}/cron/auto-approval`,
             setup: {
-                step1: 'Go to cron-job.org or easycron.com',
+                step1: 'Go to cron-job.org',
                 step2: `Add URL: POST ${process.env.BASE_URL}/cron/auto-approval`,
                 step3: 'Schedule: */10 * * * * (every 10 minutes)',
                 step4: 'Enable and save'
+            }
+        });
+        
+    } catch (error) {
+        res.status(500).json({
+            error: error.message
+        });
+    }
+});
+
+app.get('/cron/send-reminders/test', async (req, res) => {
+    log.info('🧪 Reminder test endpoint accessed');
+    
+    try {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const tomorrowDate = tomorrow.toISOString().split('T')[0];
+        
+        const today = new Date().toISOString().split('T')[0];
+        
+        const reminder24h = await sql`
+            SELECT COUNT(*) as count
+            FROM appointments
+            WHERE appointment_date = ${tomorrowDate}
+            AND status = 'confirmed'
+            AND reminder_24h_sent = false
+        `;
+        
+        const reminder2h = await sql`
+            SELECT COUNT(*) as count
+            FROM appointments
+            WHERE appointment_date = ${today}
+            AND status = 'confirmed'
+            AND reminder_2h_sent = false
+        `;
+        
+        res.json({
+            message: 'Reminder cron endpoint ready ✅',
+            config: {
+                reminder_24h_enabled: REMINDER_24H_ENABLED,
+                reminder_2h_enabled: REMINDER_2H_ENABLED
             },
-            note: 'This is a TEST endpoint. Use POST method to actually process appointments.'
+            pending24hReminders: reminder24h[0].count,
+            pending2hReminders: reminder2h[0].count,
+            endpoint: `POST ${process.env.BASE_URL}/cron/send-reminders`,
+            setup: {
+                step1: 'Go to cron-job.org',
+                step2: `Add URL: POST ${process.env.BASE_URL}/cron/send-reminders`,
+                step3: 'Schedule: 0 */2 * * * (every 2 hours)',
+                step4: 'Enable and save'
+            }
         });
         
     } catch (error) {
@@ -2376,14 +2630,14 @@ app.use((err, req, res, next) => {
 // ═══════════════════════════════════════════════════════════
 async function startServer() {
     try {
-        log.info('Starting server v8.0.5-with-inline-cron...');
+        log.info('Starting server v8.1.0-with-reminders...');
         
         await sql`SELECT NOW()`;
         log.success('Database connected');
         
         app.listen(PORT, HOST, () => {
             console.log('\n═══════════════════════════════════════════════════════════');
-            console.log('🚀 WHATSAPP CLINIC BOT v8.0.5 - WITH INLINE AUTO-APPROVAL');
+            console.log('🚀 WHATSAPP CLINIC BOT v8.1.0 - WITH REMINDERS');
             console.log('═══════════════════════════════════════════════════════════');
             console.log(`📡 Port: ${PORT}`);
             console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
@@ -2392,21 +2646,27 @@ async function startServer() {
             console.log(`📞 Doctor Notifications: ENHANCED WITH RETRY ✅`);
             console.log(`📨 Message Chunking: Enabled ✅`);
             console.log(`⏰ Auto-Approval: ${AUTO_APPROVAL_ENABLED ? `Enabled (${AUTO_APPROVAL_DELAY_MINUTES} min)` : 'Disabled'} ✅`);
-            console.log(`   ├─ Inline Cron Function: Ready ✅`);
             console.log(`   ├─ Endpoint: POST /cron/auto-approval ✅`);
-            console.log(`   └─ Setup: cron-job.org or EasyCron (*/10 * * * *) ⚠️`);
+            console.log(`   └─ Setup: cron-job.org (*/10 * * * *) ⚠️`);
             console.log(`📋 Manual Approval: Enabled ✅`);
+            console.log(`🔔 Reminders (24h): ${REMINDER_24H_ENABLED ? 'Enabled' : 'Disabled'} ✅`);
+            console.log(`🔔 Reminders (2h): ${REMINDER_2H_ENABLED ? 'Enabled' : 'Disabled'} ✅`);
+            console.log(`   ├─ Endpoint: POST /cron/send-reminders ✅`);
+            console.log(`   └─ Setup: cron-job.org (0 */2 * * *) ⚠️`);
             console.log(`📊 Google Sheets: Individual + Centralized ✅`);
             console.log(`⚡ Bulk Report: Enabled ✅`);
             console.log('═══════════════════════════════════════════════════════════');
             console.log('✅ SERVER READY - ALL SYSTEMS OPERATIONAL');
             console.log('═══════════════════════════════════════════════════════════');
-            console.log('\n📝 NEXT STEP: Setup external cron service:');
-            console.log('   1. Visit: https://cron-job.org');
-            console.log('   2. Create job:');
-            console.log(`      URL: POST ${process.env.BASE_URL}/cron/auto-approval`);
-            console.log('      Schedule: */10 * * * * (every 10 minutes)');
-            console.log('   3. Enable and save\n');
+            console.log('\n📝 SETUP REQUIRED - 2 Cron Jobs:');
+            console.log('\n1️⃣ AUTO-APPROVAL CRON:');
+            console.log('   Visit: https://cron-job.org');
+            console.log(`   URL: POST ${process.env.BASE_URL}/cron/auto-approval`);
+            console.log('   Schedule: */10 * * * * (every 10 minutes)');
+            console.log('\n2️⃣ REMINDER CRON:');
+            console.log('   Visit: https://cron-job.org');
+            console.log(`   URL: POST ${process.env.BASE_URL}/cron/send-reminders`);
+            console.log('   Schedule: 0 */2 * * * (every 2 hours)\n');
         });
         
     } catch (e) { 

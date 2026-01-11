@@ -1379,27 +1379,6 @@ app.get('/', (req, res) => res.json({
     uptime: Math.floor(process.uptime()) 
 }));
 
-app.get('/health', async (req, res) => { 
-    const h = { 
-        status: 'healthy', 
-        uptime: Math.floor(process.uptime()), 
-        database: 'unknown'
-    }; 
-    
-    try { 
-        await sql`SELECT 1`; 
-        h.database = 'connected'; 
-    } catch (e) { 
-        h.database = 'disconnected'; 
-        h.status = 'degraded'; 
-    } 
-    
-    res.status(h.status === 'healthy' ? 200 : 503).json(h); 
-});
-
-app.head('/ping', (req, res) => res.status(200).send());
-app.get('/ping', (req, res) => res.status(200).json({ pong: true }));
-
 app.get('/status', requireApiKey, async (req, res) => { 
     try { 
         const s = await sql`
@@ -2681,5 +2660,6 @@ process.on('unhandledRejection', (reason) => {
 
 startServer();
 module.exports = app;
+
 
 

@@ -87,31 +87,45 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const HOST = '0.0.0.0';
 
-const sql = neon(process.env.DATABASE_URL);   // ✅ MOVE HERE
+const sql = neon(process.env.DATABASE_URL);
 const twilioClient = twilio(
     process.env.TWILIO_ACCOUNT_SID,
     process.env.TWILIO_AUTH_TOKEN
 );
 
-// EARLY HEALTH
-app.get('/health', async (req, res) => {
-    try {
-        await sql`SELECT 1`;
-        res.status(200).json({ status: 'healthy' });
-    } catch {
-        res.status(503).json({ status: 'degraded' });
-    }
+// ✅ HEALTH — MUST BE SYNC + NO DB
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'healthy' });
 });
 
-app.get('/ping', (req, res) => res.json({ pong: true }));
+// Optional ping
+app.get('/ping', (req, res) => {
+    res.status(200).json({ pong: true });
+});
 
 // Auto-approval settings
 const AUTO_APPROVAL_ENABLED = process.env.AUTO_APPROVAL_ENABLED !== 'false';
-const AUTO_APPROVAL_DELAY_MINUTES = parseInt(process.env.AUTO_APPROVAL_DELAY_MINUTES) || 1440;
+const AUTO_APPROVAL_DELAY_MINUTES =
+    parseInt(process.env.AUTO_APPROVAL_DELAY_MINUTES, 10) || 1440;
 
 // Reminder settings
 const REMINDER_24H_ENABLED = process.env.REMINDER_24H_ENABLED !== 'false';
 const REMINDER_2H_ENABLED = process.env.REMINDER_2H_ENABLED !== 'false';
+
+// (optional) DB health — NOT used by infra
+app.get('/health/db', async (req, res) => {
+    try {
+        await sql`SELECT 1`;
+        res.status(200).json({ db: 'connected' });
+    } catch {
+        res.status(503).json({ db: 'down' });
+    }
+});
+
+// server start (must exist somewhere in file)
+app.listen(PORT, HOST, () => {
+    console.log(`Server listening on ${HOST}:${PORT}`);
+});
 
 // ═══════════════════════════════════════════════════════════
 // 5. LOGGING
@@ -2660,6 +2674,7 @@ process.on('unhandledRejection', (reason) => {
 
 startServer();
 module.exports = app;
+
 
 
 

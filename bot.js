@@ -122,11 +122,6 @@ app.get('/health/db', async (req, res) => {
     }
 });
 
-// server start (must exist somewhere in file)
-app.listen(PORT, HOST, () => {
-    console.log(`Server listening on ${HOST}:${PORT}`);
-});
-
 // ═══════════════════════════════════════════════════════════
 // 5. LOGGING
 // ═══════════════════════════════════════════════════════════
@@ -2610,9 +2605,6 @@ async function startServer() {
     try {
         log.info('Starting server v8.1.0-with-reminders...');
         
-        await sql`SELECT NOW()`;
-        log.success('Database connected');
-        
         app.listen(PORT, HOST, () => {
             console.log('\n═══════════════════════════════════════════════════════════');
             console.log('🚀 WHATSAPP CLINIC BOT v8.1.0 - WITH REMINDERS');
@@ -2674,6 +2666,7 @@ process.on('unhandledRejection', (reason) => {
 
 startServer();
 module.exports = app;
+
 
 
 

@@ -87,8 +87,23 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const HOST = '0.0.0.0';
 
-const sql = neon(process.env.DATABASE_URL);
-const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+const sql = neon(process.env.DATABASE_URL);   // ✅ MOVE HERE
+const twilioClient = twilio(
+    process.env.TWILIO_ACCOUNT_SID,
+    process.env.TWILIO_AUTH_TOKEN
+);
+
+// EARLY HEALTH
+app.get('/health', async (req, res) => {
+    try {
+        await sql`SELECT 1`;
+        res.status(200).json({ status: 'healthy' });
+    } catch {
+        res.status(503).json({ status: 'degraded' });
+    }
+});
+
+app.get('/ping', (req, res) => res.json({ pong: true }));
 
 // Auto-approval settings
 const AUTO_APPROVAL_ENABLED = process.env.AUTO_APPROVAL_ENABLED !== 'false';
@@ -2666,4 +2681,5 @@ process.on('unhandledRejection', (reason) => {
 
 startServer();
 module.exports = app;
+
 

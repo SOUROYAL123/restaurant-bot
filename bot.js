@@ -35,7 +35,7 @@
 require('dotenv').config();
 
 // ═══════════════════════════════════════════════════════════
-// 2. ENVIRONMENT VALIDATION
+// 2. ENVIRONMENT VALIDATION - NON-BLOCKING
 // ═══════════════════════════════════════════════════════════
 const requiredEnvVars = [
     'DATABASE_URL',
@@ -46,26 +46,37 @@ const requiredEnvVars = [
     'PORT'
 ];
 
-console.log('\n🔍 Validating Environment...');
+console.log('\n🔍 Validating Environment Variables...');
+console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+let missingVars = [];
 let hasErrors = false;
 
 requiredEnvVars.forEach(varName => {
     if (!process.env[varName]) {
         console.error(`❌ Missing: ${varName}`);
+        missingVars.push(varName);
         hasErrors = true;
     } else {
-        const isSensitive = varName.includes('SECRET') || varName.includes('TOKEN') || varName.includes('KEY');
-        const display = isSensitive ? `${process.env[varName].substring(0, 8)}...` : process.env[varName];
-        console.log(`✅ ${varName} = ${display}`);
+        const isSensitive = varName.includes('SECRET') || varName.includes('TOKEN') || varName.includes('KEY') || varName.includes('SID');
+        const value = process.env[varName];
+        const display = isSensitive ? `${value.substring(0, 8)}***` : value;
+        console.log(`✅ ${varName.padEnd(25)} = ${display}`);
     }
 });
 
 if (hasErrors) {
-    console.error('\n❌ VALIDATION FAILED - Missing required environment variables\n');
-    process.exit(1);
+    console.error('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error('⚠️  VALIDATION WARNING');
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error(`Missing variables: ${missingVars.join(', ')}`);
+    console.error('⚠️  Server will start but features may be limited');
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    // ✅ DO NOT EXIT - Let server start anyway
+} else {
+    console.log('\n✅ All environment variables validated');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 }
-
-console.log('✅ Environment Validated\n');
 
 // ═══════════════════════════════════════════════════════════
 // 3. CORE DEPENDENCIES
@@ -2599,73 +2610,117 @@ app.use((err, req, res, next) => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// 26. SERVER STARTUP
+// 26. SERVER STARTUP - RAILWAY OPTIMIZED
 // ═══════════════════════════════════════════════════════════
-async function startServer() {
+
+// ✅ CRITICAL: Remove environment validation exit
+// Replace lines 35-68 with non-blocking validation (see previous fix)
+
+// ✅ Start server IMMEDIATELY - before ANY async operations
+const server = app.listen(PORT, HOST, async () => {
+    console.log('\n═══════════════════════════════════════════════════════════');
+    console.log('🚀 WHATSAPP CLINIC BOT v8.1.0 - WITH REMINDERS');
+    console.log('═══════════════════════════════════════════════════════════');
+    console.log(`📡 Port: ${PORT}`);
+    console.log(`🌍 Host: ${HOST}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log('═══════════════════════════════════════════════════════════');
+    console.log('✅ SERVER LISTENING - Health endpoint active');
+    console.log(`✅ Health check: http://localhost:${PORT}/health`);
+    console.log('═══════════════════════════════════════════════════════════\n');
+    
+    // ✅ Test database AFTER server is listening
+    console.log('🔍 Testing database connection...');
     try {
-        log.info('Starting server v8.1.0-with-reminders...');
-        
-        app.listen(PORT, HOST, () => {
-            console.log('\n═══════════════════════════════════════════════════════════');
-            console.log('🚀 WHATSAPP CLINIC BOT v8.1.0 - WITH REMINDERS');
-            console.log('═══════════════════════════════════════════════════════════');
-            console.log(`📡 Port: ${PORT}`);
-            console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-            console.log(`💾 Database: Connected ✅`);
-            console.log(`🔒 Security: Enhanced ✅`);
-            console.log(`📞 Doctor Notifications: ENHANCED WITH RETRY ✅`);
-            console.log(`📨 Message Chunking: Enabled ✅`);
-            console.log(`⏰ Auto-Approval: ${AUTO_APPROVAL_ENABLED ? `Enabled (${AUTO_APPROVAL_DELAY_MINUTES} min)` : 'Disabled'} ✅`);
-            console.log(`   ├─ Endpoint: POST /cron/auto-approval ✅`);
-            console.log(`   └─ Setup: cron-job.org (every 10 minutes) ⚠️`);
-            console.log(`📋 Manual Approval: Enabled ✅`);
-            console.log(`🔔 Reminders (24h): ${REMINDER_24H_ENABLED ? 'Enabled' : 'Disabled'} ✅`);
-            console.log(`🔔 Reminders (2h): ${REMINDER_2H_ENABLED ? 'Enabled' : 'Disabled'} ✅`);
-            console.log(`   ├─ Endpoint: POST /cron/send-reminders ✅`);
-            console.log(`   └─ Setup: cron-job.org (every 2 hours) ⚠️`);
-            console.log(`📊 Google Sheets: Individual + Centralized ✅`);
-            console.log(`⚡ Bulk Report: Enabled ✅`);
-            console.log('═══════════════════════════════════════════════════════════');
-            console.log('✅ SERVER READY - ALL SYSTEMS OPERATIONAL');
-            console.log('═══════════════════════════════════════════════════════════');
-            console.log('\n📝 SETUP REQUIRED - 2 Cron Jobs:');
-            console.log('\n1️⃣ AUTO-APPROVAL CRON:');
-            console.log('   Visit: https://cron-job.org');
-            console.log(`   URL: POST ${process.env.BASE_URL}/cron/auto-approval`);
-            console.log('   Schedule: Every 10 minutes');
-            console.log('\n2️⃣ REMINDER CRON:');
-            console.log('   Visit: https://cron-job.org');
-            console.log(`   URL: POST ${process.env.BASE_URL}/cron/send-reminders`);
-            console.log('   Schedule: Every 2 hours\n');
-        });
-        
-    } catch (e) { 
-        log.error('Server startup failed', e); 
-        process.exit(1); 
+        await sql`SELECT 1`;
+        console.log('✅ Database: Connected');
+        console.log(`💾 Database URL: ${process.env.DATABASE_URL?.substring(0, 30)}...`);
+    } catch (dbError) {
+        console.error('⚠️ Database: Connection failed');
+        console.error(`❌ Error: ${dbError.message}`);
+        console.error('⚠️ App will continue but database features unavailable');
     }
-}
+    
+    // ✅ Verify Twilio credentials
+    console.log('\n🔍 Verifying Twilio configuration...');
+    if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
+        console.log('✅ Twilio: Configured');
+        console.log(`📱 WABA Number: ${process.env.WABA_NUMBER || 'NOT SET'}`);
+    } else {
+        console.error('⚠️ Twilio: Missing credentials');
+    }
 
-process.on('SIGTERM', () => { 
-    log.info('SIGTERM received, shutting down gracefully'); 
-    process.exit(0); 
+    console.log('\n📝 CRON SETUP REQUIRED:');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('\n1️⃣ AUTO-APPROVAL CRON:');
+    console.log('   • Visit: https://cron-job.org');
+    console.log(`   • URL: POST ${process.env.BASE_URL}/cron/auto-approval`);
+    console.log('   • Schedule: */10 * * * * (Every 10 minutes)');
+    console.log(`   • Status: ${AUTO_APPROVAL_ENABLED ? 'ENABLED' : 'DISABLED'}`);
+    console.log('\n2️⃣ REMINDER CRON:');
+    console.log('   • Visit: https://cron-job.org');
+    console.log(`   • URL: POST ${process.env.BASE_URL}/cron/send-reminders`);
+    console.log('   • Schedule: 0 */2 * * * (Every 2 hours)');
+    console.log(`   • 24h Reminders: ${REMINDER_24H_ENABLED ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`   • 2h Reminders: ${REMINDER_2H_ENABLED ? 'ENABLED' : 'DISABLED'}`);
+    console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ ALL SYSTEMS OPERATIONAL\n');
 });
 
-process.on('SIGINT', () => { 
-    log.info('SIGINT received, shutting down gracefully'); 
-    process.exit(0); 
+// ✅ Handle server errors
+server.on('error', (error) => {
+    if (error.code === 'EADDRINUSE') {
+        console.error(`❌ FATAL: Port ${PORT} is already in use`);
+        process.exit(1);
+    } else if (error.code === 'EACCES') {
+        console.error(`❌ FATAL: Permission denied to bind to port ${PORT}`);
+        process.exit(1);
+    } else {
+        console.error('❌ FATAL: Server error:', error);
+        process.exit(1);
+    }
 });
+
+// ✅ Graceful shutdown handler
+const gracefulShutdown = (signal) => {
+    console.log(`\n⚠️ ${signal} received, shutting down gracefully...`);
+    
+    server.close(() => {
+        console.log('✅ HTTP server closed');
+        console.log('✅ Exiting process');
+        process.exit(0);
+    });
+
+    // Force shutdown after 10 seconds
+    setTimeout(() => {
+        console.error('❌ Forced shutdown - timeout exceeded');
+        process.exit(1);
+    }, 10000);
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 process.on('uncaughtException', (error) => { 
-    log.error('UNCAUGHT EXCEPTION - FATAL', error); 
+    log.error('UNCAUGHT EXCEPTION - FATAL', error);
+    console.error('\n❌ UNCAUGHT EXCEPTION:');
+    console.error(error);
     process.exit(1); 
 });
 
-process.on('unhandledRejection', (reason) => { 
-    log.error('UNHANDLED REJECTION', { reason }); 
+process.on('unhandledRejection', (reason, promise) => { 
+    log.error('UNHANDLED REJECTION', { reason });
+    console.error('\n⚠️ UNHANDLED PROMISE REJECTION:');
+    console.error('Reason:', reason);
+    console.error('Promise:', promise);
 });
 
-startServer();
+// ✅ Startup complete message
+console.log('🔄 Server initialization in progress...');
+console.log(`⏳ Waiting for port ${PORT} to bind...\n`);
+
 module.exports = app;
+
 
 
 

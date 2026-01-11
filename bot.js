@@ -84,7 +84,7 @@ const twilio = require('twilio');
 // 4. INITIALIZE
 // ═══════════════════════════════════════════════════════════
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 8080;
 const HOST = '0.0.0.0';
 
 const sql = neon(process.env.DATABASE_URL);
@@ -2666,3 +2666,4 @@ process.on('unhandledRejection', (reason) => {
 
 startServer();
 module.exports = app;
+

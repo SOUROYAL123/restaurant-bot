@@ -95,6 +95,8 @@ const twilio = require('twilio');
 // 4. INITIALIZE
 // ═══════════════════════════════════════════════════════════
 const app = express();
+app.use(express.urlencoded({ extended: false }));
+app.use(express.json());
 const PORT = process.env.PORT || 8080;
 const HOST = '0.0.0.0';
 
@@ -1432,10 +1434,21 @@ app.get('/status', requireApiKey, async (req, res) => {
 // ═══════════════════════════════════════════════════════════
 // 21. WEBHOOK ROUTE
 // ═══════════════════════════════════════════════════════════
-app.post('/webhook/whatsapp', 
+app.post('/webhook/whatsapp',
     webhookRateLimiter,
+
+    // ✅ SAFETY GUARD – prevents 502
+    async (req, res, next) => {
+        if (!req.body || Object.keys(req.body).length === 0) {
+            return res.status(200).send('OK');
+        }
+        next();
+    },
+
     verifyTwilioSignature,
+
     async (req, res) => {
+
         res.status(200).send('OK');
         
         try {
@@ -2720,6 +2733,7 @@ console.log('🔄 Server initialization in progress...');
 console.log(`⏳ Waiting for port ${PORT} to bind...\n`);
 
 module.exports = app;
+
 
 
 

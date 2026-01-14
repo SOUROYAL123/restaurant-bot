@@ -1443,31 +1443,16 @@ app.get('/status', requireApiKey, async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════
 
 // ✅ PRIMARY WEBHOOK - Standard Twilio endpoint /webhook
+// ═══════════════════════════════════════════════════════════════════════
+// COPY THIS ENTIRE SECTION AND PASTE IT BEFORE YOUR EXISTING /webhook/whatsapp
+// ═══════════════════════════════════════════════════════════════════════
+
+// ✅ PRIMARY WEBHOOK - Standard Twilio endpoint /webhook
 app.post('/webhook',
     webhookRateLimiter,
-
-    // Safety guard - prevents 502
-    async (req, res, next) => {
-        console.log('==============================================');
-        console.log('📨 WEBHOOK RECEIVED at /webhook');
-        console.log('==============================================');
-        console.log('Method:', req.method);
-        console.log('Path:', req.path);
-        console.log('From:', req.body?.From || 'N/A');
-        console.log('Body:', req.body?.Body || 'N/A');
-        console.log('==============================================');
-        
-        if (!req.body || Object.keys(req.body).length === 0) {
-            console.log('⚠️  Empty body - returning 200 OK');
-            return res.status(200).send('OK');
-        }
-        next();
-    },
-
     verifyTwilioSignature,
-
     async (req, res) => {
-        // ✅ CRITICAL: Respond immediately to Twilio
+        // Respond immediately to Twilio
         res.status(200).send('OK');
         
         try {
@@ -1486,6 +1471,7 @@ app.post('/webhook',
                 isButton: !!ButtonPayload 
             });
             
+            // Process message asynchronously
             setImmediate(() => handleMessage(From, message));
             
         } catch (err) { 
@@ -1494,6 +1480,10 @@ app.post('/webhook',
     }
 );
 
+// ═══════════════════════════════════════════════════════════════════════
+// YOUR ORIGINAL /webhook/whatsapp CODE GOES BELOW THIS LINE
+// DON'T DELETE OR MODIFY YOUR EXISTING CODE
+// ═══════════════════════════════════════════════════════════════════════
 // ✅ ALTERNATIVE WEBHOOK - Legacy support /webhook/whatsapp
 app.post('/webhook/whatsapp',
     webhookRateLimiter,
@@ -2809,3 +2799,4 @@ module.exports = app;
 // END OF FILE - WhatsApp Clinic Bot v8.1.1 - Webhook Fixed
 // Total Lines: ~2850 (Original 2800 + Webhook Fix)
 // ═══════════════════════════════════════════════════════════════════════
+

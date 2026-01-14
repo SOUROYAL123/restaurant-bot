@@ -1,21 +1,22 @@
-﻿/**
- * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+/**
+ * ═══════════════════════════════════════════════════════════════════════
  * WHATSAPP CLINIC BOT v8.1.0 - WITH AUTO-APPROVAL + REMINDERS
  * 
- * âœ… WhatsApp Appointment Booking
- * âœ… Doctor Specialization Selection
- * âœ… Auto-Approval System (24hr) - INLINE CRON
- * âœ… Smart Reminders (24hr + 2hr) - NEW âœ¨
- * âœ… Manual Approve/Reject by Doctor
- * âœ… Enhanced Doctor Notifications with Retry Logic
- * âœ… Google Sheets Integration (Individual)
- * âœ… Google Sheets Integration (Centralized for 1000+)
- * âœ… Bulk Operations & Search
- * âœ… Bulk Report Endpoint
- * âœ… Message Chunking (1600 char limit fix)
- * âœ… Duplicate Dr. prefix fix
- * âœ… Security Hardened
- * âœ… Production Ready
+ * ✅ WhatsApp Appointment Booking
+ * ✅ Doctor Specialization Selection
+ * ✅ Auto-Approval System (24hr) - INLINE CRON
+ * ✅ Smart Reminders (24hr + 2hr) - NEW ✨
+ * ✅ Manual Approve/Reject by Doctor
+ * ✅ Enhanced Doctor Notifications with Retry Logic
+ * ✅ Google Sheets Integration (Individual)
+ * ✅ Google Sheets Integration (Centralized for 1000+)
+ * ✅ Bulk Operations & Search
+ * ✅ Bulk Report Endpoint
+ * ✅ Message Chunking (1600 char limit fix)
+ * ✅ Duplicate Dr. prefix fix
+ * ✅ Security Hardened
+ * ✅ Production Ready
+ * ✅ WEBHOOK FIX - /webhook endpoint added ← NEW
  * 
  * NEW in v8.1.0:
  * - 24-hour reminder system (day before appointment)
@@ -23,20 +24,25 @@
  * - Complete reminder cron endpoint
  * - Timezone-aware reminder scheduling
  * 
+ * FIXED in v8.1.1:
+ * - Added PRIMARY /webhook endpoint for Twilio
+ * - Kept legacy /webhook/whatsapp for compatibility
+ * 
  * Author: Sourav Roy - Legacylens Automation
- * â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+ * Modified: 2026-01-14 - Webhook 404 fix
+ * ═══════════════════════════════════════════════════════════════════════
  */
 
 'use strict';
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 1. LOAD ENVIRONMENT
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 require('dotenv').config();
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 2. ENVIRONMENT VALIDATION - NON-BLOCKING
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 const requiredEnvVars = [
     'DATABASE_URL',
     'TWILIO_ACCOUNT_SID',
@@ -46,41 +52,41 @@ const requiredEnvVars = [
     // 'PORT' - provided by Railway
 ];
 
-console.log('\nðŸ” Validating Environment Variables...');
-console.log('â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n');
+console.log('\n🔍 Validating Environment Variables...');
+console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
 let missingVars = [];
 let hasErrors = false;
 
 requiredEnvVars.forEach(varName => {
     if (!process.env[varName]) {
-        console.error(`âŒ Missing: ${varName}`);
+        console.error(`❌ Missing: ${varName}`);
         missingVars.push(varName);
         hasErrors = true;
     } else {
         const isSensitive = varName.includes('SECRET') || varName.includes('TOKEN') || varName.includes('KEY') || varName.includes('SID');
         const value = process.env[varName];
         const display = isSensitive ? `${value.substring(0, 8)}***` : value;
-        console.log(`âœ… ${varName.padEnd(25)} = ${display}`);
+        console.log(`✅ ${varName.padEnd(25)} = ${display}`);
     }
 });
 
 if (hasErrors) {
-    console.error('\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”');
-    console.error('âš ï¸  VALIDATION WARNING');
-    console.error('â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”');
+    console.error('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.error('⚠️  VALIDATION WARNING');
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.error(`Missing variables: ${missingVars.join(', ')}`);
-    console.error('âš ï¸  Server will start but features may be limited');
-    console.error('â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n');
-    // âœ… DO NOT EXIT - Let server start anyway
+    console.error('⚠️  Server will start but features may be limited');
+    console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+    // ✅ DO NOT EXIT - Let server start anyway
 } else {
-    console.log('\nâœ… All environment variables validated');
-    console.log('â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n');
+    console.log('\n✅ All environment variables validated');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 3. CORE DEPENDENCIES
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 const express = require('express');
 const bodyParser = require('body-parser');
 const helmet = require('helmet');
@@ -91,9 +97,9 @@ const crypto = require('crypto');
 const { neon } = require('@neondatabase/serverless');
 const twilio = require('twilio');
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 4. INITIALIZE
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
@@ -106,7 +112,7 @@ const twilioClient = twilio(
     process.env.TWILIO_AUTH_TOKEN
 );
 
-// âœ… HEALTH â€” MUST BE SYNC + NO DB
+// ✅ HEALTH – MUST BE SYNC + NO DB
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'healthy' });
 });
@@ -125,7 +131,7 @@ const AUTO_APPROVAL_DELAY_MINUTES =
 const REMINDER_24H_ENABLED = process.env.REMINDER_24H_ENABLED !== 'false';
 const REMINDER_2H_ENABLED = process.env.REMINDER_2H_ENABLED !== 'false';
 
-// (optional) DB health â€” NOT used by infra
+// (optional) DB health – NOT used by infra
 app.get('/health/db', async (req, res) => {
     try {
         await sql`SELECT 1`;
@@ -135,9 +141,9 @@ app.get('/health/db', async (req, res) => {
     }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 5. LOGGING
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 const log = {
     info: (msg, data = {}) => console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'INFO', message: msg, ...data })),
     success: (msg, data = {}) => console.log(JSON.stringify({ timestamp: new Date().toISOString(), level: 'SUCCESS', message: msg, ...data })),
@@ -145,9 +151,9 @@ const log = {
     error: (msg, error = {}) => console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: 'ERROR', message: msg, error: error.message || String(error), stack: error.stack || '' }))
 };
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 6. SECURITY MIDDLEWARE
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 
 function verifyTwilioSignature(req, res, next) {
     if (process.env.NODE_ENV === 'development' && process.env.SKIP_TWILIO_VERIFICATION === 'true') {
@@ -228,9 +234,9 @@ function setSecurityHeaders(req, res, next) {
     next();
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 7. APPLY MIDDLEWARE
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 app.set('trust proxy', 1);
 app.use(helmet());
 app.use(setSecurityHeaders);
@@ -263,9 +269,9 @@ app.use((req, res, next) => {
     next();
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 8. MESSAGE CHUNKING UTILITIES
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 
 function chunkMessage(message, maxLength = 1500) {
     if (message.length <= maxLength) {
@@ -342,9 +348,9 @@ async function sendLongMessage(to, message, delayMs = 1000) {
     return chunks.length;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 9. UTILITY FUNCTIONS
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 function normalizePhone(phone) {
     if (!phone) return '';
     return phone.replace('whatsapp:', '').trim();
@@ -401,14 +407,14 @@ async function sendDoctorNotification(to, appointmentDetails, appointmentId, ret
     
     try {
         if (!to) {
-            log.error('âŒ No doctor phone number', { appointmentId });
+            log.error('❌ No doctor phone number', { appointmentId });
             return false;
         }
         
         const phone = formatForWhatsApp(to);
         const { patientName, patientPhone, date, time, clinicName, doctorName, specialization } = appointmentDetails;
         
-        log.info(`ðŸ“ž Sending doctor notification (attempt ${retryCount + 1})`, {
+        log.info(`📞 Sending doctor notification (attempt ${retryCount + 1})`, {
             to: normalizePhone(phone),
             appointmentId,
             doctor: doctorName
@@ -418,19 +424,19 @@ async function sendDoctorNotification(to, appointmentDetails, appointmentId, ret
             ? `${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60)} hour${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60) > 1 ? 's' : ''}`
             : `${AUTO_APPROVAL_DELAY_MINUTES} minute${AUTO_APPROVAL_DELAY_MINUTES > 1 ? 's' : ''}`;
         
-        let bodyText = `ðŸ”” *NEW APPOINTMENT REQUEST*\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ“‹ *Appointment ID:* #${appointmentId}\nðŸ¥ *Clinic:* ${clinicName || 'N/A'}\n`;
+        let bodyText = `📢 *NEW APPOINTMENT REQUEST*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 *Appointment ID:* #${appointmentId}\n🏥 *Clinic:* ${clinicName || 'N/A'}\n`;
         
         if (doctorName && specialization) {
-            bodyText += `ðŸ‘¨\u200dâš•ï¸ *Doctor:* ${formatDoctorName(doctorName)}\n`;
-            bodyText += `ðŸ©º *Specialization:* ${specialization}\n`;
+            bodyText += `👨‍⚕️ *Doctor:* ${formatDoctorName(doctorName)}\n`;
+            bodyText += `🩺 *Specialization:* ${specialization}\n`;
         }
         
-        bodyText += `\n*PATIENT DETAILS:*\nðŸ‘¤ *Name:* ${patientName}\nðŸ“ž *Phone:* ${patientPhone}\n\n*APPOINTMENT DETAILS:*\nðŸ“… *Date:* ${date}\nâ° *Time:* ${time}\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\n*ACTIONS REQUIRED:*\n\nâœ… *APPROVE:* Reply *APPROVE #${appointmentId}*\nâŒ *REJECT:* Reply *REJECT #${appointmentId}*\n\n${AUTO_APPROVAL_ENABLED ? `â° *Auto-approves in ${approvalTime}* if no action taken` : 'âš ï¸ *Manual approval required*'}`;
+        bodyText += `\n*PATIENT DETAILS:*\n👤 *Name:* ${patientName}\n📞 *Phone:* ${patientPhone}\n\n*APPOINTMENT DETAILS:*\n📅 *Date:* ${date}\n⏰ *Time:* ${time}\n━━━━━━━━━━━━━━━━━━━━\n\n*ACTIONS REQUIRED:*\n\n✅ *APPROVE:* Reply *APPROVE #${appointmentId}*\n❌ *REJECT:* Reply *REJECT #${appointmentId}*\n\n${AUTO_APPROVAL_ENABLED ? `⏰ *Auto-approves in ${approvalTime}* if no action taken` : '⚠️ *Manual approval required*'}`;
         
         const success = await sendWhatsApp(to, bodyText);
         
         if (success) {
-            log.success('âœ… Doctor notification sent!', { 
+            log.success('✅ Doctor notification sent!', { 
                 to: normalizePhone(phone), 
                 appointmentId, 
                 doctor: doctorName 
@@ -441,19 +447,19 @@ async function sendDoctorNotification(to, appointmentDetails, appointmentId, ret
         }
         
     } catch (error) {
-        log.error('âŒ Doctor notification failed', {
+        log.error('❌ Doctor notification failed', {
             error: error.message,
             appointmentId,
             attempt: retryCount + 1
         });
         
         if (retryCount < MAX_RETRIES) {
-            log.info(`â³ Retrying in 2 seconds (${retryCount + 2}/${MAX_RETRIES + 1})...`);
+            log.info(`⏳ Retrying in 2 seconds (${retryCount + 2}/${MAX_RETRIES + 1})...`);
             await new Promise(resolve => setTimeout(resolve, 2000));
             return await sendDoctorNotification(to, appointmentDetails, appointmentId, retryCount + 1);
         }
         
-        log.error('ðŸš¨ CRITICAL: Notification failed after all retries!', {
+        log.error('🚨 CRITICAL: Notification failed after all retries!', {
             appointmentId,
             doctorPhone: normalizePhone(to),
             totalAttempts: MAX_RETRIES + 1
@@ -463,9 +469,9 @@ async function sendDoctorNotification(to, appointmentDetails, appointmentId, ret
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 10. AUTO-APPROVAL SYSTEM
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 async function scheduleAutoApproval(appointmentId) {
     if (!AUTO_APPROVAL_ENABLED) {
         log.info('Auto-approval disabled', { appointmentId });
@@ -478,9 +484,9 @@ async function scheduleAutoApproval(appointmentId) {
     });
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 11. SESSION MANAGEMENT
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 async function getSession(phone) {
     const cleanPhone = normalizePhone(phone);
     const session = await dbQuery(sql`SELECT * FROM sessions WHERE user_phone = ${cleanPhone} LIMIT 1`);
@@ -503,9 +509,9 @@ async function clearSession(phone) {
     await dbQuery(sql`DELETE FROM sessions WHERE user_phone = ${cleanPhone}`);
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 12. CLINIC HELPERS
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 async function getActiveClinics() {
     const clinics = await dbQuery(sql`SELECT * FROM clinics WHERE status = 'active' ORDER BY id`);
     return clinics || [];
@@ -516,9 +522,9 @@ async function getClinic(id) {
     return (clinic && clinic.length > 0) ? clinic[0] : null;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 13. DOCTOR SPECIALIZATION HELPERS
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 async function getDoctorsByClinic(clinicId) {
     const doctors = await dbQuery(sql`
         SELECT id, name, specialization, qualification, whatsapp
@@ -558,9 +564,9 @@ async function getDoctor(id) {
     return (doctor && doctor.length > 0) ? doctor[0] : null;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 14. WAITLIST MANAGEMENT
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 async function notifyWaitlist(clinicId, date, slot) {
     try {
         const waitlist = await sql`
@@ -577,7 +583,7 @@ async function notifyWaitlist(clinicId, date, slot) {
             const person = waitlist[0];
             await sendWhatsApp(
                 person.patient_phone, 
-                `ðŸŽ¯ *Slot Available!*\n\nðŸ“… ${new Date(date).toLocaleDateString('en-IN')}\nâ° ${slot}\n\nReply *YES ${person.id}* to book this slot\n\nâ±ï¸ Available for next 5 minutes only`
+                `🎯 *Slot Available!*\n\n📅 ${new Date(date).toLocaleDateString('en-IN')}\n⏰ ${slot}\n\nReply *YES ${person.id}* to book this slot\n\n⏱️ Available for next 5 minutes only`
             );
             
             await sql`
@@ -604,7 +610,7 @@ async function handleWaitlistAcceptance(phone, waitlistId) {
         `;
         
         if (waitlist.length === 0) {
-            await sendWhatsApp(phone, `âŒ Waitlist offer expired or not found.`);
+            await sendWhatsApp(phone, `❌ Waitlist offer expired or not found.`);
             return;
         }
         
@@ -612,7 +618,7 @@ async function handleWaitlistAcceptance(phone, waitlistId) {
         const minutesElapsed = (new Date() - new Date(w.notified_at)) / (1000 * 60);
         
         if (minutesElapsed > 5) {
-            await sendWhatsApp(phone, `â° Sorry, the 5-minute window has expired.`);
+            await sendWhatsApp(phone, `⏰ Sorry, the 5-minute window has expired.`);
             return;
         }
         
@@ -638,7 +644,7 @@ async function handleWaitlistAcceptance(phone, waitlistId) {
         
         await sendWhatsApp(
             phone, 
-            `âœ… *Slot Booked!*\n\nðŸ“‹ ID: #${appt[0].id}\nðŸ“… ${dateStr}\nâ° ${w.appointment_slot}\n\nâ³ Awaiting doctor approval...`
+            `✅ *Slot Booked!*\n\n📋 ID: #${appt[0].id}\n📅 ${dateStr}\n⏰ ${w.appointment_slot}\n\n⏳ Awaiting doctor approval...`
         );
         
         const dateDisplay = new Date(w.appointment_date).toLocaleDateString('en-IN', { 
@@ -664,13 +670,13 @@ async function handleWaitlistAcceptance(phone, waitlistId) {
         
     } catch (error) {
         log.error('Waitlist acceptance failed', error);
-        await sendWhatsApp(phone, 'âŒ Error booking slot.');
+        await sendWhatsApp(phone, '❌ Error booking slot.');
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 15. INTERACTIVE COMMANDS
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 async function handleConfirmCommand(phone, appointmentId) {
     try {
         const appts = await sql`
@@ -683,14 +689,14 @@ async function handleConfirmCommand(phone, appointmentId) {
         `;
         
         if (appts.length === 0) {
-            await sendWhatsApp(phone, `âŒ Appointment #${appointmentId} not found.`);
+            await sendWhatsApp(phone, `❌ Appointment #${appointmentId} not found.`);
             return;
         }
         
         const appt = appts[0];
         
         if (appt.status === 'confirmed') {
-            await sendWhatsApp(phone, `âœ… Appointment #${appointmentId} is already confirmed!`);
+            await sendWhatsApp(phone, `✅ Appointment #${appointmentId} is already confirmed!`);
             return;
         }
         
@@ -698,12 +704,12 @@ async function handleConfirmCommand(phone, appointmentId) {
         
         await sendWhatsApp(
             phone, 
-            `âœ… *Confirmed!*\n\nAppointment #${appointmentId} is confirmed.\n\nSee you on ${new Date(appt.appointment_date).toLocaleDateString('en-IN')} at ${appt.appointment_time} ðŸ˜Š`
+            `✅ *Confirmed!*\n\nAppointment #${appointmentId} is confirmed.\n\nSee you on ${new Date(appt.appointment_date).toLocaleDateString('en-IN')} at ${appt.appointment_time} 😊`
         );
         
     } catch (error) {
         log.error('Confirm command failed', error);
-        await sendWhatsApp(phone, 'âŒ Error confirming appointment.');
+        await sendWhatsApp(phone, '❌ Error confirming appointment.');
     }
 }
 
@@ -719,14 +725,14 @@ async function handleCancelCommand(phone, appointmentId) {
         `;
         
         if (appts.length === 0) {
-            await sendWhatsApp(phone, `âŒ Appointment #${appointmentId} not found.`);
+            await sendWhatsApp(phone, `❌ Appointment #${appointmentId} not found.`);
             return;
         }
         
         const appt = appts[0];
         
         if (appt.status === 'cancelled') {
-            await sendWhatsApp(phone, `âš ï¸ Appointment #${appointmentId} is already cancelled.`);
+            await sendWhatsApp(phone, `⚠️ Appointment #${appointmentId} is already cancelled.`);
             return;
         }
         
@@ -734,14 +740,14 @@ async function handleCancelCommand(phone, appointmentId) {
         
         await sendWhatsApp(
             phone, 
-            `âŒ *Appointment Cancelled*\n\nðŸ“‹ Booking #${appointmentId}\nðŸ¥ ${appt.clinic_name}\nðŸ“… ${new Date(appt.appointment_date).toLocaleDateString('en-IN')} @ ${appt.appointment_time}\n\nðŸ“± Reply *hi* to book a new appointment`
+            `❌ *Appointment Cancelled*\n\n📋 Booking #${appointmentId}\n🏥 ${appt.clinic_name}\n📅 ${new Date(appt.appointment_date).toLocaleDateString('en-IN')} @ ${appt.appointment_time}\n\n📱 Reply *hi* to book a new appointment`
         );
         
         await notifyWaitlist(appt.clinic_id, appt.appointment_date, appt.appointment_slot);
         
     } catch (error) {
         log.error('Cancel command failed', error);
-        await sendWhatsApp(phone, 'âŒ Error cancelling appointment.');
+        await sendWhatsApp(phone, '❌ Error cancelling appointment.');
     }
 }
 
@@ -755,7 +761,7 @@ async function handleRescheduleCommand(phone, appointmentId) {
         `;
         
         if (appts.length === 0) {
-            await sendWhatsApp(phone, `âŒ Appointment #${appointmentId} not found.`);
+            await sendWhatsApp(phone, `❌ Appointment #${appointmentId} not found.`);
             return;
         }
         
@@ -770,7 +776,7 @@ async function handleRescheduleCommand(phone, appointmentId) {
             } 
         });
         
-        let msg = `ðŸ”„ *Reschedule Appointment #${appointmentId}*\n\nðŸ“… Select new date:\n\n`;
+        let msg = `🔄 *Reschedule Appointment #${appointmentId}*\n\n📅 Select new date:\n\n`;
         
         for (let i = 1; i <= 7; i++) {
             const d = new Date();
@@ -784,29 +790,29 @@ async function handleRescheduleCommand(phone, appointmentId) {
         
     } catch (error) {
         log.error('Reschedule command failed', error);
-        await sendWhatsApp(phone, 'âŒ Error rescheduling appointment.');
+        await sendWhatsApp(phone, '❌ Error rescheduling appointment.');
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 16. CONVERSATION FLOW
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 
 async function handleStart(phone) {
     const clinics = await getActiveClinics();
     
     if (clinics.length === 0) { 
-        await sendWhatsApp(phone, 'âš ï¸ *Service Unavailable*\n\nNo clinics available. Please try again later.'); 
+        await sendWhatsApp(phone, '⚠️ *Service Unavailable*\n\nNo clinics available. Please try again later.'); 
         return; 
     }
     
     await setSession(phone, { stage: 'select_clinic', session_data: {} });
     
-    let msg = 'ðŸ‘‹ *Welcome to Clinic Appointments!*\n\nðŸ“‹ *Select clinic:*\n\n';
+    let msg = '👋 *Welcome to Clinic Appointments!*\n\n📋 *Select clinic:*\n\n';
     
     clinics.forEach((clinic, i) => { 
         msg += `*${i + 1}.* ${clinic.name}\n`;
-        msg += `   ðŸ‘¨â€âš•ï¸ ${formatDoctorName(clinic.doctor_name)}`;
+        msg += `   👨‍⚕️ ${formatDoctorName(clinic.doctor_name)}`;
         
         if (clinic.specialization) {
             msg += ` - ${clinic.specialization}`;
@@ -814,7 +820,7 @@ async function handleStart(phone) {
         msg += '\n';
         
         if (clinic.business_hours_start) {
-            msg += `   â° ${clinic.business_hours_start}-${clinic.business_hours_end}\n`;
+            msg += `   ⏰ ${clinic.business_hours_start}-${clinic.business_hours_end}\n`;
         }
         msg += '\n';
     });
@@ -829,7 +835,7 @@ async function handleClinicSelect(phone, text) {
     const choice = parseInt(text.trim());
     
     if (isNaN(choice) || choice < 1 || choice > clinics.length) { 
-        await sendWhatsApp(phone, `âŒ Invalid choice. Reply *1-${clinics.length}*`); 
+        await sendWhatsApp(phone, `❌ Invalid choice. Reply *1-${clinics.length}*`); 
         return; 
     }
     
@@ -843,7 +849,7 @@ async function handleClinicSelect(phone, text) {
             clinic_id: clinic.id, 
             session_data: {} 
         });
-        await sendWhatsApp(phone, `âœ… *${clinic.name}* selected\n\nðŸ‘¤ *What is your full name?*`);
+        await sendWhatsApp(phone, `✅ *${clinic.name}* selected\n\n👤 *What is your full name?*`);
     } else {
         await setSession(phone, { 
             stage: 'select_specialization', 
@@ -851,7 +857,7 @@ async function handleClinicSelect(phone, text) {
             session_data: {} 
         });
         
-        let msg = `âœ… *${clinic.name}* selected\n\nðŸ©º *Select Specialization:*\n\n`;
+        let msg = `✅ *${clinic.name}* selected\n\n🩺 *Select Specialization:*\n\n`;
         
         specializations.forEach((spec, i) => {
             msg += `*${i + 1}.* ${spec.specialization}\n`;
@@ -863,16 +869,16 @@ async function handleClinicSelect(phone, text) {
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 17. SPECIALIZATION & DOCTOR HANDLERS
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 async function handleSpecializationSelect(phone, text) {
     const session = await getSession(phone);
     const specializations = await getSpecializationsByClinic(session.clinic_id);
     const choice = parseInt(text.trim());
     
     if (isNaN(choice) || choice < 1 || choice > specializations.length + 1) { 
-        await sendWhatsApp(phone, `âŒ Invalid choice. Reply *1-${specializations.length + 1}*`); 
+        await sendWhatsApp(phone, `❌ Invalid choice. Reply *1-${specializations.length + 1}*`); 
         return; 
     }
     
@@ -908,7 +914,7 @@ async function showDoctorsList(phone) {
     }
     
     let doctors;
-    let msg = 'ðŸ‘¨\u200dâš•ï¸ *Select Doctor:*\n\n';
+    let msg = '👨‍⚕️ *Select Doctor:*\n\n';
     
     if (data.showAllDoctors) {
         doctors = await getDoctorsByClinic(session.clinic_id);
@@ -924,10 +930,10 @@ async function showDoctorsList(phone) {
         const doctorsList = [];
         
         Object.keys(grouped).sort().forEach(spec => {
-            msg += `ðŸ©º *${spec}*\n`;
+            msg += `🩺 *${spec}*\n`;
             grouped[spec].forEach(doc => {
                 msg += `*${doctorIndex}.* ${formatDoctorName(doc.name)}\n`;
-                if (doc.qualification) msg += `   ðŸ“‹ ${doc.qualification}\n`;
+                if (doc.qualification) msg += `   📋 ${doc.qualification}\n`;
                 doctorsList.push(doc);
                 doctorIndex++;
             });
@@ -940,10 +946,10 @@ async function showDoctorsList(phone) {
     } else {
         doctors = await getDoctorsBySpecialization(session.clinic_id, data.selectedSpecialization);
         
-        msg += `ðŸ©º *${data.selectedSpecialization}s:*\n\n`;
+        msg += `🩺 *${data.selectedSpecialization}s:*\n\n`;
         doctors.forEach((doc, i) => {
             msg += `*${i + 1}.* ${formatDoctorName(doc.name)}\n`;
-            if (doc.qualification) msg += `   ðŸ“‹ ${doc.qualification}\n\n`;
+            if (doc.qualification) msg += `   📋 ${doc.qualification}\n\n`;
         });
         
         data.doctorsList = doctors;
@@ -971,7 +977,7 @@ async function handleDoctorSelect(phone, text) {
     const choice = parseInt(text.trim());
     
     if (isNaN(choice) || choice < 1 || choice > doctors.length) { 
-        await sendWhatsApp(phone, `âŒ Invalid choice. Reply *1-${doctors.length}*`); 
+        await sendWhatsApp(phone, `❌ Invalid choice. Reply *1-${doctors.length}*`); 
         return; 
     }
     
@@ -988,12 +994,12 @@ async function handleDoctorSelect(phone, text) {
         session_data: data 
     });
     
-    let msg = `âœ… *Doctor Selected:*\n\n`;
-    msg += `ðŸ‘¨\u200dâš•ï¸ ${formatDoctorName(selectedDoctor.name)}\n`;
-    msg += `ðŸ©º ${selectedDoctor.specialization}\n`;
-    if (selectedDoctor.qualification) msg += `ðŸŽ“ ${selectedDoctor.qualification}\n`;
-    msg += `\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\n`;
-    msg += `ðŸ‘¤ *Your full name?*`;
+    let msg = `✅ *Doctor Selected:*\n\n`;
+    msg += `👨‍⚕️ ${formatDoctorName(selectedDoctor.name)}\n`;
+    msg += `🩺 ${selectedDoctor.specialization}\n`;
+    if (selectedDoctor.qualification) msg += `🎓 ${selectedDoctor.qualification}\n`;
+    msg += `\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+    msg += `👤 *Your full name?*`;
     
     await sendWhatsApp(phone, msg);
 }
@@ -1002,7 +1008,7 @@ async function handleName(phone, text) {
     const name = text.trim();
     
     if (name.length < 2) { 
-        await sendWhatsApp(phone, 'âŒ Name too short. Please enter your full name:'); 
+        await sendWhatsApp(phone, '❌ Name too short. Please enter your full name:'); 
         return; 
     }
     
@@ -1021,7 +1027,7 @@ async function handleName(phone, text) {
         session_data: data 
     });
     
-    let msg = `ðŸ‘¤ ${name}\n\nðŸ“… *Select date:*\n\n`;
+    let msg = `👤 ${name}\n\n📅 *Select date:*\n\n`;
     
     for (let i = 1; i <= 7; i++) { 
         const d = new Date(); 
@@ -1038,7 +1044,7 @@ async function handleDate(phone, text) {
     const choice = parseInt(text.trim());
     
     if (isNaN(choice) || choice < 1 || choice > 7) { 
-        await sendWhatsApp(phone, 'âŒ Invalid choice. Reply *1-7*'); 
+        await sendWhatsApp(phone, '❌ Invalid choice. Reply *1-7*'); 
         return; 
     }
     
@@ -1065,7 +1071,7 @@ async function handleDate(phone, text) {
     const startHour = parseInt(clinic?.business_hours_start?.split(':')[0] || '9');
     const endHour = parseInt(clinic?.business_hours_end?.split(':')[0] || '18');
     
-    let msg = `ðŸ“… ${d.toLocaleDateString('en-IN')}\n\nâ° *Select time:*\n\n`;
+    let msg = `📅 ${d.toLocaleDateString('en-IN')}\n\n⏰ *Select time:*\n\n`;
     
     for (let h = startHour; h < endHour; h++) { 
         const time = h >= 12 ? `${h === 12 ? 12 : h - 12}:00 PM` : `${h}:00 AM`; 
@@ -1094,7 +1100,7 @@ async function handleTime(phone, text) {
     const choice = parseInt(text.trim());
     
     if (isNaN(choice) || choice < 1 || choice > totalSlots) { 
-        await sendWhatsApp(phone, `âŒ Invalid choice. Reply *1-${totalSlots}*`); 
+        await sendWhatsApp(phone, `❌ Invalid choice. Reply *1-${totalSlots}*`); 
         return; 
     }
     
@@ -1131,14 +1137,14 @@ async function handleTime(phone, text) {
             ? `${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60)} hour${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60) > 1 ? 's' : ''}`
             : `${AUTO_APPROVAL_DELAY_MINUTES} minute${AUTO_APPROVAL_DELAY_MINUTES > 1 ? 's' : ''}`;
         
-        let confirmMsg = `âœ… *Booked!*\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ“‹ #${aptId}\nðŸ‘¤ ${data.name}\nðŸ¥ ${clinic.name}\n`;
+        let confirmMsg = `✅ *Booked!*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${aptId}\n👤 ${data.name}\n🏥 ${clinic.name}\n`;
         
         if (data.doctorName) {
-            confirmMsg += `ðŸ‘¨\u200dâš•ï¸ ${formatDoctorName(data.doctorName)}\n`;
-            confirmMsg += `ðŸ©º ${data.doctorSpecialization}\n`;
+            confirmMsg += `👨‍⚕️ ${formatDoctorName(data.doctorName)}\n`;
+            confirmMsg += `🩺 ${data.doctorSpecialization}\n`;
         }
         
-        confirmMsg += `ðŸ“… ${dateDisplay}\nâ° ${timeSlot}\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\nâ³ *Pending approval*\n${AUTO_APPROVAL_ENABLED ? `â° Auto-approves in ${approvalTime}` : 'âš ï¸ Manual approval required'}\n\nYou'll get confirmation soon!\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nâŒ CANCEL #${aptId}\nðŸ”„ RESCHEDULE #${aptId}`;
+        confirmMsg += `📅 ${dateDisplay}\n⏰ ${timeSlot}\n━━━━━━━━━━━━━━━━━━━━\n\n⏳ *Pending approval*\n${AUTO_APPROVAL_ENABLED ? `⏰ Auto-approves in ${approvalTime}` : '⚠️ Manual approval required'}\n\nYou'll get confirmation soon!\n\n━━━━━━━━━━━━━━━━━━━━\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`;
         
         await sendWhatsApp(phone, confirmMsg);
         
@@ -1164,13 +1170,13 @@ async function handleTime(phone, text) {
         
     } catch (error) {
         log.error('Appointment creation failed', error);
-        await sendWhatsApp(phone, 'âŒ Error creating appointment. Try again or contact support.');
+        await sendWhatsApp(phone, '❌ Error creating appointment. Try again or contact support.');
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 18. DOCTOR COMMANDS
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 async function handleDoctorCommand(phone, text) {
     const cleanPhone = normalizePhone(phone);
     const cmd = text.trim().toUpperCase();
@@ -1207,7 +1213,7 @@ async function handleDoctorCommand(phone, text) {
     if (!match) { 
         await sendWhatsApp(
             phone, 
-            `âŒ *Invalid format*\n\nUse:\nâœ… APPROVE #123\nâŒ REJECT #123`
+            `❌ *Invalid format*\n\nUse:\n✅ APPROVE #123\n❌ REJECT #123`
         ); 
         return true; 
     }
@@ -1224,7 +1230,7 @@ async function handleDoctorCommand(phone, text) {
     `);
     
     if (!apts || apts.length === 0) { 
-        await sendWhatsApp(phone, `âŒ *Appointment #${aptId} not found or already processed*`); 
+        await sendWhatsApp(phone, `❌ *Appointment #${aptId} not found or already processed*`); 
         return true; 
     }
     
@@ -1270,12 +1276,12 @@ async function handleDoctorCommand(phone, text) {
     if (isApprove) {
         await sendWhatsApp(
             apt.patient_phone, 
-            `âœ… *CONFIRMED!*\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ“‹ #${aptId}\nðŸ¥ ${clinic[0].name}\nðŸ‘¨â€âš•ï¸ ${formatDoctorName(clinic[0].doctor_name)}\nðŸ“… ${dateStr}\nâ° ${apt.appointment_time}\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\nâœ“ Doctor approved\nâœ“ Arrive 10 min early\n\nSee you soon! ðŸ˜Š\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nâŒ CANCEL #${aptId}\nðŸ”„ RESCHEDULE #${aptId}`
+            `✅ *CONFIRMED!*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${aptId}\n🏥 ${clinic[0].name}\n👨‍⚕️ ${formatDoctorName(clinic[0].doctor_name)}\n📅 ${dateStr}\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━\n\n✔ Doctor approved\n✔ Arrive 10 min early\n\nSee you soon! 😊\n\n━━━━━━━━━━━━━━━━━━━━\n❌ CANCEL #${aptId}\n🔄 RESCHEDULE #${aptId}`
         );
     } else {
         await sendWhatsApp(
             apt.patient_phone, 
-            `âŒ *Not Available*\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ“‹ #${aptId}\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\nSlot unavailable.\n\nReply *hi* to book another.`
+            `❌ *Not Available*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${aptId}\n━━━━━━━━━━━━━━━━━━━━\n\nSlot unavailable.\n\nReply *hi* to book another.`
         );
         
         await notifyWaitlist(apt.clinic_id, apt.appointment_date, apt.appointment_slot);
@@ -1283,15 +1289,15 @@ async function handleDoctorCommand(phone, text) {
     
     await sendWhatsApp(
         phone, 
-        `${isApprove ? 'âœ…' : 'âŒ'} *#${aptId} ${isApprove ? 'APPROVED' : 'REJECTED'}*\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ‘¤ ${apt.patient_name}\nðŸ“ž ${apt.patient_phone}\nðŸ“… ${dateStr}\nâ° ${apt.appointment_time}\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\nâœ“ Patient notified`
+        `${isApprove ? '✅' : '❌'} *#${aptId} ${isApprove ? 'APPROVED' : 'REJECTED'}*\n\n━━━━━━━━━━━━━━━━━━━━\n👤 ${apt.patient_name}\n📞 ${apt.patient_phone}\n📅 ${dateStr}\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━\n\n✔ Patient notified`
     );
     
     return true;
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 19. MESSAGE ROUTER
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 async function handleMessage(phone, text) {
     try {
         const cmd = text.trim().toUpperCase();
@@ -1366,16 +1372,16 @@ async function handleMessage(phone, text) {
         
     } catch (error) {
         log.error('Message handler error', error);
-        await sendWhatsApp(phone, 'âŒ An error occurred. Reply *hi* to restart.');
+        await sendWhatsApp(phone, '❌ An error occurred. Reply *hi* to restart.');
     }
 }
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 20. PUBLIC ROUTES
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 app.get('/', (req, res) => res.json({ 
     name: 'WhatsApp Clinic Bot', 
-    version: '8.1.0-with-reminders', 
+    version: '8.1.1-webhook-fixed', 
     status: 'operational', 
     auto_approval: AUTO_APPROVAL_ENABLED,
     auto_approval_delay_minutes: AUTO_APPROVAL_DELAY_MINUTES,
@@ -1396,7 +1402,8 @@ app.get('/', (req, res) => res.json({
         duplicate_dr_fix: true,
         specializations_in_list: true,
         bulk_report_endpoint: true,
-        signature_verification: true
+        signature_verification: true,
+        webhook_fixed: true
     }, 
     uptime: Math.floor(process.uptime()) 
 }));
@@ -1415,7 +1422,7 @@ app.get('/status', requireApiKey, async (req, res) => {
         
         res.json({ 
             status: 'ok', 
-            version: '8.1.0-with-reminders',
+            version: '8.1.1-webhook-fixed',
             auto_approval: {
                 enabled: AUTO_APPROVAL_ENABLED,
                 delay_minutes: AUTO_APPROVAL_DELAY_MINUTES
@@ -1431,13 +1438,67 @@ app.get('/status', requireApiKey, async (req, res) => {
     } 
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// 21. WEBHOOK ROUTE
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
+// 21. ✅✅✅ WEBHOOK ROUTES - FIXED ✅✅✅
+// ═══════════════════════════════════════════════════════════════════════
+
+// ✅ PRIMARY WEBHOOK - Standard Twilio endpoint /webhook
+app.post('/webhook',
+    webhookRateLimiter,
+
+    // Safety guard - prevents 502
+    async (req, res, next) => {
+        console.log('==============================================');
+        console.log('📨 WEBHOOK RECEIVED at /webhook');
+        console.log('==============================================');
+        console.log('Method:', req.method);
+        console.log('Path:', req.path);
+        console.log('From:', req.body?.From || 'N/A');
+        console.log('Body:', req.body?.Body || 'N/A');
+        console.log('==============================================');
+        
+        if (!req.body || Object.keys(req.body).length === 0) {
+            console.log('⚠️  Empty body - returning 200 OK');
+            return res.status(200).send('OK');
+        }
+        next();
+    },
+
+    verifyTwilioSignature,
+
+    async (req, res) => {
+        // ✅ CRITICAL: Respond immediately to Twilio
+        res.status(200).send('OK');
+        
+        try {
+            const { From, Body, ButtonPayload } = req.body;
+            
+            if (!From || !Body) { 
+                log.warn('Invalid webhook payload'); 
+                return; 
+            }
+            
+            const message = ButtonPayload || Body;
+            
+            log.info('Incoming message', { 
+                from: normalizePhone(From), 
+                message, 
+                isButton: !!ButtonPayload 
+            });
+            
+            setImmediate(() => handleMessage(From, message));
+            
+        } catch (err) { 
+            log.error('Webhook processing error', err); 
+        }
+    }
+);
+
+// ✅ ALTERNATIVE WEBHOOK - Legacy support /webhook/whatsapp
 app.post('/webhook/whatsapp',
     webhookRateLimiter,
 
-    // âœ… SAFETY GUARD â€“ prevents 502
+    // ✅ SAFETY GUARD – prevents 502
     async (req, res, next) => {
         if (!req.body || Object.keys(req.body).length === 0) {
             return res.status(200).send('OK');
@@ -1475,9 +1536,9 @@ app.post('/webhook/whatsapp',
     }
 );
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 22. GOOGLE SHEETS INTEGRATION - PER CLINIC
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 
 const requireAdminSheetsApiKey = async (req, res, next) => {
     try {
@@ -1838,9 +1899,9 @@ app.get('/api/sheets/:clinicId/info', requireSheetsApiKey, async (req, res) => {
     }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 23. BULK ENDPOINTS
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 
 app.get('/api/sheets/all-clinics', requireAdminSheetsApiKey, async (req, res) => {
     try {
@@ -2177,9 +2238,10 @@ app.get('/api/sheets/bulk/report', requireAdminSheetsApiKey, async (req, res) =>
     }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+
+// ═══════════════════════════════════════════════════════════════════════
 // 24. CRON ENDPOINTS - AUTO-APPROVAL + REMINDERS
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 
 // AUTO-APPROVAL CRON ENDPOINT
 // SETUP: cron-job.org - Every 10 minutes
@@ -2187,7 +2249,7 @@ app.post('/cron/auto-approval', async (req, res) => {
     const startTime = Date.now();
     
     try {
-        log.info('ðŸ”„ Auto-approval cron started');
+        log.info('🔄 Auto-approval cron started');
         
         const threshold = new Date(Date.now() - AUTO_APPROVAL_DELAY_MINUTES * 60 * 1000);
         
@@ -2248,7 +2310,7 @@ app.post('/cron/auto-approval', async (req, res) => {
                 `;
                 
                 approved++;
-                log.success(`âœ… Auto-approved appointment #${apt.id}`);
+                log.success(`✅ Auto-approved appointment #${apt.id}`);
                 
                 const dateStr = new Date(apt.appointment_date).toLocaleDateString('en-IN', {
                     weekday: 'long',
@@ -2257,23 +2319,23 @@ app.post('/cron/auto-approval', async (req, res) => {
                     year: 'numeric'
                 });
                 
-                let patientMessage = `âœ… *CONFIRMED!*\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ“‹ #${apt.id}\nðŸ¥ ${apt.clinic_name}\n`;
+                let patientMessage = `✅ *CONFIRMED!*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n🏥 ${apt.clinic_name}\n`;
                 
                 const doctorName = apt.assigned_doctor_name || apt.doctor_name;
                 const doctorSpecialization = apt.assigned_doctor_specialization || 'General';
                 
                 if (doctorName) {
-                    patientMessage += `ðŸ‘¨â€âš•ï¸ ${formatDoctorName(doctorName)}\n`;
-                    patientMessage += `ðŸ©º ${doctorSpecialization}\n`;
+                    patientMessage += `👨‍⚕️ ${formatDoctorName(doctorName)}\n`;
+                    patientMessage += `🩺 ${doctorSpecialization}\n`;
                 }
                 
-                patientMessage += `ðŸ“… ${dateStr}\nâ° ${apt.appointment_time}\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\nâœ“ Auto-approved\nâœ“ Arrive 10 min early\n\nSee you soon! ðŸ˜Š\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nâŒ CANCEL #${apt.id}\nðŸ”„ RESCHEDULE #${apt.id}`;
+                patientMessage += `📅 ${dateStr}\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━\n\n✔ Auto-approved\n✔ Arrive 10 min early\n\nSee you soon! 😊\n\n━━━━━━━━━━━━━━━━━━━━\n❌ CANCEL #${apt.id}\n🔄 RESCHEDULE #${apt.id}`;
                 
                 const patientSent = await sendWhatsApp(apt.patient_phone, patientMessage);
                 
                 if (patientSent) {
                     notified++;
-                    log.success(`ðŸ“± Patient notified`, {
+                    log.success(`📱 Patient notified`, {
                         phone: apt.patient_phone.replace('whatsapp:', ''),
                         appointmentId: apt.id
                     });
@@ -2287,10 +2349,10 @@ app.post('/cron/auto-approval', async (req, res) => {
                         ? `${hoursElapsed} hour${hoursElapsed > 1 ? 's' : ''}`
                         : `${ageMinutes} minutes`;
                     
-                    let doctorMessage = `â„¹ï¸ *AUTO-APPROVED*\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ“‹ #${apt.id}\nðŸ‘¤ ${apt.patient_name}\nðŸ“ž ${apt.patient_phone.replace('whatsapp:', '')}\nðŸ“… ${dateStr}\nâ° ${apt.appointment_time}\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\nAuto-approved after ${timeElapsed}.\nPatient notified.`;
+                    let doctorMessage = `ℹ️ *AUTO-APPROVED*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n👤 ${apt.patient_name}\n📞 ${apt.patient_phone.replace('whatsapp:', '')}\n📅 ${dateStr}\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━\n\nAuto-approved after ${timeElapsed}.\nPatient notified.`;
                     
                     await sendWhatsApp(doctorPhone, doctorMessage);
-                    log.info(`ðŸ“± Doctor notified`, {
+                    log.info(`📱 Doctor notified`, {
                         phone: doctorPhone.replace('whatsapp:', ''),
                         appointmentId: apt.id
                     });
@@ -2317,13 +2379,13 @@ app.post('/cron/auto-approval', async (req, res) => {
             timestamp: new Date().toISOString()
         };
         
-        log.success('âœ… Auto-approval cron completed', summary);
+        log.success('✅ Auto-approval cron completed', summary);
         
         res.json(summary);
         
     } catch (error) {
         const duration = Date.now() - startTime;
-        log.error('âŒ Auto-approval cron failed', {
+        log.error('❌ Auto-approval cron failed', {
             error: error.message,
             stack: error.stack
         });
@@ -2343,7 +2405,7 @@ app.post('/cron/send-reminders', async (req, res) => {
     const startTime = Date.now();
     
     try {
-        log.info('ðŸ”” Reminder cron started');
+        log.info('🔔 Reminder cron started');
         
         let sent24h = 0;
         let sent2h = 0;
@@ -2382,14 +2444,14 @@ app.post('/cron/send-reminders', async (req, res) => {
                     const doctorName = apt.assigned_doctor_name || apt.doctor_name;
                     const doctorSpec = apt.assigned_doctor_specialization || 'General';
                     
-                    let message = `ðŸ”” *REMINDER - TOMORROW*\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ“‹ #${apt.id}\nðŸ¥ ${apt.clinic_name}\n`;
+                    let message = `🔔 *REMINDER - TOMORROW*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n🏥 ${apt.clinic_name}\n`;
                     
                     if (doctorName) {
-                        message += `ðŸ‘¨â€âš•ï¸ ${formatDoctorName(doctorName)}\n`;
-                        message += `ðŸ©º ${doctorSpec}\n`;
+                        message += `👨‍⚕️ ${formatDoctorName(doctorName)}\n`;
+                        message += `🩺 ${doctorSpec}\n`;
                     }
                     
-                    message += `\nðŸ“… *TOMORROW*\nâ° ${apt.appointment_time}\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\nâœ“ Please arrive 10 min early\nâœ“ Bring any documents\n\nSee you tomorrow!\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nâœ… CONFIRM #${apt.id}\nâŒ CANCEL #${apt.id}`;
+                    message += `\n📅 *TOMORROW*\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━\n\n✔ Please arrive 10 min early\n✔ Bring any documents\n\nSee you tomorrow!\n\n━━━━━━━━━━━━━━━━━━━━\n✅ CONFIRM #${apt.id}\n❌ CANCEL #${apt.id}`;
                     
                     const success = await sendWhatsApp(apt.patient_phone, message);
                     
@@ -2401,7 +2463,7 @@ app.post('/cron/send-reminders', async (req, res) => {
                         `;
                         
                         sent24h++;
-                        log.success(`ðŸ“… 24h reminder sent`, {
+                        log.success(`📅 24h reminder sent`, {
                             appointmentId: apt.id,
                             patient: apt.patient_name
                         });
@@ -2460,13 +2522,13 @@ app.post('/cron/send-reminders', async (req, res) => {
                     if (hourDiff >= 2 && hourDiff <= 3) {
                         const doctorName = apt.assigned_doctor_name || apt.doctor_name;
                         
-                        let message = `â° *REMINDER - IN 2 HOURS*\n\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\nðŸ“‹ #${apt.id}\nðŸ¥ ${apt.clinic_name}\n`;
+                        let message = `⏰ *REMINDER - IN 2 HOURS*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n🏥 ${apt.clinic_name}\n`;
                         
                         if (doctorName) {
-                            message += `ðŸ‘¨â€âš•ï¸ ${formatDoctorName(doctorName)}\n`;
+                            message += `👨‍⚕️ ${formatDoctorName(doctorName)}\n`;
                         }
                         
-                        message += `\nâ° *TODAY at ${apt.appointment_time}*\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\nâœ“ Arrive 10 min early\nâœ“ Bring documents\n\nSee you soon!`;
+                        message += `\n⏰ *TODAY at ${apt.appointment_time}*\n━━━━━━━━━━━━━━━━━━━━\n\n✔ Arrive 10 min early\n✔ Bring documents\n\nSee you soon!`;
                         
                         const success = await sendWhatsApp(apt.patient_phone, message);
                         
@@ -2478,7 +2540,7 @@ app.post('/cron/send-reminders', async (req, res) => {
                             `;
                             
                             sent2h++;
-                            log.success(`â° 2h reminder sent`, {
+                            log.success(`⏰ 2h reminder sent`, {
                                 appointmentId: apt.id,
                                 patient: apt.patient_name,
                                 time: apt.appointment_time
@@ -2504,13 +2566,13 @@ app.post('/cron/send-reminders', async (req, res) => {
             timestamp: new Date().toISOString()
         };
         
-        log.success('âœ… Reminder cron completed', summary);
+        log.success('✅ Reminder cron completed', summary);
         
         res.json(summary);
         
     } catch (error) {
         const duration = Date.now() - startTime;
-        log.error('âŒ Reminder cron failed', {
+        log.error('❌ Reminder cron failed', {
             error: error.message,
             stack: error.stack
         });
@@ -2525,7 +2587,7 @@ app.post('/cron/send-reminders', async (req, res) => {
 
 // Test endpoints
 app.get('/cron/auto-approval/test', async (req, res) => {
-    log.info('ðŸ§ª Auto-approval test endpoint accessed');
+    log.info('🧪 Auto-approval test endpoint accessed');
     
     try {
         const threshold = new Date(Date.now() - AUTO_APPROVAL_DELAY_MINUTES * 60 * 1000);
@@ -2539,7 +2601,7 @@ app.get('/cron/auto-approval/test', async (req, res) => {
         `;
         
         res.json({
-            message: 'Auto-approval cron endpoint ready âœ…',
+            message: 'Auto-approval cron endpoint ready ✅',
             config: {
                 enabled: AUTO_APPROVAL_ENABLED,
                 delayMinutes: AUTO_APPROVAL_DELAY_MINUTES,
@@ -2563,7 +2625,7 @@ app.get('/cron/auto-approval/test', async (req, res) => {
 });
 
 app.get('/cron/send-reminders/test', async (req, res) => {
-    log.info('ðŸ§ª Reminder test endpoint accessed');
+    log.info('🧪 Reminder test endpoint accessed');
     
     try {
         const tomorrow = new Date();
@@ -2589,7 +2651,7 @@ app.get('/cron/send-reminders/test', async (req, res) => {
         `;
         
         res.json({
-            message: 'Reminder cron endpoint ready âœ…',
+            message: 'Reminder cron endpoint ready ✅',
             config: {
                 reminder_24h_enabled: REMINDER_24H_ENABLED,
                 reminder_2h_enabled: REMINDER_2H_ENABLED
@@ -2612,9 +2674,9 @@ app.get('/cron/send-reminders/test', async (req, res) => {
     }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 25. ERROR HANDLERS
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 app.use((req, res) => res.status(404).json({ error: 'Not Found' }));
 
 app.use((err, req, res, next) => { 
@@ -2622,91 +2684,100 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: 'Internal Server Error' }); 
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 // 26. SERVER STARTUP - RAILWAY OPTIMIZED
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// ═══════════════════════════════════════════════════════════════════════
 
-// âœ… CRITICAL: Remove environment validation exit
-// Replace lines 35-68 with non-blocking validation (see previous fix)
-
-// âœ… Start server IMMEDIATELY - before ANY async operations
+// ✅ Start server IMMEDIATELY - before ANY async operations
 const server = app.listen(PORT, HOST, async () => {
-    console.log('\nâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
-    console.log('ðŸš€ WHATSAPP CLINIC BOT v8.1.0 - WITH REMINDERS');
-    console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
-    console.log(`ðŸ“¡ Port: ${PORT}`);
-    console.log(`ðŸŒ Host: ${HOST}`);
-    console.log(`ðŸŒ Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•');
-    console.log('âœ… SERVER LISTENING - Health endpoint active');
-    console.log(`âœ… Health check: http://localhost:${PORT}/health`);
-    console.log('â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•\n');
+    console.log('\n═══════════════════════════════════════════════════════════');
+    console.log('🚀 WHATSAPP CLINIC BOT v8.1.1 - WEBHOOK FIXED');
+    console.log('═══════════════════════════════════════════════════════════');
+    console.log(`📡 Port: ${PORT}`);
+    console.log(`🌐 Host: ${HOST}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log('═══════════════════════════════════════════════════════════');
+    console.log('✅ SERVER LISTENING - All endpoints active');
+    console.log(`✅ Health: http://localhost:${PORT}/health`);
+    console.log(`✅ Webhook (PRIMARY): POST ${process.env.BASE_URL}/webhook`);
+    console.log(`✅ Webhook (ALT): POST ${process.env.BASE_URL}/webhook/whatsapp`);
+    console.log('═══════════════════════════════════════════════════════════\n');
     
-    // âœ… Test database AFTER server is listening
-    console.log('ðŸ” Testing database connection...');
+    // ✅ Test database AFTER server is listening
+    console.log('🔍 Testing database connection...');
     try {
         await sql`SELECT 1`;
-        console.log('âœ… Database: Connected');
-        console.log(`ðŸ’¾ Database URL: ${process.env.DATABASE_URL?.substring(0, 30)}...`);
+        console.log('✅ Database: Connected');
+        console.log(`💾 Database URL: ${process.env.DATABASE_URL?.substring(0, 30)}...`);
     } catch (dbError) {
-        console.error('âš ï¸ Database: Connection failed');
-        console.error(`âŒ Error: ${dbError.message}`);
-        console.error('âš ï¸ App will continue but database features unavailable');
+        console.error('⚠️ Database: Connection failed');
+        console.error(`❌ Error: ${dbError.message}`);
+        console.error('⚠️ App will continue but database features unavailable');
     }
     
-    // âœ… Verify Twilio credentials
-    console.log('\nðŸ” Verifying Twilio configuration...');
+    // ✅ Verify Twilio credentials
+    console.log('\n🔍 Verifying Twilio configuration...');
     if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
-        console.log('âœ… Twilio: Configured');
-        console.log(`ðŸ“± WABA Number: ${process.env.WABA_NUMBER || 'NOT SET'}`);
+        console.log('✅ Twilio: Configured');
+        console.log(`📱 WABA Number: ${process.env.WABA_NUMBER || 'NOT SET'}`);
     } else {
-        console.error('âš ï¸ Twilio: Missing credentials');
+        console.error('⚠️ Twilio: Missing credentials');
     }
 
-    console.log('\nðŸ“ CRON SETUP REQUIRED:');
-    console.log('â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”');
-    console.log('\n1ï¸âƒ£ AUTO-APPROVAL CRON:');
-    console.log('   â€¢ Visit: https://cron-job.org');
-    console.log(`   â€¢ URL: POST ${process.env.BASE_URL}/cron/auto-approval`);
-    console.log('   â€¢ Schedule: */10 * * * * (Every 10 minutes)');
-    console.log(`   â€¢ Status: ${AUTO_APPROVAL_ENABLED ? 'ENABLED' : 'DISABLED'}`);
-    console.log('\n2ï¸âƒ£ REMINDER CRON:');
-    console.log('   â€¢ Visit: https://cron-job.org');
-    console.log(`   â€¢ URL: POST ${process.env.BASE_URL}/cron/send-reminders`);
-    console.log('   â€¢ Schedule: 0 */2 * * * (Every 2 hours)');
-    console.log(`   â€¢ 24h Reminders: ${REMINDER_24H_ENABLED ? 'ENABLED' : 'DISABLED'}`);
-    console.log(`   â€¢ 2h Reminders: ${REMINDER_2H_ENABLED ? 'ENABLED' : 'DISABLED'}`);
-    console.log('\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”');
-    console.log('âœ… ALL SYSTEMS OPERATIONAL\n');
+    console.log('\n🔔 CRON SETUP REQUIRED:');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('\n1️⃣ AUTO-APPROVAL CRON:');
+    console.log('   • Visit: https://cron-job.org');
+    console.log(`   • URL: POST ${process.env.BASE_URL}/cron/auto-approval`);
+    console.log('   • Schedule: */10 * * * * (Every 10 minutes)');
+    console.log(`   • Status: ${AUTO_APPROVAL_ENABLED ? 'ENABLED' : 'DISABLED'}`);
+    console.log('\n2️⃣ REMINDER CRON:');
+    console.log('   • Visit: https://cron-job.org');
+    console.log(`   • URL: POST ${process.env.BASE_URL}/cron/send-reminders`);
+    console.log('   • Schedule: 0 */2 * * * (Every 2 hours)');
+    console.log(`   • 24h Reminders: ${REMINDER_24H_ENABLED ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`   • 2h Reminders: ${REMINDER_2H_ENABLED ? 'ENABLED' : 'DISABLED'}`);
+    console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    console.log('\n✅ TWILIO WEBHOOK CONFIGURATION:');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('1. Go to: https://console.twilio.com/');
+    console.log('2. Navigate: Messaging → Try it out → Send a WhatsApp message');
+    console.log('3. Click your number: +917980407413');
+    console.log(`4. Set "When a message comes in": ${process.env.BASE_URL}/webhook`);
+    console.log('5. Method: HTTP POST');
+    console.log('6. Click: Save');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('\n✅ ALL SYSTEMS OPERATIONAL\n');
 });
 
-// âœ… Handle server errors
+// ✅ Handle server errors
 server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
-        console.error(`âŒ FATAL: Port ${PORT} is already in use`);
+        console.error(`❌ FATAL: Port ${PORT} is already in use`);
         process.exit(1);
     } else if (error.code === 'EACCES') {
-        console.error(`âŒ FATAL: Permission denied to bind to port ${PORT}`);
+        console.error(`❌ FATAL: Permission denied to bind to port ${PORT}`);
         process.exit(1);
     } else {
-        console.error('âŒ FATAL: Server error:', error);
+        console.error('❌ FATAL: Server error:', error);
         process.exit(1);
     }
 });
 
-// âœ… Graceful shutdown handler
+// ✅ Graceful shutdown handler
 const gracefulShutdown = (signal) => {
-    console.log(`\nâš ï¸ ${signal} received, shutting down gracefully...`);
+    console.log(`\n⚠️ ${signal} received, shutting down gracefully...`);
     
     server.close(() => {
-        console.log('âœ… HTTP server closed');
-        console.log('âœ… Exiting process');
+        console.log('✅ HTTP server closed');
+        console.log('✅ Exiting process');
         process.exit(0);
     });
 
     // Force shutdown after 10 seconds
     setTimeout(() => {
-        console.error('âŒ Forced shutdown - timeout exceeded');
+        console.error('❌ Forced shutdown - timeout exceeded');
         process.exit(1);
     }, 10000);
 };
@@ -2716,28 +2787,25 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 process.on('uncaughtException', (error) => { 
     log.error('UNCAUGHT EXCEPTION - FATAL', error);
-    console.error('\nâŒ UNCAUGHT EXCEPTION:');
+    console.error('\n❌ UNCAUGHT EXCEPTION:');
     console.error(error);
     process.exit(1); 
 });
 
 process.on('unhandledRejection', (reason, promise) => { 
     log.error('UNHANDLED REJECTION', { reason });
-    console.error('\nâš ï¸ UNHANDLED PROMISE REJECTION:');
+    console.error('\n⚠️ UNHANDLED PROMISE REJECTION:');
     console.error('Reason:', reason);
     console.error('Promise:', promise);
 });
 
-// âœ… Startup complete message
-console.log('ðŸ”„ Server initialization in progress...');
-console.log(`â³ Waiting for port ${PORT} to bind...\n`);
+// ✅ Startup complete message
+console.log('🔄 Server initialization in progress...');
+console.log(`⏳ Waiting for port ${PORT} to bind...\n`);
 
 module.exports = app;
 
-
-
-
-
-
-
-
+// ═══════════════════════════════════════════════════════════════════════
+// END OF FILE - WhatsApp Clinic Bot v8.1.1 - Webhook Fixed
+// Total Lines: ~2850 (Original 2800 + Webhook Fix)
+// ═══════════════════════════════════════════════════════════════════════

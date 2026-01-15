@@ -1301,9 +1301,81 @@ async function handleDoctorCommand(phone, text) {
 async function handleMessage(phone, text) {
     try {
         const cmd = text.trim().toUpperCase();
+        const cleanText = text.trim();
+        
+        // ═══════════════════════════════════════════════════════════
+        // ✅ STEP 1: CHECK FOR CLINIC QR CODES FIRST (HIGHEST PRIORITY)
+        // ═══════════════════════════════════════════════════════════
+        
+        // Remove "_START" suffix if present (for QR codes)
+        const possibleCode = cleanText.replace(/_START$/i, '').toUpperCase();
+        
+        // Check if this is a clinic code from QR scan
+        const clinicByCode = await dbQuery(sql`
+            SELECT * FROM clinics 
+            WHERE UPPER(code) = ${possibleCode} 
+            AND status = 'active' 
+            LIMIT 1
+        `);
+        
+        if (clinicByCode && clinicByCode.length > 0) {
+            const clinic = clinicByCode[0];
+            
+            log.info('QR Code scanned', { 
+                code: possibleCode, 
+                clinic: clinic.name,
+                phone: normalizePhone(phone)
+            });
+            
+            // Check if clinic has specializations/doctors
+            const specializations = await getSpecializationsByClinic(clinic.id);
+            
+            if (specializations.length === 0) {
+                // No specializations - go directly to name entry
+                await setSession(phone, { 
+                    stage: 'enter_name', 
+                    clinic_id: clinic.id, 
+                    session_data: {} 
+                });
+                
+                let msg = `🍽️ *Welcome to ${clinic.name}!*\n\n`;
+                msg += `━━━━━━━━━━━━━━━━━━━━\n\n`;
+                msg += `👤 *What is your full name?*`;
+                
+                await sendWhatsApp(phone, msg);
+                return;
+            } else {
+                // Has specializations - show them
+                await setSession(phone, { 
+                    stage: 'select_specialization', 
+                    clinic_id: clinic.id, 
+                    session_data: {} 
+                });
+                
+                let msg = `🏥 *Welcome to ${clinic.name}!*\n\n`;
+                msg += `🩺 *Select Specialization:*\n\n`;
+                
+                specializations.forEach((spec, i) => {
+                    msg += `*${i + 1}.* ${spec.specialization}\n`;
+                });
+                msg += `*${specializations.length + 1}.* View All Doctors\n`;
+                msg += `\nReply *1-${specializations.length + 1}*`;
+                
+                await sendWhatsApp(phone, msg);
+                return;
+            }
+        }
+        
+        // ═══════════════════════════════════════════════════════════
+        // ✅ STEP 2: CHECK FOR DOCTOR COMMANDS
+        // ═══════════════════════════════════════════════════════════
         
         const isDoctorCmd = await handleDoctorCommand(phone, text);
         if (isDoctorCmd) return;
+        
+        // ═══════════════════════════════════════════════════════════
+        // ✅ STEP 3: CHECK FOR PATIENT COMMANDS
+        // ═══════════════════════════════════════════════════════════
         
         if (cmd.startsWith('CONFIRM')) {
             const match = cmd.match(/CONFIRM\s+#?(\d+)/);
@@ -1336,6 +1408,10 @@ async function handleMessage(phone, text) {
                 return;
             }
         }
+        
+        // ═══════════════════════════════════════════════════════════
+        // ✅ STEP 4: HANDLE SESSION-BASED FLOW
+        // ═══════════════════════════════════════════════════════════
         
         const session = await getSession(phone);
         const msg = text.trim().toLowerCase();
@@ -1375,7 +1451,6 @@ async function handleMessage(phone, text) {
         await sendWhatsApp(phone, '❌ An error occurred. Reply *hi* to restart.');
     }
 }
-
 // ═══════════════════════════════════════════════════════════════════════
 // 20. PUBLIC ROUTES
 // ═══════════════════════════════════════════════════════════════════════
@@ -2799,4 +2874,3 @@ module.exports = app;
 // END OF FILE - WhatsApp Clinic Bot v8.1.1 - Webhook Fixed
 // Total Lines: ~2850 (Original 2800 + Webhook Fix)
 // ═══════════════════════════════════════════════════════════════════════
-

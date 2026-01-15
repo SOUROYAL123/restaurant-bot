@@ -1,11 +1,12 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v8.1.0 - WITH AUTO-APPROVAL + REMINDERS
+ * WHATSAPP CLINIC BOT v8.2.0 - WITH QR CODE SUPPORT
  * 
  * ✅ WhatsApp Appointment Booking
  * ✅ Doctor Specialization Selection
+ * ✅ QR Code Clinic Routing - NEW ✨
  * ✅ Auto-Approval System (24hr) - INLINE CRON
- * ✅ Smart Reminders (24hr + 2hr) - NEW ✨
+ * ✅ Smart Reminders (24hr + 2hr)
  * ✅ Manual Approve/Reject by Doctor
  * ✅ Enhanced Doctor Notifications with Retry Logic
  * ✅ Google Sheets Integration (Individual)
@@ -16,20 +17,15 @@
  * ✅ Duplicate Dr. prefix fix
  * ✅ Security Hardened
  * ✅ Production Ready
- * ✅ WEBHOOK FIX - /webhook endpoint added ← NEW
+ * ✅ Webhook Fixed
  * 
- * NEW in v8.1.0:
- * - 24-hour reminder system (day before appointment)
- * - 2-hour reminder system (same day)
- * - Complete reminder cron endpoint
- * - Timezone-aware reminder scheduling
- * 
- * FIXED in v8.1.1:
- * - Added PRIMARY /webhook endpoint for Twilio
- * - Kept legacy /webhook/whatsapp for compatibility
+ * NEW in v8.2.0:
+ * - QR code clinic routing (bypass clinic selection menu)
+ * - Direct clinic access via unique codes
+ * - WhatsApp deep link support
  * 
  * Author: Sourav Roy - Legacylens Automation
- * Modified: 2026-01-14 - Webhook 404 fix
+ * Modified: 2026-01-15 - QR Code Support Added
  * ═══════════════════════════════════════════════════════════════════════
  */
 
@@ -519,6 +515,21 @@ async function getActiveClinics() {
 
 async function getClinic(id) {
     const clinic = await dbQuery(sql`SELECT * FROM clinics WHERE id = ${id} AND status = 'active' LIMIT 1`);
+    return (clinic && clinic.length > 0) ? clinic[0] : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 🆕 GET CLINIC BY CODE (QR CODE SUPPORT)
+// ═══════════════════════════════════════════════════════════════════════
+async function getClinicByCode(code) {
+    if (!code) return null;
+    const cleanCode = code.trim().toUpperCase();
+    const clinic = await dbQuery(sql`
+        SELECT * FROM clinics 
+        WHERE UPPER(code) = ${cleanCode} 
+        AND status = 'active' 
+        LIMIT 1
+    `);
     return (clinic && clinic.length > 0) ? clinic[0] : null;
 }
 
@@ -1296,14 +1307,73 @@ async function handleDoctorCommand(phone, text) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 19. MESSAGE ROUTER
+// 19. MESSAGE ROUTER - WITH QR CODE SUPPORT
 // ═══════════════════════════════════════════════════════════════════════
 async function handleMessage(phone, text) {
     try {
         const cmd = text.trim().toUpperCase();
+        const cleanText = text.trim();
+        
+        // ═══════════════════════════════════════════════════════════
+        // 🆕 STEP 1: CHECK FOR CLINIC CODE (QR CODE SCAN) - FIRST PRIORITY
+        // ═══════════════════════════════════════════════════════════
+        
+        // Try to find clinic by code
+        const possibleCode = cleanText.replace(/_START$/i, '');
+        const clinic = await getClinicByCode(possibleCode);
+        
+        if (clinic) {
+            // QR CODE DETECTED! Skip clinic selection
+            log.info('🎯 QR Code detected', { 
+                code: possibleCode, 
+                clinic: clinic.name,
+                phone: normalizePhone(phone)
+            });
+            
+            // Check if clinic has doctor specializations
+            const specializations = await getSpecializationsByClinic(clinic.id);
+            
+            if (specializations.length === 0) {
+                // No specializations - go straight to name entry
+                await setSession(phone, { 
+                    stage: 'enter_name', 
+                    clinic_id: clinic.id, 
+                    session_data: {} 
+                });
+                
+                await sendWhatsApp(phone, `🏥 *Welcome to ${clinic.name}!*\n\n━━━━━━━━━━━━━━━━━━━━\n\n👤 *What is your full name?*`);
+                return;
+            } else {
+                // Has specializations - show specialization selection
+                await setSession(phone, { 
+                    stage: 'select_specialization', 
+                    clinic_id: clinic.id, 
+                    session_data: {} 
+                });
+                
+                let msg = `🏥 *Welcome to ${clinic.name}!*\n\n🩺 *Select Specialization:*\n\n`;
+                
+                specializations.forEach((spec, i) => {
+                    msg += `*${i + 1}.* ${spec.specialization}\n`;
+                });
+                msg += `*${specializations.length + 1}.* View All Doctors\n`;
+                msg += `\nReply *1-${specializations.length + 1}*`;
+                
+                await sendWhatsApp(phone, msg);
+                return;
+            }
+        }
+        
+        // ═══════════════════════════════════════════════════════════
+        // STEP 2: DOCTOR COMMANDS (APPROVE/REJECT)
+        // ═══════════════════════════════════════════════════════════
         
         const isDoctorCmd = await handleDoctorCommand(phone, text);
         if (isDoctorCmd) return;
+        
+        // ═══════════════════════════════════════════════════════════
+        // STEP 3: PATIENT COMMANDS (CONFIRM/CANCEL/RESCHEDULE)
+        // ═══════════════════════════════════════════════════════════
         
         if (cmd.startsWith('CONFIRM')) {
             const match = cmd.match(/CONFIRM\s+#?(\d+)/);
@@ -1336,6 +1406,10 @@ async function handleMessage(phone, text) {
                 return;
             }
         }
+        
+        // ═══════════════════════════════════════════════════════════
+        // STEP 4: SESSION-BASED FLOW (Normal clinic selection)
+        // ═══════════════════════════════════════════════════════════
         
         const session = await getSession(phone);
         const msg = text.trim().toLowerCase();
@@ -1376,19 +1450,19 @@ async function handleMessage(phone, text) {
     }
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════
 // 20. PUBLIC ROUTES
 // ═══════════════════════════════════════════════════════════════════════
 app.get('/', (req, res) => res.json({ 
     name: 'WhatsApp Clinic Bot', 
-    version: '8.1.1-webhook-fixed', 
+    version: '8.2.0', 
     status: 'operational', 
     auto_approval: AUTO_APPROVAL_ENABLED,
     auto_approval_delay_minutes: AUTO_APPROVAL_DELAY_MINUTES,
     reminder_24h_enabled: REMINDER_24H_ENABLED,
     reminder_2h_enabled: REMINDER_2H_ENABLED,
     features: { 
+        qr_code_routing: true,
         payment_integration: false, 
         auto_approval: AUTO_APPROVAL_ENABLED,
         auto_approval_inline_cron: true,
@@ -1423,7 +1497,7 @@ app.get('/status', requireApiKey, async (req, res) => {
         
         res.json({ 
             status: 'ok', 
-            version: '8.1.1-webhook-fixed',
+            version: '8.2.0',
             auto_approval: {
                 enabled: AUTO_APPROVAL_ENABLED,
                 delay_minutes: AUTO_APPROVAL_DELAY_MINUTES
@@ -1440,7 +1514,7 @@ app.get('/status', requireApiKey, async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// 21. ✅✅✅ WEBHOOK ROUTES - FIXED ✅✅✅
+// 21. WEBHOOK ROUTES
 // ═══════════════════════════════════════════════════════════════════════
 
 // ✅ PRIMARY WEBHOOK - Standard Twilio endpoint /webhook
@@ -2692,7 +2766,7 @@ app.use((err, req, res, next) => {
 // ✅ Start server IMMEDIATELY - before ANY async operations
 const server = app.listen(PORT, HOST, async () => {
     console.log('\n═══════════════════════════════════════════════════════════');
-    console.log('🚀 WHATSAPP CLINIC BOT v8.1.1 - WEBHOOK FIXED');
+    console.log('🚀 WHATSAPP CLINIC BOT v8.2.0 - WITH QR CODE SUPPORT');
     console.log('═══════════════════════════════════════════════════════════');
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌐 Host: ${HOST}`);
@@ -2749,6 +2823,16 @@ const server = app.listen(PORT, HOST, async () => {
     console.log('5. Method: HTTP POST');
     console.log('6. Click: Save');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    console.log('\n🎯 QR CODE FEATURE:');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ QR code clinic routing enabled');
+    console.log('📋 Next steps:');
+    console.log('   1. Run SQL to add clinic codes (see documentation)');
+    console.log('   2. Generate QR codes for each clinic');
+    console.log('   3. Test by sending clinic code (e.g., "ZAMZAM")');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
     console.log('\n✅ ALL SYSTEMS OPERATIONAL\n');
 });
 
@@ -2807,6 +2891,6 @@ console.log(`⏳ Waiting for port ${PORT} to bind...\n`);
 module.exports = app;
 
 // ═══════════════════════════════════════════════════════════════════════
-// END OF FILE - WhatsApp Clinic Bot v8.1.1 - Webhook Fixed
-// Total Lines: ~2850 (Original 2800 + Webhook Fix)
+// END OF FILE - WhatsApp Clinic Bot v8.2.0 - QR Code Support
+// Total Lines: ~2855
 // ═══════════════════════════════════════════════════════════════════════

@@ -1301,71 +1301,114 @@ async function handleDoctorCommand(phone, text) {
 async function handleMessage(phone, text) {
     try {
         const cmd = text.trim().toUpperCase();
-        const cleanText = text.trim();
         
-        // ═══════════════════════════════════════════════════════════
-        // ✅ STEP 1: CHECK FOR CLINIC QR CODES FIRST (HIGHEST PRIORITY)
-        // ═══════════════════════════════════════════════════════════
+        // ✅ CHECK FOR CLINIC CODE FIRST
+        const cleanCode = text.trim().replace(/_START$/i, '').toUpperCase();
         
-        // Remove "_START" suffix if present (for QR codes)
-        const possibleCode = cleanText.replace(/_START$/i, '').toUpperCase();
-        
-        // Check if this is a clinic code from QR scan
-        const clinicByCode = await dbQuery(sql`
-            SELECT * FROM clinics 
-            WHERE UPPER(code) = ${possibleCode} 
-            AND status = 'active' 
-            LIMIT 1
-        `);
-        
-        if (clinicByCode && clinicByCode.length > 0) {
-            const clinic = clinicByCode[0];
+        // Try to find clinic by code
+        try {
+            const clinicByCode = await sql`
+                SELECT * FROM clinics 
+                WHERE UPPER(code) = ${cleanCode} 
+                AND status = 'active' 
+                LIMIT 1
+            `;
             
-            log.info('QR Code scanned', { 
-                code: possibleCode, 
-                clinic: clinic.name,
-                phone: normalizePhone(phone)
-            });
-            
-            // Check if clinic has specializations/doctors
-            const specializations = await getSpecializationsByClinic(clinic.id);
-            
-            if (specializations.length === 0) {
-                // No specializations - go directly to name entry
+            if (clinicByCode && clinicByCode.length > 0) {
+                const clinic = clinicByCode[0];
+                
+                log.info('QR Code detected', { code: cleanCode, clinic: clinic.name });
+                
                 await setSession(phone, { 
                     stage: 'enter_name', 
                     clinic_id: clinic.id, 
                     session_data: {} 
                 });
                 
-                let msg = `🍽️ *Welcome to ${clinic.name}!*\n\n`;
-                msg += `━━━━━━━━━━━━━━━━━━━━\n\n`;
-                msg += `👤 *What is your full name?*`;
-                
-                await sendWhatsApp(phone, msg);
+                await sendWhatsApp(phone, `🏥 *Welcome to ${clinic.name}!*\n\n👤 *What is your full name?*`);
                 return;
-            } else {
-                // Has specializations - show them
-                await setSession(phone, { 
-                    stage: 'select_specialization', 
-                    clinic_id: clinic.id, 
-                    session_data: {} 
-                });
-                
-                let msg = `🏥 *Welcome to ${clinic.name}!*\n\n`;
-                msg += `🩺 *Select Specialization:*\n\n`;
-                
-                specializations.forEach((spec, i) => {
-                    msg += `*${i + 1}.* ${spec.specialization}\n`;
-                });
-                msg += `*${specializations.length + 1}.* View All Doctors\n`;
-                msg += `\nReply *1-${specializations.length + 1}*`;
-                
-                await sendWhatsApp(phone, msg);
+            }
+        } catch (codeError) {
+            log.error('Code check error', codeError);
+            // Continue to normal flow if code check fails
+        }
+        
+        // DOCTOR COMMANDS
+        const isDoctorCmd = await handleDoctorCommand(phone, text);
+        if (isDoctorCmd) return;
+        
+        // PATIENT COMMANDS
+        if (cmd.startsWith('CONFIRM')) {
+            const match = cmd.match(/CONFIRM\s+#?(\d+)/);
+            if (match) {
+                await handleConfirmCommand(phone, parseInt(match[1]));
                 return;
             }
         }
         
+        if (cmd.startsWith('CANCEL')) {
+            const match = cmd.match(/CANCEL\s+#?(\d+)/);
+            if (match) {
+                await handleCancelCommand(phone, parseInt(match[1]));
+                return;
+            }
+        }
+        
+        if (cmd.startsWith('RESCHEDULE')) {
+            const match = cmd.match(/RESCHEDULE\s+#?(\d+)/);
+            if (match) {
+                await handleRescheduleCommand(phone, parseInt(match[1]));
+                return;
+            }
+        }
+        
+        if (cmd.startsWith('YES')) {
+            const match = cmd.match(/YES\s+(\d+)/);
+            if (match) {
+                await handleWaitlistAcceptance(phone, parseInt(match[1]));
+                return;
+            }
+        }
+        
+        // SESSION FLOW
+        const session = await getSession(phone);
+        const msg = text.trim().toLowerCase();
+        
+        const isExplicitRestart = msg === 'hi' || msg === 'hello' || msg === 'start' || msg === 'restart';
+        
+        if (!session || isExplicitRestart) { 
+            await handleStart(phone); 
+            return; 
+        }
+        
+        switch (session.stage) {
+            case 'select_clinic': 
+                await handleClinicSelect(phone, text); 
+                break;
+            case 'select_specialization':
+                await handleSpecializationSelect(phone, text);
+                break;
+            case 'select_doctor':
+                await handleDoctorSelect(phone, text);
+                break;
+            case 'enter_name': 
+                await handleName(phone, text); 
+                break;
+            case 'select_date': 
+                await handleDate(phone, text); 
+                break;
+            case 'select_time': 
+                await handleTime(phone, text); 
+                break;
+            default: 
+                await handleStart(phone);
+        }
+        
+    } catch (error) {
+        log.error('Message handler error', error);
+        await sendWhatsApp(phone, '❌ An error occurred. Reply *hi* to restart.');
+    }
+}        
         // ═══════════════════════════════════════════════════════════
         // ✅ STEP 2: CHECK FOR DOCTOR COMMANDS
         // ═══════════════════════════════════════════════════════════

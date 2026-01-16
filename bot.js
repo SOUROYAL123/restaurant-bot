@@ -538,7 +538,8 @@ async function getClinicByCode(code) {
 // ═══════════════════════════════════════════════════════════════════════
 async function getDoctorsByClinic(clinicId) {
     const doctors = await dbQuery(sql`
-        SELECT id, name, specialization, qualification, whatsapp
+        SELECT id, name, specialization, qualification, whatsapp, 
+               schedule_days, schedule_time_start, schedule_time_end
         FROM doctors
         WHERE clinic_id = ${clinicId} AND status = 'active'
         ORDER BY specialization, name
@@ -560,7 +561,8 @@ async function getSpecializationsByClinic(clinicId) {
 
 async function getDoctorsBySpecialization(clinicId, specialization) {
     const doctors = await dbQuery(sql`
-        SELECT id, name, specialization, qualification, whatsapp
+        SELECT id, name, specialization, qualification, whatsapp,
+               schedule_days, schedule_time_start, schedule_time_end
         FROM doctors
         WHERE clinic_id = ${clinicId}
         AND specialization = ${specialization}
@@ -573,6 +575,65 @@ async function getDoctorsBySpecialization(clinicId, specialization) {
 async function getDoctor(id) {
     const doctor = await dbQuery(sql`SELECT * FROM doctors WHERE id = ${id} AND status = 'active' LIMIT 1`);
     return (doctor && doctor.length > 0) ? doctor[0] : null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 🆕 FORMAT DOCTOR SCHEDULE
+// ═══════════════════════════════════════════════════════════════════════
+function formatDoctorSchedule(schedule) {
+    if (!schedule || typeof schedule !== 'object') {
+        return '📅 Schedule not available';
+    }
+    
+    const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    const dayNames = {
+        monday: 'Mon',
+        tuesday: 'Tue',
+        wednesday: 'Wed',
+        thursday: 'Thu',
+        friday: 'Fri',
+        saturday: 'Sat',
+        sunday: 'Sun'
+    };
+    
+    let scheduleText = '📅 *Available:*\n';
+    let hasSchedule = false;
+    
+    days.forEach(day => {
+        if (schedule[day] && schedule[day].available) {
+            hasSchedule = true;
+            const start = schedule[day].start || '09:00';
+            const end = schedule[day].end || '17:00';
+            scheduleText += `   ${dayNames[day]}: ${start}-${end}\n`;
+        }
+    });
+    
+    return hasSchedule ? scheduleText : '📅 Schedule not available';
+}
+
+function getDoctorAvailableDays(schedule) {
+    if (!schedule || typeof schedule !== 'object') {
+        return ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    }
+    
+    const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    return days.filter(day => schedule[day] && schedule[day].available);
+}
+
+function getDoctorAvailableHours(schedule, dayOfWeek) {
+    if (!schedule || typeof schedule !== 'object' || !schedule[dayOfWeek]) {
+        return { start: 9, end: 17 };
+    }
+    
+    const daySchedule = schedule[dayOfWeek];
+    if (!daySchedule.available) {
+        return null;
+    }
+    
+    const start = parseInt(daySchedule.start?.split(':')[0] || '9');
+    const end = parseInt(daySchedule.end?.split(':')[0] || '17');
+    
+    return { start, end };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -998,6 +1059,9 @@ async function handleDoctorSelect(phone, text) {
     data.doctorName = selectedDoctor.name;
     data.doctorSpecialization = selectedDoctor.specialization;
     data.doctorWhatsApp = selectedDoctor.whatsapp;
+    data.doctorScheduleDays = selectedDoctor.schedule_days;
+    data.doctorScheduleStart = selectedDoctor.schedule_time_start;
+    data.doctorScheduleEnd = selectedDoctor.schedule_time_end;
     
     await setSession(phone, { 
         stage: 'enter_name', 
@@ -1009,6 +1073,16 @@ async function handleDoctorSelect(phone, text) {
     msg += `👨‍⚕️ ${formatDoctorName(selectedDoctor.name)}\n`;
     msg += `🩺 ${selectedDoctor.specialization}\n`;
     if (selectedDoctor.qualification) msg += `🎓 ${selectedDoctor.qualification}\n`;
+    
+    // Show schedule
+    if (selectedDoctor.schedule_days && selectedDoctor.schedule_time_start && selectedDoctor.schedule_time_end) {
+        const days = selectedDoctor.schedule_days.split(',').join(', ');
+        const startTime = selectedDoctor.schedule_time_start.substring(0, 5);
+        const endTime = selectedDoctor.schedule_time_end.substring(0, 5);
+        msg += `📅 *Days:* ${days}\n`;
+        msg += `⏰ *Time:* ${startTime} - ${endTime}\n`;
+    }
+    
     msg += `\n━━━━━━━━━━━━━━━━━━━━\n\n`;
     msg += `👤 *Your full name?*`;
     
@@ -1038,31 +1112,58 @@ async function handleName(phone, text) {
         session_data: data 
     });
     
-    let msg = `👤 ${name}\n\n📅 *Select date:*\n\n`;
-    
-    for (let i = 1; i <= 7; i++) { 
-        const d = new Date(); 
-        d.setDate(d.getDate() + i); 
-        msg += `*${i}.* ${d.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' })}\n`; 
+    // Get doctor's available days if doctor is selected
+    let availableDays = null;
+    if (data.doctorId) {
+        const doctor = await getDoctor(data.doctorId);
+        if (doctor && doctor.schedule) {
+            availableDays = getDoctorAvailableDays(doctor.schedule);
+        }
     }
     
-    msg += `\nReply *1-7*`;
+    let msg = `👤 ${name}\n\n📅 *Select date:*\n\n`;
+    
+    const today = new Date();
+    let dateOptions = [];
+    let optionNum = 1;
+    
+    // Generate next 14 days to ensure we get at least 7 available dates
+    for (let i = 1; i <= 14 && dateOptions.length < 7; i++) { 
+        const d = new Date(); 
+        d.setDate(today.getDate() + i);
+        
+        // Check if this day is available for the doctor
+        const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][d.getDay()];
+        
+        if (availableDays) {
+            // Doctor selected - filter by their schedule
+            if (availableDays.includes(dayOfWeek)) {
+                dateOptions.push({ num: optionNum, date: d, offset: i });
+                msg += `*${optionNum}.* ${d.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' })}\n`;
+                optionNum++;
+            }
+        } else {
+            // No doctor selected - show all days
+            dateOptions.push({ num: optionNum, date: d, offset: i });
+            msg += `*${optionNum}.* ${d.toLocaleDateString('en-IN', { weekday: 'short', month: 'short', day: 'numeric' })}\n`;
+            optionNum++;
+        }
+    }
+    
+    // Store date options in session for later reference
+    data.dateOptions = dateOptions;
+    await setSession(phone, { 
+        stage: 'select_date', 
+        clinic_id: session.clinic_id, 
+        session_data: data 
+    });
+    
+    msg += `\nReply *1-${dateOptions.length}*`;
     
     await sendWhatsApp(phone, msg);
 }
 
 async function handleDate(phone, text) {
-    const choice = parseInt(text.trim());
-    
-    if (isNaN(choice) || choice < 1 || choice > 7) { 
-        await sendWhatsApp(phone, '❌ Invalid choice. Reply *1-7*'); 
-        return; 
-    }
-    
-    const d = new Date(); 
-    d.setDate(d.getDate() + choice);
-    const dateStr = d.toISOString().split('T')[0];
-    
     const session = await getSession(phone);
     let data = session?.session_data || {};
     
@@ -1070,7 +1171,27 @@ async function handleDate(phone, text) {
         try { data = JSON.parse(data); } catch (e) { data = {}; } 
     }
     
+    const choice = parseInt(text.trim());
+    const dateOptions = data.dateOptions || [];
+    
+    if (isNaN(choice) || choice < 1 || choice > dateOptions.length) { 
+        await sendWhatsApp(phone, `❌ Invalid choice. Reply *1-${dateOptions.length}*`); 
+        return; 
+    }
+    
+    // Get the selected date from options
+    const selectedOption = dateOptions.find(opt => opt.num === choice);
+    if (!selectedOption) {
+        await sendWhatsApp(phone, '❌ Invalid date selection. Please try again.');
+        return;
+    }
+    
+    const d = new Date();
+    d.setDate(d.getDate() + selectedOption.offset);
+    const dateStr = d.toISOString().split('T')[0];
+    
     data.date = dateStr;
+    data.selectedDateObject = d; // Store for later use
     
     await setSession(phone, { 
         stage: 'select_time', 
@@ -1078,15 +1199,35 @@ async function handleDate(phone, text) {
         session_data: data 
     });
     
-    const clinic = await getClinic(session.clinic_id);
-    const startHour = parseInt(clinic?.business_hours_start?.split(':')[0] || '9');
-    const endHour = parseInt(clinic?.business_hours_end?.split(':')[0] || '18');
+    // Get doctor's schedule for this day
+    const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][d.getDay()];
     
-    let msg = `📅 ${d.toLocaleDateString('en-IN')}\n\n⏰ *Select time:*\n\n`;
+    let startHour = 9;
+    let endHour = 18;
     
+    if (data.doctorId) {
+        const doctor = await getDoctor(data.doctorId);
+        if (doctor && doctor.schedule) {
+            const hours = getDoctorAvailableHours(doctor.schedule, dayOfWeek);
+            if (hours) {
+                startHour = hours.start;
+                endHour = hours.end;
+            }
+        }
+    } else {
+        // Fallback to clinic hours
+        const clinic = await getClinic(session.clinic_id);
+        startHour = parseInt(clinic?.business_hours_start?.split(':')[0] || '9');
+        endHour = parseInt(clinic?.business_hours_end?.split(':')[0] || '18');
+    }
+    
+    let msg = `📅 ${d.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}\n\n⏰ *Select time:*\n\n`;
+    
+    let slotNum = 1;
     for (let h = startHour; h < endHour; h++) { 
         const time = h >= 12 ? `${h === 12 ? 12 : h - 12}:00 PM` : `${h}:00 AM`; 
-        msg += `*${h - startHour + 1}.* ${time}\n`; 
+        msg += `*${slotNum}.* ${time}\n`;
+        slotNum++;
     }
     
     msg += `\nReply *1-${endHour - startHour}*`;
@@ -1103,11 +1244,29 @@ async function handleTime(phone, text) {
         try { data = JSON.parse(data); } catch (e) { data = {}; } 
     }
     
-    const clinic = await getClinic(session.clinic_id);
-    const startHour = parseInt(clinic?.business_hours_start?.split(':')[0] || '9');
-    const endHour = parseInt(clinic?.business_hours_end?.split(':')[0] || '18');
-    const totalSlots = endHour - startHour;
+    // Get doctor's schedule for the selected date
+    const selectedDate = data.selectedDateObject ? new Date(data.selectedDateObject) : new Date(data.date);
+    const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][selectedDate.getDay()];
     
+    let startHour = 9;
+    let endHour = 18;
+    
+    if (data.doctorId) {
+        const doctor = await getDoctor(data.doctorId);
+        if (doctor && doctor.schedule) {
+            const hours = getDoctorAvailableHours(doctor.schedule, dayOfWeek);
+            if (hours) {
+                startHour = hours.start;
+                endHour = hours.end;
+            }
+        }
+    } else {
+        const clinic = await getClinic(session.clinic_id);
+        startHour = parseInt(clinic?.business_hours_start?.split(':')[0] || '9');
+        endHour = parseInt(clinic?.business_hours_end?.split(':')[0] || '18');
+    }
+    
+    const totalSlots = endHour - startHour;
     const choice = parseInt(text.trim());
     
     if (isNaN(choice) || choice < 1 || choice > totalSlots) { 
@@ -1147,6 +1306,8 @@ async function handleTime(phone, text) {
         const approvalTime = AUTO_APPROVAL_DELAY_MINUTES >= 60 
             ? `${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60)} hour${Math.floor(AUTO_APPROVAL_DELAY_MINUTES / 60) > 1 ? 's' : ''}`
             : `${AUTO_APPROVAL_DELAY_MINUTES} minute${AUTO_APPROVAL_DELAY_MINUTES > 1 ? 's' : ''}`;
+        
+        const clinic = await getClinic(session.clinic_id);
         
         let confirmMsg = `✅ *Booked!*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${aptId}\n👤 ${data.name}\n🏥 ${clinic.name}\n`;
         
@@ -1330,38 +1491,104 @@ async function handleMessage(phone, text) {
                 phone: normalizePhone(phone)
             });
             
-            // Check if clinic has doctor specializations
-            const specializations = await getSpecializationsByClinic(clinic.id);
+            // Get all doctors for this clinic
+            const doctors = await getDoctorsByClinic(clinic.id);
             
-            if (specializations.length === 0) {
-                // No specializations - go straight to name entry
+            if (doctors.length === 0) {
+                // No doctors - show error
+                await sendWhatsApp(phone, `⚠️ *${clinic.name}*\n\nNo doctors available at this clinic. Please contact support.`);
+                return;
+            }
+            
+            if (doctors.length === 1) {
+                // Only one doctor - show info and go to name entry
+                const doctor = doctors[0];
+                
+                let data = {
+                    doctorId: doctor.id,
+                    doctorName: doctor.name,
+                    doctorSpecialization: doctor.specialization,
+                    doctorWhatsApp: doctor.whatsapp,
+                    doctorScheduleDays: doctor.schedule_days,
+                    doctorScheduleStart: doctor.schedule_time_start,
+                    doctorScheduleEnd: doctor.schedule_time_end
+                };
+                
                 await setSession(phone, { 
                     stage: 'enter_name', 
                     clinic_id: clinic.id, 
-                    session_data: {} 
+                    session_data: data 
                 });
                 
-                await sendWhatsApp(phone, `🏥 *Welcome to ${clinic.name}!*\n\n━━━━━━━━━━━━━━━━━━━━\n\n👤 *What is your full name?*`);
-                return;
-            } else {
-                // Has specializations - show specialization selection
-                await setSession(phone, { 
-                    stage: 'select_specialization', 
-                    clinic_id: clinic.id, 
-                    session_data: {} 
-                });
+                let msg = `🏥 *Welcome to ${clinic.name}!*\n\n`;
+                msg += `👨‍⚕️ *Doctor:* ${formatDoctorName(doctor.name)}\n`;
                 
-                let msg = `🏥 *Welcome to ${clinic.name}!*\n\n🩺 *Select Specialization:*\n\n`;
+                if (doctor.specialization) {
+                    msg += `🩺 *Specialization:* ${doctor.specialization}\n`;
+                }
                 
-                specializations.forEach((spec, i) => {
-                    msg += `*${i + 1}.* ${spec.specialization}\n`;
-                });
-                msg += `*${specializations.length + 1}.* View All Doctors\n`;
-                msg += `\nReply *1-${specializations.length + 1}*`;
+                if (doctor.qualification) {
+                    msg += `📋 *Qualification:* ${doctor.qualification}\n`;
+                }
+                
+                // Show day-wise schedule
+                if (doctor.schedule_days && doctor.schedule_time_start && doctor.schedule_time_end) {
+                    const days = doctor.schedule_days.split(',').join(', ');
+                    const startTime = doctor.schedule_time_start.substring(0, 5);
+                    const endTime = doctor.schedule_time_end.substring(0, 5);
+                    msg += `📅 *Days:* ${days}\n`;
+                    msg += `⏰ *Time:* ${startTime} - ${endTime}\n`;
+                } else if (clinic.business_hours_start && clinic.business_hours_end) {
+                    msg += `⏰ *Time:* ${clinic.business_hours_start} - ${clinic.business_hours_end}\n`;
+                }
+                
+                msg += `\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+                msg += `👤 *What is your full name?*`;
                 
                 await sendWhatsApp(phone, msg);
                 return;
             }
+            
+            // Multiple doctors - show selection with specializations and timing
+            await setSession(phone, { 
+                stage: 'select_doctor', 
+                clinic_id: clinic.id, 
+                session_data: { doctorsList: doctors } 
+            });
+            
+            let msg = `🏥 *Welcome to ${clinic.name}!*\n\n👨‍⚕️ *Select Doctor:*\n\n`;
+            
+            // Show each doctor with their schedule
+            doctors.forEach((doc, index) => {
+                msg += `*${index + 1}. ${formatDoctorName(doc.name)}*\n`;
+                
+                if (doc.specialization) {
+                    msg += `🩺 ${doc.specialization}\n`;
+                }
+                
+                if (doc.qualification) {
+                    msg += `📋 ${doc.qualification}\n`;
+                }
+                
+                // Show day-wise schedule if available
+                if (doc.schedule_days && doc.schedule_time_start && doc.schedule_time_end) {
+                    const days = doc.schedule_days.split(',').join(', ');
+                    const startTime = doc.schedule_time_start.substring(0, 5); // HH:MM
+                    const endTime = doc.schedule_time_end.substring(0, 5);
+                    msg += `📅 *Days:* ${days}\n`;
+                    msg += `⏰ *Time:* ${startTime} - ${endTime}\n`;
+                } else if (clinic.business_hours_start && clinic.business_hours_end) {
+                    // Fallback to clinic hours
+                    msg += `⏰ *Time:* ${clinic.business_hours_start} - ${clinic.business_hours_end}\n`;
+                }
+                
+                msg += '\n';
+            });
+            
+            msg += `Reply *1-${doctors.length}*`;
+            
+            await sendWhatsApp(phone, msg);
+            return;
         }
         
         // ═══════════════════════════════════════════════════════════

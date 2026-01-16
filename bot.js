@@ -1,10 +1,10 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v8.2.0 - WITH QR CODE SUPPORT
+ * WHATSAPP CLINIC BOT v8.2.1 - WITH QR CODE SUPPORT + TIME CONVERSION
  * 
  * ✅ WhatsApp Appointment Booking
  * ✅ Doctor Specialization Selection
- * ✅ QR Code Clinic Routing - NEW ✨
+ * ✅ QR Code Clinic Routing
  * ✅ Auto-Approval System (24hr) - INLINE CRON
  * ✅ Smart Reminders (24hr + 2hr)
  * ✅ Manual Approve/Reject by Doctor
@@ -15,17 +15,18 @@
  * ✅ Bulk Report Endpoint
  * ✅ Message Chunking (1600 char limit fix)
  * ✅ Duplicate Dr. prefix fix
+ * ✅ 12-Hour Time Format with AM/PM - NEW ✨
  * ✅ Security Hardened
  * ✅ Production Ready
  * ✅ Webhook Fixed
  * 
- * NEW in v8.2.0:
- * - QR code clinic routing (bypass clinic selection menu)
- * - Direct clinic access via unique codes
- * - WhatsApp deep link support
+ * NEW in v8.2.1:
+ * - Time conversion: 24-hour → 12-hour with AM/PM
+ * - Applied to all doctor schedule displays
+ * - Consistent time formatting throughout
  * 
  * Author: Sourav Roy - Legacylens Automation
- * Modified: 2026-01-15 - QR Code Support Added
+ * Modified: 2026-01-16 - Time Conversion Added
  * ═══════════════════════════════════════════════════════════════════════
  */
 
@@ -362,6 +363,28 @@ function formatDoctorName(name) {
     if (!name) return '';
     const cleaned = name.trim().replace(/^(Dr\.?\s*|DR\.?\s*|dr\.?\s*)/i, '');
     return `Dr. ${cleaned}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⭐ TIME CONVERSION FUNCTIONS - 24H TO 12H AM/PM
+// ═══════════════════════════════════════════════════════════════════════
+function convertTo12Hour(time24) {
+    if (!time24) return '';
+    
+    // Handle both HH:MM and HH:MM:SS formats
+    const timeParts = time24.split(':');
+    const hours = parseInt(timeParts[0]);
+    const minutes = timeParts[1] || '00';
+    
+    const period = hours >= 12 ? 'PM' : 'AM';
+    const hour12 = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
+    
+    return `${hour12}:${minutes} ${period}`;
+}
+
+function formatTimeRange(startTime, endTime) {
+    if (!startTime || !endTime) return '';
+    return `${convertTo12Hour(startTime)} - ${convertTo12Hour(endTime)}`;
 }
 
 async function dbQuery(query, errorMsg = 'Database query failed') {
@@ -892,7 +915,7 @@ async function handleStart(phone) {
         msg += '\n';
         
         if (clinic.business_hours_start) {
-            msg += `   ⏰ ${clinic.business_hours_start}-${clinic.business_hours_end}\n`;
+            msg += `   ⏰ ${formatTimeRange(clinic.business_hours_start, clinic.business_hours_end)}\n`;
         }
         msg += '\n';
     });
@@ -1074,13 +1097,11 @@ async function handleDoctorSelect(phone, text) {
     msg += `🩺 ${selectedDoctor.specialization}\n`;
     if (selectedDoctor.qualification) msg += `🎓 ${selectedDoctor.qualification}\n`;
     
-    // Show schedule
+    // ⭐ Show schedule with AM/PM format
     if (selectedDoctor.schedule_days && selectedDoctor.schedule_time_start && selectedDoctor.schedule_time_end) {
         const days = selectedDoctor.schedule_days.split(',').join(', ');
-        const startTime = selectedDoctor.schedule_time_start.substring(0, 5);
-        const endTime = selectedDoctor.schedule_time_end.substring(0, 5);
         msg += `📅 *Days:* ${days}\n`;
-        msg += `⏰ *Time:* ${startTime} - ${endTime}\n`;
+        msg += `⏰ *Time:* ${formatTimeRange(selectedDoctor.schedule_time_start, selectedDoctor.schedule_time_end)}\n`;
     }
     
     msg += `\n━━━━━━━━━━━━━━━━━━━━\n\n`;
@@ -1531,15 +1552,13 @@ async function handleMessage(phone, text) {
                     msg += `📋 *Qualification:* ${doctor.qualification}\n`;
                 }
                 
-                // Show day-wise schedule
+                // ⭐ Show day-wise schedule with AM/PM format
                 if (doctor.schedule_days && doctor.schedule_time_start && doctor.schedule_time_end) {
                     const days = doctor.schedule_days.split(',').join(', ');
-                    const startTime = doctor.schedule_time_start.substring(0, 5);
-                    const endTime = doctor.schedule_time_end.substring(0, 5);
                     msg += `📅 *Days:* ${days}\n`;
-                    msg += `⏰ *Time:* ${startTime} - ${endTime}\n`;
+                    msg += `⏰ *Time:* ${formatTimeRange(doctor.schedule_time_start, doctor.schedule_time_end)}\n`;
                 } else if (clinic.business_hours_start && clinic.business_hours_end) {
-                    msg += `⏰ *Time:* ${clinic.business_hours_start} - ${clinic.business_hours_end}\n`;
+                    msg += `⏰ *Time:* ${formatTimeRange(clinic.business_hours_start, clinic.business_hours_end)}\n`;
                 }
                 
                 msg += `\n━━━━━━━━━━━━━━━━━━━━\n\n`;
@@ -1570,16 +1589,14 @@ async function handleMessage(phone, text) {
                     msg += `📋 ${doc.qualification}\n`;
                 }
                 
-                // Show day-wise schedule if available
+                // ⭐ Show day-wise schedule with AM/PM format
                 if (doc.schedule_days && doc.schedule_time_start && doc.schedule_time_end) {
                     const days = doc.schedule_days.split(',').join(', ');
-                    const startTime = doc.schedule_time_start.substring(0, 5); // HH:MM
-                    const endTime = doc.schedule_time_end.substring(0, 5);
                     msg += `📅 *Days:* ${days}\n`;
-                    msg += `⏰ *Time:* ${startTime} - ${endTime}\n`;
+                    msg += `⏰ *Time:* ${formatTimeRange(doc.schedule_time_start, doc.schedule_time_end)}\n`;
                 } else if (clinic.business_hours_start && clinic.business_hours_end) {
                     // Fallback to clinic hours
-                    msg += `⏰ *Time:* ${clinic.business_hours_start} - ${clinic.business_hours_end}\n`;
+                    msg += `⏰ *Time:* ${formatTimeRange(clinic.business_hours_start, clinic.business_hours_end)}\n`;
                 }
                 
                 msg += '\n';
@@ -1682,7 +1699,7 @@ async function handleMessage(phone, text) {
 // ═══════════════════════════════════════════════════════════════════════
 app.get('/', (req, res) => res.json({ 
     name: 'WhatsApp Clinic Bot', 
-    version: '8.2.0', 
+    version: '8.2.1', 
     status: 'operational', 
     auto_approval: AUTO_APPROVAL_ENABLED,
     auto_approval_delay_minutes: AUTO_APPROVAL_DELAY_MINUTES,
@@ -1690,6 +1707,7 @@ app.get('/', (req, res) => res.json({
     reminder_2h_enabled: REMINDER_2H_ENABLED,
     features: { 
         qr_code_routing: true,
+        time_12h_format: true,
         payment_integration: false, 
         auto_approval: AUTO_APPROVAL_ENABLED,
         auto_approval_inline_cron: true,
@@ -1724,7 +1742,7 @@ app.get('/status', requireApiKey, async (req, res) => {
         
         res.json({ 
             status: 'ok', 
-            version: '8.2.0',
+            version: '8.2.1',
             auto_approval: {
                 enabled: AUTO_APPROVAL_ENABLED,
                 delay_minutes: AUTO_APPROVAL_DELAY_MINUTES
@@ -2184,7 +2202,7 @@ app.get('/api/sheets/:clinicId/info', requireSheetsApiKey, async (req, res) => {
             'Value': clinic.doctor_whatsapp ? clinic.doctor_whatsapp.replace('whatsapp:', '') : ''
         }, {
             'Field': 'Business Hours',
-            'Value': `${clinic.business_hours_start} - ${clinic.business_hours_end}`
+            'Value': formatTimeRange(clinic.business_hours_start, clinic.business_hours_end)
         }, {
             'Field': 'Status',
             'Value': clinic.status.toUpperCase()
@@ -2993,7 +3011,7 @@ app.use((err, req, res, next) => {
 // ✅ Start server IMMEDIATELY - before ANY async operations
 const server = app.listen(PORT, HOST, async () => {
     console.log('\n═══════════════════════════════════════════════════════════');
-    console.log('🚀 WHATSAPP CLINIC BOT v8.2.0 - WITH QR CODE SUPPORT');
+    console.log('🚀 WHATSAPP CLINIC BOT v8.2.1 - WITH 12H TIME FORMAT');
     console.log('═══════════════════════════════════════════════════════════');
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌐 Host: ${HOST}`);
@@ -3049,6 +3067,13 @@ const server = app.listen(PORT, HOST, async () => {
     console.log(`4. Set "When a message comes in": ${process.env.BASE_URL}/webhook`);
     console.log('5. Method: HTTP POST');
     console.log('6. Click: Save');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    console.log('\n⭐ TIME FORMAT FEATURE:');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ 12-hour time format with AM/PM enabled');
+    console.log('✅ Applied to all doctor schedules automatically');
+    console.log('✅ Examples: 14:00 → 2:00 PM, 09:00 → 9:00 AM');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     console.log('\n🎯 QR CODE FEATURE:');
@@ -3118,6 +3143,6 @@ console.log(`⏳ Waiting for port ${PORT} to bind...\n`);
 module.exports = app;
 
 // ═══════════════════════════════════════════════════════════════════════
-// END OF FILE - WhatsApp Clinic Bot v8.2.0 - QR Code Support
-// Total Lines: ~2855
+// END OF FILE - WhatsApp Clinic Bot v8.2.1 - 12-Hour Time Format
+// Total Lines: ~2900+
 // ═══════════════════════════════════════════════════════════════════════

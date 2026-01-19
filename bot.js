@@ -1,12 +1,12 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════
- * WHATSAPP CLINIC BOT v8.2.1 - WITH QR CODE SUPPORT + TIME CONVERSION
+ * WHATSAPP CLINIC BOT v8.2.2 - WITH QR CODE SUPPORT + TIME CONVERSION
  * 
  * ✅ WhatsApp Appointment Booking
  * ✅ Doctor Specialization Selection
  * ✅ QR Code Clinic Routing
  * ✅ Auto-Approval System (24hr) - INLINE CRON
- * ✅ Smart Reminders (24hr + 2hr)
+ * ✅ Smart Reminders (24hr + 2hr) - FIXED TIMING
  * ✅ Manual Approve/Reject by Doctor
  * ✅ Enhanced Doctor Notifications with Retry Logic
  * ✅ Google Sheets Integration (Individual)
@@ -15,18 +15,19 @@
  * ✅ Bulk Report Endpoint
  * ✅ Message Chunking (1600 char limit fix)
  * ✅ Duplicate Dr. prefix fix
- * ✅ 12-Hour Time Format with AM/PM - NEW ✨
+ * ✅ 12-Hour Time Format with AM/PM
  * ✅ Security Hardened
  * ✅ Production Ready
  * ✅ Webhook Fixed
  * 
- * NEW in v8.2.1:
- * - Time conversion: 24-hour → 12-hour with AM/PM
- * - Applied to all doctor schedule displays
- * - Consistent time formatting throughout
+ * NEW in v8.2.2:
+ * - Fixed 2-hour reminder timing logic
+ * - Minute-level precision for reminder scheduling
+ * - Auto-cleanup of past appointments
+ * - Enhanced logging for reminder debugging
  * 
  * Author: Sourav Roy - Legacylens Automation
- * Modified: 2026-01-16 - Time Conversion Added
+ * Modified: 2026-01-19 - Reminder Timing Fixed
  * ═══════════════════════════════════════════════════════════════════════
  */
 
@@ -1699,7 +1700,7 @@ async function handleMessage(phone, text) {
 // ═══════════════════════════════════════════════════════════════════════
 app.get('/', (req, res) => res.json({ 
     name: 'WhatsApp Clinic Bot', 
-    version: '8.2.1', 
+    version: '8.2.2', 
     status: 'operational', 
     auto_approval: AUTO_APPROVAL_ENABLED,
     auto_approval_delay_minutes: AUTO_APPROVAL_DELAY_MINUTES,
@@ -1716,6 +1717,7 @@ app.get('/', (req, res) => res.json({
         notification_retry_logic: true,
         smart_reminders_24h: REMINDER_24H_ENABLED,
         smart_reminders_2h: REMINDER_2H_ENABLED,
+        reminder_timing_fixed: true,
         interactive_commands: true, 
         waitlist: true,
         message_chunking: true,
@@ -1742,7 +1744,7 @@ app.get('/status', requireApiKey, async (req, res) => {
         
         res.json({ 
             status: 'ok', 
-            version: '8.2.1',
+            version: '8.2.2',
             auto_approval: {
                 enabled: AUTO_APPROVAL_ENABLED,
                 delay_minutes: AUTO_APPROVAL_DELAY_MINUTES
@@ -2560,7 +2562,7 @@ app.get('/api/sheets/bulk/report', requireAdminSheetsApiKey, async (req, res) =>
 
 
 // ═══════════════════════════════════════════════════════════════════════
-// 24. CRON ENDPOINTS - AUTO-APPROVAL + REMINDERS
+// 24. CRON ENDPOINTS - AUTO-APPROVAL + REMINDERS (WITH FIX)
 // ═══════════════════════════════════════════════════════════════════════
 
 // AUTO-APPROVAL CRON ENDPOINT
@@ -2718,9 +2720,9 @@ app.post('/cron/auto-approval', async (req, res) => {
     }
 });
 
-// REMINDER CRON ENDPOINT
-// Sends 24-hour and 2-hour reminders
-// SETUP: cron-job.org - Every 2 hours
+// ═══════════════════════════════════════════════════════════════════════
+// ⭐ FIXED REMINDER CRON ENDPOINT - MINUTE-LEVEL PRECISION
+// ═══════════════════════════════════════════════════════════════════════
 app.post('/cron/send-reminders', async (req, res) => {
     const startTime = Date.now();
     
@@ -2778,7 +2780,8 @@ app.post('/cron/send-reminders', async (req, res) => {
                     if (success) {
                         await sql`
                             UPDATE appointments 
-                            SET reminder_24h_sent = true 
+                            SET reminder_24h_sent = true,
+                                updated_at = NOW()
                             WHERE id = ${apt.id}
                         `;
                         
@@ -2796,11 +2799,13 @@ app.post('/cron/send-reminders', async (req, res) => {
             }
         }
         
-        // 2-HOUR REMINDERS
+        // ⭐ FIXED 2-HOUR REMINDERS - WITH MINUTE-LEVEL PRECISION
         if (REMINDER_2H_ENABLED) {
             const now = new Date();
             const todayDate = now.toISOString().split('T')[0];
-            const currentHour = now.getHours();
+            
+            // Get current time in minutes for precise comparison
+            const currentTotalMinutes = now.getHours() * 60 + now.getMinutes();
             
             const reminder2h = await sql`
                 SELECT 
@@ -2825,24 +2830,46 @@ app.post('/cron/send-reminders', async (req, res) => {
             
             for (const apt of reminder2h) {
                 try {
+                    // Parse appointment time (e.g., "2:30 PM")
                     const timeMatch = apt.appointment_time.match(/(\d+):(\d+)\s*(AM|PM)/i);
-                    if (!timeMatch) continue;
+                    if (!timeMatch) {
+                        log.warn(`Invalid time format for appointment #${apt.id}`, { time: apt.appointment_time });
+                        continue;
+                    }
                     
                     let hour = parseInt(timeMatch[1]);
+                    const minute = parseInt(timeMatch[2]);
                     const period = timeMatch[3].toUpperCase();
                     
+                    // Convert to 24-hour format
                     if (period === 'PM' && hour !== 12) {
                         hour += 12;
                     } else if (period === 'AM' && hour === 12) {
                         hour = 0;
                     }
                     
-                    const hourDiff = hour - currentHour;
+                    // Calculate appointment time in minutes from midnight
+                    const appointmentTotalMinutes = hour * 60 + minute;
                     
-                    if (hourDiff >= 2 && hourDiff <= 3) {
+                    // Calculate difference in minutes
+                    const minutesDiff = appointmentTotalMinutes - currentTotalMinutes;
+                    
+                    // Send reminder if appointment is between 90-150 minutes away (1.5 to 2.5 hours)
+                    // This gives a 1-hour window for the cron to catch it
+                    if (minutesDiff >= 90 && minutesDiff <= 150) {
+                        const hoursAway = (minutesDiff / 60).toFixed(1);
+                        
+                        log.info(`Sending 2h reminder`, {
+                            appointmentId: apt.id,
+                            appointmentTime: apt.appointment_time,
+                            currentTime: `${now.getHours()}:${now.getMinutes()}`,
+                            minutesAway: minutesDiff,
+                            hoursAway: hoursAway
+                        });
+                        
                         const doctorName = apt.assigned_doctor_name || apt.doctor_name;
                         
-                        let message = `⏰ *REMINDER - IN 2 HOURS*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n🏥 ${apt.clinic_name}\n`;
+                        let message = `⏰ *REMINDER - IN ${hoursAway} HOURS*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n🏥 ${apt.clinic_name}\n`;
                         
                         if (doctorName) {
                             message += `👨‍⚕️ ${formatDoctorName(doctorName)}\n`;
@@ -2855,7 +2882,8 @@ app.post('/cron/send-reminders', async (req, res) => {
                         if (success) {
                             await sql`
                                 UPDATE appointments 
-                                SET reminder_2h_sent = true 
+                                SET reminder_2h_sent = true,
+                                    updated_at = NOW()
                                 WHERE id = ${apt.id}
                             `;
                             
@@ -2863,9 +2891,34 @@ app.post('/cron/send-reminders', async (req, res) => {
                             log.success(`⏰ 2h reminder sent`, {
                                 appointmentId: apt.id,
                                 patient: apt.patient_name,
-                                time: apt.appointment_time
+                                time: apt.appointment_time,
+                                minutesBeforeAppointment: minutesDiff
+                            });
+                        } else {
+                            log.error(`Failed to send 2h reminder`, {
+                                appointmentId: apt.id,
+                                phone: apt.patient_phone
                             });
                         }
+                    } else if (minutesDiff < 0) {
+                        // Appointment is in the past - mark as sent to avoid future attempts
+                        log.warn(`Appointment #${apt.id} is in the past, marking reminder as sent`, {
+                            appointmentTime: apt.appointment_time,
+                            minutesPast: Math.abs(minutesDiff)
+                        });
+                        
+                        await sql`
+                            UPDATE appointments 
+                            SET reminder_2h_sent = true,
+                                updated_at = NOW()
+                            WHERE id = ${apt.id}
+                        `;
+                    } else {
+                        log.info(`Appointment #${apt.id} not in reminder window`, {
+                            appointmentTime: apt.appointment_time,
+                            minutesAway: minutesDiff,
+                            status: minutesDiff > 150 ? 'too far away' : 'too close'
+                        });
                     }
                     
                 } catch (error) {
@@ -2974,7 +3027,8 @@ app.get('/cron/send-reminders/test', async (req, res) => {
             message: 'Reminder cron endpoint ready ✅',
             config: {
                 reminder_24h_enabled: REMINDER_24H_ENABLED,
-                reminder_2h_enabled: REMINDER_2H_ENABLED
+                reminder_2h_enabled: REMINDER_2H_ENABLED,
+                fix_applied: 'Minute-level precision (v8.2.2)'
             },
             pending24hReminders: reminder24h[0].count,
             pending2hReminders: reminder2h[0].count,
@@ -3011,7 +3065,7 @@ app.use((err, req, res, next) => {
 // ✅ Start server IMMEDIATELY - before ANY async operations
 const server = app.listen(PORT, HOST, async () => {
     console.log('\n═══════════════════════════════════════════════════════════');
-    console.log('🚀 WHATSAPP CLINIC BOT v8.2.1 - WITH 12H TIME FORMAT');
+    console.log('🚀 WHATSAPP CLINIC BOT v8.2.2 - REMINDER TIMING FIXED');
     console.log('═══════════════════════════════════════════════════════════');
     console.log(`📡 Port: ${PORT}`);
     console.log(`🌐 Host: ${HOST}`);
@@ -3051,13 +3105,21 @@ const server = app.listen(PORT, HOST, async () => {
     console.log(`   • URL: POST ${process.env.BASE_URL}/cron/auto-approval`);
     console.log('   • Schedule: */10 * * * * (Every 10 minutes)');
     console.log(`   • Status: ${AUTO_APPROVAL_ENABLED ? 'ENABLED' : 'DISABLED'}`);
-    console.log('\n2️⃣ REMINDER CRON:');
+    console.log('\n2️⃣ REMINDER CRON (FIXED):');
     console.log('   • Visit: https://cron-job.org');
     console.log(`   • URL: POST ${process.env.BASE_URL}/cron/send-reminders`);
     console.log('   • Schedule: 0 */2 * * * (Every 2 hours)');
     console.log(`   • 24h Reminders: ${REMINDER_24H_ENABLED ? 'ENABLED' : 'DISABLED'}`);
-    console.log(`   • 2h Reminders: ${REMINDER_2H_ENABLED ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`   • 2h Reminders: ${REMINDER_2H_ENABLED ? 'ENABLED ✅ FIXED' : 'DISABLED'}`);
     console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    console.log('\n⭐ REMINDER FIX APPLIED (v8.2.2):');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('✅ Minute-level precision for 2-hour reminders');
+    console.log('✅ Reminder window: 90-150 minutes before appointment');
+    console.log('✅ Auto-cleanup of past appointments');
+    console.log('✅ Enhanced logging for debugging');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     
     console.log('\n✅ TWILIO WEBHOOK CONFIGURATION:');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -3143,6 +3205,6 @@ console.log(`⏳ Waiting for port ${PORT} to bind...\n`);
 module.exports = app;
 
 // ═══════════════════════════════════════════════════════════════════════
-// END OF FILE - WhatsApp Clinic Bot v8.2.1 - 12-Hour Time Format
-// Total Lines: ~2900+
+// END OF FILE - WhatsApp Clinic Bot v8.2.2 - Reminder Timing Fixed
+// Total Lines: ~3000+
 // ═══════════════════════════════════════════════════════════════════════

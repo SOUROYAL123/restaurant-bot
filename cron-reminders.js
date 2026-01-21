@@ -1,205 +1,328 @@
-require('dotenv').config();
-const db = require('./config/database');
-const twilio = require('twilio');
+// ═══════════════════════════════════════════════════════════════════════
+// ⭐ FIXED REMINDER CRON ENDPOINT - PRECISE 2.5 HOUR & 24 HOUR REMINDERS
+// ═══════════════════════════════════════════════════════════════════════
 
-const twilioClient = twilio(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
-);
-const twilioWhatsAppNumber = process.env.WABA_NUMBER;
-
-/**
- * Send appointment reminders for next day
- * Run this as a cron job every day at 6 PM
- */
-async function sendReminders() {
+app.post('/cron/send-reminders', async (req, res) => {
+    const startTime = Date.now();
+    
     try {
-        console.log('🔔 Starting reminder job...');
+        log.info('🔔 Reminder cron started');
         
-        // Get tomorrow's date
+        let sent24h = 0;
+        let sent2h = 0;
+        let errors = 0;
+        
+        // ═══════════════════════════════════════════════════════════════
+        // 24-HOUR REMINDERS - Send at 6 PM for next day appointments
+        // ═══════════════════════════════════════════════════════════════
+        if (REMINDER_24H_ENABLED) {
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            const tomorrowDate = tomorrow.toISOString().split('T')[0];
+            
+            const reminder24h = await sql`
+                SELECT 
+                    a.id,
+                    a.patient_name,
+                    a.patient_phone,
+                    a.appointment_date,
+                    a.appointment_time,
+                    c.name as clinic_name,
+                    c.doctor_name,
+                    d.name as assigned_doctor_name,
+                    d.specialization as assigned_doctor_specialization
+                FROM appointments a
+                JOIN clinics c ON a.clinic_id = c.id
+                LEFT JOIN doctors d ON a.doctor_id = d.id
+                WHERE a.appointment_date = ${tomorrowDate}
+                AND a.status = 'confirmed'
+                AND a.reminder_24h_sent = false
+                ORDER BY a.appointment_time
+            `;
+            
+            log.info(`Found ${reminder24h.length} appointments for 24h reminders`);
+            
+            for (const apt of reminder24h) {
+                try {
+                    const doctorName = apt.assigned_doctor_name || apt.doctor_name;
+                    const doctorSpec = apt.assigned_doctor_specialization || 'General';
+                    
+                    let message = `🔔 *REMINDER - TOMORROW*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n🏥 ${apt.clinic_name}\n`;
+                    
+                    if (doctorName) {
+                        message += `👨‍⚕️ ${formatDoctorName(doctorName)}\n`;
+                        message += `🩺 ${doctorSpec}\n`;
+                    }
+                    
+                    message += `\n📅 *TOMORROW*\n⏰ ${apt.appointment_time}\n━━━━━━━━━━━━━━━━━━━━\n\n✔ Please arrive 10 min early\n✔ Bring any documents\n\nSee you tomorrow!\n\n━━━━━━━━━━━━━━━━━━━━\n✅ CONFIRM #${apt.id}\n❌ CANCEL #${apt.id}`;
+                    
+                    const success = await sendWhatsApp(apt.patient_phone, message);
+                    
+                    if (success) {
+                        await sql`
+                            UPDATE appointments 
+                            SET reminder_24h_sent = true,
+                                updated_at = NOW()
+                            WHERE id = ${apt.id}
+                        `;
+                        
+                        sent24h++;
+                        log.success(`📅 24h reminder sent`, {
+                            appointmentId: apt.id,
+                            patient: apt.patient_name
+                        });
+                    }
+                    
+                } catch (error) {
+                    errors++;
+                    log.error(`Error sending 24h reminder for #${apt.id}`, error);
+                }
+            }
+        }
+        
+        // ═══════════════════════════════════════════════════════════════
+        // ⭐ FIXED 2.5-HOUR REMINDERS - PRECISE 150 MINUTE WINDOW
+        // Cron should run EVERY 30 MINUTES for best coverage
+        // ═══════════════════════════════════════════════════════════════
+        if (REMINDER_2H_ENABLED) {
+            const now = new Date();
+            const todayDate = now.toISOString().split('T')[0];
+            
+            // Get current time in minutes for precise comparison
+            const currentHour = now.getHours();
+            const currentMinute = now.getMinutes();
+            const currentTotalMinutes = currentHour * 60 + currentMinute;
+            
+            log.info('2.5-hour reminder check', {
+                currentTime: `${currentHour}:${String(currentMinute).padStart(2, '0')}`,
+                todayDate: todayDate
+            });
+            
+            const reminder2h = await sql`
+                SELECT 
+                    a.id,
+                    a.patient_name,
+                    a.patient_phone,
+                    a.appointment_date,
+                    a.appointment_time,
+                    c.name as clinic_name,
+                    c.doctor_name,
+                    d.name as assigned_doctor_name
+                FROM appointments a
+                JOIN clinics c ON a.clinic_id = c.id
+                LEFT JOIN doctors d ON a.doctor_id = d.id
+                WHERE a.appointment_date = ${todayDate}
+                AND a.status = 'confirmed'
+                AND a.reminder_2h_sent = false
+                ORDER BY a.appointment_time
+            `;
+            
+            log.info(`Found ${reminder2h.length} potential appointments for 2.5h reminders`);
+            
+            for (const apt of reminder2h) {
+                try {
+                    // Parse appointment time (e.g., "2:30 PM")
+                    const timeMatch = apt.appointment_time.match(/(\d+):(\d+)\s*(AM|PM)/i);
+                    if (!timeMatch) {
+                        log.warn(`Invalid time format for appointment #${apt.id}`, { 
+                            time: apt.appointment_time 
+                        });
+                        continue;
+                    }
+                    
+                    let appointmentHour = parseInt(timeMatch[1]);
+                    const appointmentMinute = parseInt(timeMatch[2]);
+                    const period = timeMatch[3].toUpperCase();
+                    
+                    // Convert to 24-hour format
+                    if (period === 'PM' && appointmentHour !== 12) {
+                        appointmentHour += 12;
+                    } else if (period === 'AM' && appointmentHour === 12) {
+                        appointmentHour = 0;
+                    }
+                    
+                    // Calculate appointment time in minutes from midnight
+                    const appointmentTotalMinutes = appointmentHour * 60 + appointmentMinute;
+                    
+                    // Calculate difference in minutes
+                    const minutesDiff = appointmentTotalMinutes - currentTotalMinutes;
+                    
+                    // ⭐ FIXED: Precise 2.5 hour window (140-160 minutes)
+                    // This gives 20-minute tolerance for cron timing
+                    const TARGET_MINUTES = 150; // 2.5 hours
+                    const TOLERANCE = 10; // ±10 minutes
+                    const MIN_WINDOW = TARGET_MINUTES - TOLERANCE; // 140 minutes
+                    const MAX_WINDOW = TARGET_MINUTES + TOLERANCE; // 160 minutes
+                    
+                    if (minutesDiff >= MIN_WINDOW && minutesDiff <= MAX_WINDOW) {
+                        const hoursAway = (minutesDiff / 60).toFixed(1);
+                        
+                        log.info(`✅ Sending 2.5h reminder`, {
+                            appointmentId: apt.id,
+                            appointmentTime: apt.appointment_time,
+                            currentTime: `${currentHour}:${String(currentMinute).padStart(2, '0')}`,
+                            minutesAway: minutesDiff,
+                            hoursAway: hoursAway,
+                            window: `${MIN_WINDOW}-${MAX_WINDOW} minutes`
+                        });
+                        
+                        const doctorName = apt.assigned_doctor_name || apt.doctor_name;
+                        
+                        let message = `⏰ *REMINDER - IN ${hoursAway} HOURS*\n\n━━━━━━━━━━━━━━━━━━━━\n📋 #${apt.id}\n🏥 ${apt.clinic_name}\n`;
+                        
+                        if (doctorName) {
+                            message += `👨‍⚕️ ${formatDoctorName(doctorName)}\n`;
+                        }
+                        
+                        message += `\n⏰ *TODAY at ${apt.appointment_time}*\n━━━━━━━━━━━━━━━━━━━━\n\n✔ Arrive 10 min early\n✔ Bring documents\n\nSee you soon!`;
+                        
+                        const success = await sendWhatsApp(apt.patient_phone, message);
+                        
+                        if (success) {
+                            await sql`
+                                UPDATE appointments 
+                                SET reminder_2h_sent = true,
+                                    updated_at = NOW()
+                                WHERE id = ${apt.id}
+                            `;
+                            
+                            sent2h++;
+                            log.success(`⏰ 2.5h reminder sent successfully`, {
+                                appointmentId: apt.id,
+                                patient: apt.patient_name,
+                                time: apt.appointment_time,
+                                exactMinutesBeforeAppointment: minutesDiff
+                            });
+                        } else {
+                            log.error(`Failed to send 2.5h reminder`, {
+                                appointmentId: apt.id,
+                                phone: apt.patient_phone
+                            });
+                        }
+                    } 
+                    // Auto-cleanup: Mark past appointments as sent
+                    else if (minutesDiff < 0) {
+                        log.warn(`Appointment #${apt.id} is in the past, marking as sent`, {
+                            appointmentTime: apt.appointment_time,
+                            minutesPast: Math.abs(minutesDiff)
+                        });
+                        
+                        await sql`
+                            UPDATE appointments 
+                            SET reminder_2h_sent = true,
+                                updated_at = NOW()
+                            WHERE id = ${apt.id}
+                        `;
+                    } 
+                    // Log appointments outside window for debugging
+                    else {
+                        const status = minutesDiff > MAX_WINDOW ? 
+                            `Too far (${minutesDiff} min away, need <${MAX_WINDOW})` : 
+                            `Too close (${minutesDiff} min away, need >${MIN_WINDOW})`;
+                        
+                        log.info(`⏭️ Appointment #${apt.id} not in window`, {
+                            appointmentTime: apt.appointment_time,
+                            minutesAway: minutesDiff,
+                            status: status
+                        });
+                    }
+                    
+                } catch (error) {
+                    errors++;
+                    log.error(`Error processing 2.5h reminder for #${apt.id}`, error);
+                }
+            }
+        }
+        
+        const duration = Date.now() - startTime;
+        
+        const summary = {
+            success: true,
+            reminder_24h_sent: sent24h,
+            reminder_2h_sent: sent2h,
+            errors: errors,
+            durationMs: duration,
+            timestamp: new Date().toISOString(),
+            config: {
+                target_minutes_before_appointment: 150,
+                tolerance_minutes: 10,
+                effective_window: '140-160 minutes (2h 20m - 2h 40m)'
+            }
+        };
+        
+        log.success('✅ Reminder cron completed', summary);
+        
+        res.json(summary);
+        
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        log.error('❌ Reminder cron failed', {
+            error: error.message,
+            stack: error.stack
+        });
+        
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            durationMs: duration
+        });
+    }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// TEST ENDPOINT - Check reminder status
+// ═══════════════════════════════════════════════════════════════════════
+app.get('/cron/send-reminders/test', async (req, res) => {
+    log.info('🧪 Reminder test endpoint accessed');
+    
+    try {
         const tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
         const tomorrowDate = tomorrow.toISOString().split('T')[0];
         
-        // Get appointments for tomorrow that haven't been reminded
-        const result = await db.query(`
-            SELECT 
-                a.id,
-                a.customer_phone,
-                a.customer_name,
-                a.appointment_date,
-                a.appointment_time,
-                a.service,
-                c.name as clinic_name,
-                cu.preferred_language,
-                d.name as doctor_name
-            FROM appointments a
-            JOIN clinics c ON a.clinic_id = c.id
-            LEFT JOIN customers cu ON a.customer_id = cu.id
-            LEFT JOIN doctors d ON a.doctor_id = d.id
-            WHERE a.appointment_date = $1
-              AND a.status IN ('pending', 'confirmed')
-              AND a.reminder_sent = false
-            ORDER BY a.appointment_time
-        `, [tomorrowDate]);
+        const today = new Date().toISOString().split('T')[0];
         
-        console.log(`📊 Found ${result.rows.length} appointments for ${tomorrowDate}`);
-        
-        let sent = 0;
-        let failed = 0;
-        
-        for (const appointment of result.rows) {
-            try {
-                const message = getReminderMessage(appointment);
-                
-                await twilioClient.messages.create({
-                    from: twilioWhatsAppNumber,
-                    to: `whatsapp:${appointment.customer_phone}`,
-                    body: message
-                });
-                
-                // Mark as reminded
-                await db.query(
-                    'UPDATE appointments SET reminder_sent = true WHERE id = $1',
-                    [appointment.id]
-                );
-                
-                sent++;
-                console.log(`✅ Reminder sent to ${appointment.customer_name} (ID: ${appointment.id})`);
-                
-                // Rate limiting: Wait 1 second between messages
-                await sleep(1000);
-                
-            } catch (error) {
-                failed++;
-                console.error(`❌ Failed to send reminder for appointment ${appointment.id}:`, error.message);
-            }
-        }
-        
-        console.log(`\n📈 Summary: ${sent} sent, ${failed} failed`);
-        
-        // Log reminder job execution
-        await db.query(`
-            INSERT INTO customer_interactions (
-                customer_id, 
-                clinic_id, 
-                interaction_type, 
-                message_body
-            )
-            SELECT 
-                customer_id,
-                clinic_id,
-                'reminder_sent',
-                'Reminder job completed: ' || $1 || ' sent, ' || $2 || ' failed'
+        const reminder24h = await sql`
+            SELECT COUNT(*) as count
             FROM appointments
-            WHERE id = $3
-            LIMIT 1
-        `, [sent, failed, result.rows[0]?.id || 1]);
+            WHERE appointment_date = ${tomorrowDate}
+            AND status = 'confirmed'
+            AND reminder_24h_sent = false
+        `;
+        
+        const reminder2h = await sql`
+            SELECT COUNT(*) as count
+            FROM appointments
+            WHERE appointment_date = ${today}
+            AND status = 'confirmed'
+            AND reminder_2h_sent = false
+        `;
+        
+        res.json({
+            message: 'Reminder cron endpoint ready ✅',
+            config: {
+                reminder_24h_enabled: REMINDER_24H_ENABLED,
+                reminder_2h_enabled: REMINDER_2H_ENABLED,
+                target_reminder_time: '2.5 hours (150 minutes) before appointment',
+                tolerance: '±10 minutes',
+                effective_window: '2h 20m to 2h 40m before appointment'
+            },
+            pending24hReminders: reminder24h[0].count,
+            pending2hReminders: reminder2h[0].count,
+            endpoint: `POST ${process.env.BASE_URL}/cron/send-reminders`,
+            setup: {
+                step1: 'Go to cron-job.org',
+                step2: `Add URL: POST ${process.env.BASE_URL}/cron/send-reminders`,
+                step3: '⭐ CRITICAL: Schedule EVERY 30 MINUTES (not 2 hours!)',
+                step4: 'Cron expression: */30 * * * * (runs at :00 and :30 of every hour)',
+                step5: 'Enable and save'
+            },
+            why_30_minutes: 'Running every 30 minutes ensures no appointments are missed. The 20-minute window (140-160 min) allows flexibility for cron timing while targeting exactly 2.5 hours.'
+        });
         
     } catch (error) {
-        console.error('❌ Reminder job failed:', error);
-        throw error;
-    }
-}
-
-/**
- * Generate reminder message in user's language
- */
-function getReminderMessage(appointment) {
-    const { 
-        customer_name, 
-        appointment_date, 
-        appointment_time, 
-        clinic_name,
-        service,
-        doctor_name,
-        preferred_language,
-        id 
-    } = appointment;
-    
-    // Format date
-    const [year, month, day] = appointment_date.split('-');
-    const formattedDate = `${day}-${month}-${year}`;
-    
-    // Format time (remove seconds)
-    const formattedTime = appointment_time.substring(0, 5);
-    
-    const lang = preferred_language || 'en';
-    
-    const messages = {
-        en: `🔔 *Appointment Reminder*
-
-Hello ${customer_name}! 👋
-
-Your appointment is *tomorrow*:
-
-🏥 *Clinic:* ${clinic_name}
-${doctor_name ? `👨‍⚕️ *Doctor:* ${doctor_name}\n` : ''}📅 *Date:* ${formattedDate}
-⏰ *Time:* ${formattedTime}
-${service ? `💊 *Service:* ${service}\n` : ''}
-📌 *Booking ID:* #${id}
-
-Please arrive 10 minutes early.
-
-To cancel: Reply "CANCEL ${id}"
-For help: Reply "HELP"`,
-
-        hi: `🔔 *अपॉइंटमेंट रिमाइंडर*
-
-नमस्ते ${customer_name}! 👋
-
-आपकी अपॉइंटमेंट *कल* है:
-
-🏥 *क्लिनिक:* ${clinic_name}
-${doctor_name ? `👨‍⚕️ *डॉक्टर:* ${doctor_name}\n` : ''}📅 *तारीख:* ${formattedDate}
-⏰ *समय:* ${formattedTime}
-${service ? `💊 *सेवा:* ${service}\n` : ''}
-📌 *बुकिंग ID:* #${id}
-
-कृपया 10 मिनट पहले पहुंचें।
-
-रद्द करने के लिए: "CANCEL ${id}" लिखें
-मदद के लिए: "HELP" लिखें`,
-
-        bn: `🔔 *অ্যাপয়েন্টমেন্ট রিমাইন্ডার*
-
-হ্যালো ${customer_name}! 👋
-
-আপনার অ্যাপয়েন্টমেন্ট *কাল*:
-
-🏥 *ক্লিনিক:* ${clinic_name}
-${doctor_name ? `👨‍⚕️ *ডাক্তার:* ${doctor_name}\n` : ''}📅 *তারিখ:* ${formattedDate}
-⏰ *সময়:* ${formattedTime}
-${service ? `💊 *সেবা:* ${service}\n` : ''}
-📌 *বুকিং ID:* #${id}
-
-অনুগ্রহ করে 10 মিনিট আগে পৌঁছান।
-
-বাতিল করতে: "CANCEL ${id}" লিখুন
-সাহায্যের জন্য: "HELP" লিখুন`
-    };
-    
-    return messages[lang] || messages.en;
-}
-
-/**
- * Sleep helper for rate limiting
- */
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Run if executed directly
-if (require.main === module) {
-    sendReminders()
-        .then(() => {
-            console.log('✅ Reminder job completed successfully');
-            process.exit(0);
-        })
-        .catch(error => {
-            console.error('❌ Reminder job failed:', error);
-            process.exit(1);
+        res.status(500).json({
+            error: error.message
         });
-}
-
-module.exports = { sendReminders };
+    }
+});

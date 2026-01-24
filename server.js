@@ -317,13 +317,15 @@ async function handleIncomingMessage(from, body) {
     let newState = session.current_state;
     let updatedData = { ...sessionData };
     
+    // Handle menu/restart commands (works from any state)
+    if (message === 'menu' || message === 'restart') {
+        responseMessage = getMainMenuMessage();
+        newState = STATES.MAIN_MENU;
+        updatedData = {};
+    }
     // Handle main menu
-    if (message === 'menu' || message === 'restart' || session.current_state === STATES.MAIN_MENU) {
-        if (message === 'menu' || message === 'restart') {
-            responseMessage = getMainMenuMessage();
-            newState = STATES.MAIN_MENU;
-            updatedData = {};
-        } else if (message === '1') {
+    else if (session.current_state === STATES.MAIN_MENU) {
+        if (message === '1') {
             const restaurants = await getRestaurantsList();
             responseMessage = restaurants.message + '\n\n_Type "menu" anytime to return to main menu._';
             updatedData.action = 'delivery';

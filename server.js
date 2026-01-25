@@ -19,6 +19,14 @@ const twilioClient = twilio(
     process.env.TWILIO_AUTH_TOKEN
 );
 
+// Restaurant owner phone numbers (add to .env for each restaurant)
+const RESTAURANT_OWNERS = {
+    1: process.env.ZAMZAM_OWNER_PHONE || '+919876543210',
+    2: process.env.SPICEGARDEN_OWNER_PHONE || '+919876543211',
+    3: process.env.CURRYHOUSE_OWNER_PHONE || '+919876543212',
+    4: process.env.BIRYANIEXPRESS_OWNER_PHONE || '+919876543213'
+};
+
 // Session states
 const STATES = {
     MAIN_MENU: 'main_menu',
@@ -44,11 +52,57 @@ async function sendWhatsAppMessage(to, body) {
             messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID,
             to: `whatsapp:${to}`
         });
-        console.log(`Message sent: ${message.sid}`);
+        console.log(`Message sent to ${to}: ${message.sid}`);
         return message;
     } catch (error) {
-        console.error('Error sending message:', error);
+        console.error(`Error sending message to ${to}:`, error);
         throw error;
+    }
+}
+
+// Send notification to restaurant owner
+async function notifyRestaurantOwner(restaurantId, notificationType, data) {
+    const ownerPhone = RESTAURANT_OWNERS[restaurantId];
+    
+    if (!ownerPhone) {
+        console.log(`No owner phone configured for restaurant ${restaurantId}`);
+        return;
+    }
+    
+    let message = '';
+    
+    if (notificationType === 'new_order') {
+        message = `🔔 *NEW ORDER #${data.orderId}*\n\n`;
+        message += `📱 Customer: ${data.customerPhone}\n`;
+        message += `📍 Address: ${data.deliveryAddress}\n\n`;
+        message += `*Items:*\n`;
+        data.items.forEach(item => {
+            message += `• ${item.quantity}× ${item.name} - ₹${item.price * item.quantity}\n`;
+        });
+        message += `\n💰 Total: ₹${data.total}\n`;
+        if (data.specialInstructions) {
+            message += `\n📝 Special: ${data.specialInstructions}\n`;
+        }
+        message += `\n⏰ Est. Delivery: 45 mins\n`;
+        message += `\n✅ Please confirm and prepare!`;
+    } else if (notificationType === 'new_booking') {
+        message = `📅 *NEW TABLE BOOKING #${data.bookingId}*\n\n`;
+        message += `👤 Name: ${data.customerName}\n`;
+        message += `📱 Phone: ${data.customerPhone}\n`;
+        message += `📅 Date: ${data.bookingDate}\n`;
+        message += `⏰ Time: ${data.bookingTime}\n`;
+        message += `👥 Guests: ${data.numberOfGuests}\n`;
+        if (data.specialRequests) {
+            message += `\n📝 Requests: ${data.specialRequests}\n`;
+        }
+        message += `\n✅ Please confirm table availability!`;
+    }
+    
+    try {
+        await sendWhatsAppMessage(ownerPhone, message);
+        console.log(`Owner notification sent for restaurant ${restaurantId}`);
+    } catch (error) {
+        console.error(`Failed to notify owner for restaurant ${restaurantId}:`, error);
     }
 }
 
@@ -268,6 +322,17 @@ async function createOrder(phoneNumber, sessionData) {
         }
         
         await client.query('COMMIT');
+        
+        // Send notification to restaurant owner
+        await notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_order', {
+            orderId: orderId,
+            customerPhone: phoneNumber,
+            deliveryAddress: sessionData.deliveryAddress,
+            items: sessionData.cart,
+            total: total,
+            specialInstructions: sessionData.specialInstructions
+        });
+        
         return { success: true, orderId, order: orderResult.rows[0] };
         
     } catch (error) {
@@ -298,6 +363,17 @@ async function createBooking(phoneNumber, sessionData) {
             ]
         );
         
+        // Send notification to restaurant owner
+        await notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_booking', {
+            bookingId: result.rows[0].id,
+            customerName: sessionData.customerName,
+            customerPhone: phoneNumber,
+            bookingDate: sessionData.bookingDate,
+            bookingTime: sessionData.bookingTime,
+            numberOfGuests: sessionData.numberOfGuests,
+            specialRequests: sessionData.specialRequests
+        });
+        
         return { success: true, bookingId: result.rows[0].id, booking: result.rows[0] };
     } catch (error) {
         console.error('Error creating booking:', error);
@@ -316,6 +392,55 @@ async function handleIncomingMessage(from, body) {
     let responseMessage = '';
     let newState = session.current_state;
     let updatedData = { ...sessionData };
+    
+    // ========================================
+    // QR CODE KEYWORD DETECTION
+    // ========================================
+    const restaurantKeywords = {
+        'zamzam': 1,
+        'spicegarden': 2,
+        'curryhouse': 3,
+        'biryaniexpress': 4
+    };
+    
+    const keyword = message.replace(/\s+/g, '').toLowerCase();
+    if (restaurantKeywords[keyword] && !sessionData.selectedRestaurant) {
+        const restaurantId = restaurantKeywords[keyword];
+        const restaurant = await pool.query('SELECT * FROM restaurants WHERE id = $1', [restaurantId]);
+        
+        if (restaurant.rows.length > 0) {
+            const selectedRestaurant = restaurant.rows[0];
+            updatedData.selectedRestaurant = selectedRestaurant.id;
+            updatedData.restaurantName = selectedRestaurant.name;
+            updatedData.action = 'delivery';
+            
+            const menu = await getRestaurantMenu(selectedRestaurant.id);
+            responseMessage = `🎉 Welcome to *${selectedRestaurant.name}*!\n\n`;
+            responseMessage += menu.message;
+            responseMessage += '\n\n*To order:*\n';
+            responseMessage += 'Type item ID and quantity (e.g., "15 2")\n';
+            responseMessage += 'Type "done" when finished\n';
+            responseMessage += 'Type "cart" to view cart\n';
+            responseMessage += 'Type "booking" for table reservation';
+            
+            newState = STATES.ADD_ITEMS;
+            updatedData.cart = [];
+            
+            await updateUserSession(phoneNumber, newState, updatedData);
+            return responseMessage;
+        }
+    }
+    
+    // Handle "booking" command from QR code flow
+    if (message === 'booking' && sessionData.selectedRestaurant) {
+        const restaurant = await pool.query('SELECT * FROM restaurants WHERE id = $1', [sessionData.selectedRestaurant]);
+        responseMessage = `📅 *Table Booking at ${restaurant.rows[0].name}*\n\n`;
+        responseMessage += 'Please enter the date for your booking\n';
+        responseMessage += 'Format: DD-MM-YYYY (e.g., 25-01-2026)';
+        newState = STATES.BOOKING_DATE;
+        await updateUserSession(phoneNumber, newState, updatedData);
+        return responseMessage;
+    }
     
     // Handle menu/restart commands (works from any state)
     if (message === 'menu' || message === 'restart') {
@@ -559,6 +684,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`🚀 Restaurant Bot server running on port ${PORT}`);
     console.log(`📱 Webhook URL: https://your-domain.com/webhook`);
+    console.log(`🔔 Owner notifications enabled for ${Object.keys(RESTAURANT_OWNERS).length} restaurants`);
 });
 
 // Graceful shutdown

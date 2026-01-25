@@ -247,6 +247,134 @@ async function notifyRestaurantOwner(restaurantId, notificationType, data) {
 }
 
 // =====================================================
+// SMART TIME PARSER - HANDLES MULTIPLE FORMATS
+// =====================================================
+function parseFlexibleTime(timeString) {
+    const input = timeString.trim().toUpperCase();
+    
+    // Pattern 1: "8PM", "8 PM", "8pm"
+    const pattern1 = input.match(/^(\d{1,2})\s*(AM|PM)$/);
+    if (pattern1) {
+        let hour = parseInt(pattern1[1]);
+        const meridiem = pattern1[2];
+        
+        if (hour < 1 || hour > 12) {
+            return null;
+        }
+        
+        if (meridiem === 'PM' && hour !== 12) {
+            hour += 12;
+        } else if (meridiem === 'AM' && hour === 12) {
+            hour = 0;
+        }
+        
+        return `${hour.toString().padStart(2, '0')}:00`;
+    }
+    
+    // Pattern 2: "8:30PM", "8:30 PM", "8:30pm"
+    const pattern2 = input.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
+    if (pattern2) {
+        let hour = parseInt(pattern2[1]);
+        const minute = parseInt(pattern2[2]);
+        const meridiem = pattern2[3];
+        
+        if (hour < 1 || hour > 12 || minute < 0 || minute > 59) {
+            return null;
+        }
+        
+        if (meridiem === 'PM' && hour !== 12) {
+            hour += 12;
+        } else if (meridiem === 'AM' && hour === 12) {
+            hour = 0;
+        }
+        
+        return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+    }
+    
+    // Pattern 3: "20:00", "08:30" (24-hour format)
+    const pattern3 = input.match(/^(\d{1,2}):(\d{2})$/);
+    if (pattern3) {
+        const hour = parseInt(pattern3[1]);
+        const minute = parseInt(pattern3[2]);
+        
+        if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+            return null;
+        }
+        
+        return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+    }
+    
+    // Pattern 4: "8", "20" (just hour, no minutes)
+    const pattern4 = input.match(/^(\d{1,2})$/);
+    if (pattern4) {
+        const hour = parseInt(pattern4[1]);
+        
+        if (hour < 0 || hour > 23) {
+            return null;
+        }
+        
+        return `${hour.toString().padStart(2, '0')}:00`;
+    }
+    
+    return null;
+}
+
+// =====================================================
+// SMART DATE PARSER - HANDLES MULTIPLE FORMATS
+// =====================================================
+function parseFlexibleDate(dateString) {
+    const input = dateString.trim().toLowerCase();
+    const today = new Date();
+    
+    // Pattern 1: "today", "tomorrow"
+    if (input === 'today') {
+        const year = today.getFullYear();
+        const month = (today.getMonth() + 1).toString().padStart(2, '0');
+        const day = today.getDate().toString().padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+    
+    if (input === 'tomorrow') {
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const year = tomorrow.getFullYear();
+        const month = (tomorrow.getMonth() + 1).toString().padStart(2, '0');
+        const day = tomorrow.getDate().toString().padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    }
+    
+    // Pattern 2: "DD-MM-YYYY", "DD/MM/YYYY", "DD.MM.YYYY"
+    const pattern1 = input.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/);
+    if (pattern1) {
+        const day = parseInt(pattern1[1]);
+        const month = parseInt(pattern1[2]);
+        const year = parseInt(pattern1[3]);
+        
+        if (day < 1 || day > 31 || month < 1 || month > 12 || year < 2024 || year > 2030) {
+            return null;
+        }
+        
+        return `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+    }
+    
+    // Pattern 3: "DD-MM", "DD/MM" (assume current year)
+    const pattern2 = input.match(/^(\d{1,2})[-\/.](\d{1,2})$/);
+    if (pattern2) {
+        const day = parseInt(pattern2[1]);
+        const month = parseInt(pattern2[2]);
+        const year = today.getFullYear();
+        
+        if (day < 1 || day > 31 || month < 1 || month > 12) {
+            return null;
+        }
+        
+        return `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+    }
+    
+    return null;
+}
+
+// =====================================================
 // SESSION MANAGEMENT
 // =====================================================
 async function getUserSession(phoneNumber) {
@@ -662,8 +790,12 @@ async function handleIncomingMessage(from, body) {
                 }
 
                 responseMessage = `📅 *Table Booking at ${restaurant.rows[0].name}*\n\n`;
-                responseMessage += 'Please enter the date for your booking\n';
-                responseMessage += 'Format: DD-MM-YYYY (e.g., 25-01-2026)';
+                responseMessage += 'Please enter the date for your booking\n\n';
+                responseMessage += 'Examples:\n';
+                responseMessage += '• Today\n';
+                responseMessage += '• Tomorrow\n';
+                responseMessage += '• 25-01-2026\n';
+                responseMessage += '• 25/01 (this year)';
                 newState = STATES.BOOKING_DATE;
                 await updateUserSession(phoneNumber, newState, updatedData);
                 return responseMessage;
@@ -726,8 +858,12 @@ async function handleIncomingMessage(from, body) {
                         responseMessage = '❌ Sorry, table booking is not available at this restaurant.\n\nPlease select another restaurant or type "menu" to return.';
                     } else {
                         responseMessage = `📅 *Table Booking at ${selectedRestaurant.name}*\n\n`;
-                        responseMessage += 'Please enter the date for your booking\n';
-                        responseMessage += 'Format: DD-MM-YYYY (e.g., 25-01-2026)';
+                        responseMessage += 'Please enter the date for your booking\n\n';
+                        responseMessage += 'Examples:\n';
+                        responseMessage += '• Today\n';
+                        responseMessage += '• Tomorrow\n';
+                        responseMessage += '• 25-01-2026\n';
+                        responseMessage += '• 25/01 (this year)';
                         newState = STATES.BOOKING_DATE;
                     }
                 }
@@ -837,30 +973,36 @@ async function handleIncomingMessage(from, body) {
         }
         // Booking date
         else if (session.current_state === STATES.BOOKING_DATE) {
-            const dateMatch = message.match(/(\d{2})-(\d{2})-(\d{4})/);
-            if (dateMatch) {
-                const [, day, month, year] = dateMatch;
-                const bookingDate = `${year}-${month}-${day}`;
-                updatedData.bookingDate = bookingDate;
-
+            const parsedDate = parseFlexibleDate(message);
+            if (parsedDate) {
+                updatedData.bookingDate = parsedDate;
                 responseMessage = '⏰ *Booking Time*\n\n';
                 responseMessage += 'Please enter the time for your booking\n';
-                responseMessage += 'Format: HH:MM (e.g., 19:30 for 7:30 PM)';
+                responseMessage += 'Examples: 8PM, 8:30PM, 20:00';
                 newState = STATES.BOOKING_TIME;
             } else {
-                responseMessage = '❌ Invalid date format. Please use DD-MM-YYYY (e.g., 25-01-2026)';
+                responseMessage = '❌ Invalid date format.\n\n';
+                responseMessage += 'Please try:\n';
+                responseMessage += '• Today or Tomorrow\n';
+                responseMessage += '• 25-01-2026\n';
+                responseMessage += '• 25/01/2026\n';
+                responseMessage += '• 25-01 (this year)';
             }
         }
         // Booking time
         else if (session.current_state === STATES.BOOKING_TIME) {
-            const timeMatch = message.match(/(\d{2}):(\d{2})/);
-            if (timeMatch) {
-                updatedData.bookingTime = message;
+            const parsedTime = parseFlexibleTime(message);
+            if (parsedTime) {
+                updatedData.bookingTime = parsedTime;
                 responseMessage = '👥 *Number of Guests*\n\n';
                 responseMessage += 'How many people will be dining?';
                 newState = STATES.BOOKING_GUESTS;
             } else {
-                responseMessage = '❌ Invalid time format. Please use HH:MM (e.g., 19:30)';
+                responseMessage = '❌ Invalid time format.\n\n';
+                responseMessage += 'Please try:\n';
+                responseMessage += '• 8PM or 8:30PM\n';
+                responseMessage += '• 20:00 or 20:30\n';
+                responseMessage += '• 8 PM or 8:30 PM';
             }
         }
         // Number of guests

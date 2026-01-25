@@ -691,7 +691,8 @@ async function handleIncomingMessage(from, body) {
             } else if (message === '3') {
                 const restaurants = await getRestaurantsList();
                 responseMessage = restaurants.message + '\n\n_Type "menu" anytime to return to main menu._';
-                newState = STATES.MAIN_MENU;
+                updatedData.action = 'delivery'; // Default to delivery when just viewing
+                newState = STATES.SELECT_RESTAURANT; // FIX: Move to SELECT_RESTAURANT state
             } else {
                 responseMessage = getMainMenuMessage();
             }

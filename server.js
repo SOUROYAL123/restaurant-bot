@@ -2,6 +2,12 @@ require('dotenv').config();
 const express = require('express');
 const { Pool } = require('pg');
 const twilio = require('twilio');
+const {
+    initializeGoogleSheets,
+    logOrderToSheets,
+    logBookingToSheets,
+    getSpreadsheetUrl
+} = require('./google-sheets');
 
 const app = express();
 app.use(express.json());
@@ -686,6 +692,25 @@ async function createOrder(phoneNumber, sessionData) {
             specialInstructions: sessionData.specialInstructions
         });
 
+        // Log to Google Sheets
+        await logOrderToSheets({
+            orderId: orderId,
+            restaurantName: restaurant.rows[0].name,
+            restaurantId: sessionData.selectedRestaurant,
+            customerPhone: phoneNumber,
+            customerName: sessionData.customerName || 'Customer',
+            orderType: 'delivery',
+            deliveryAddress: sessionData.deliveryAddress,
+            items: sessionData.cart,
+            subtotal: subtotal,
+            deliveryFee: deliveryFee,
+            total: total,
+            specialInstructions: sessionData.specialInstructions || '',
+            status: 'pending',
+            paymentStatus: 'COD',
+            estimatedDeliveryTime: '45 minutes'
+        });
+
         return { success: true, orderId, order: orderResult.rows[0] };
 
     } catch (error) {
@@ -715,6 +740,12 @@ async function createBooking(phoneNumber, sessionData) {
             ]
         );
 
+        // Get restaurant details for sheets
+        const restaurant = await pool.query(
+            'SELECT name, address, phone FROM restaurants WHERE id = $1',
+            [sessionData.selectedRestaurant]
+        );
+
         // Send notification to owner
         await notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_booking', {
             bookingId: result.rows[0].id,
@@ -724,6 +755,20 @@ async function createBooking(phoneNumber, sessionData) {
             bookingTime: sessionData.bookingTime,
             numberOfGuests: sessionData.numberOfGuests,
             specialRequests: sessionData.specialRequests
+        });
+
+        // Log to Google Sheets
+        await logBookingToSheets({
+            bookingId: result.rows[0].id,
+            restaurantName: restaurant.rows[0].name,
+            restaurantId: sessionData.selectedRestaurant,
+            customerPhone: phoneNumber,
+            customerName: sessionData.customerName,
+            bookingDate: sessionData.bookingDate,
+            bookingTime: sessionData.bookingTime,
+            numberOfGuests: sessionData.numberOfGuests,
+            specialRequests: sessionData.specialRequests || '',
+            status: 'pending'
         });
 
         return { success: true, bookingId: result.rows[0].id, booking: result.rows[0] };
@@ -1161,6 +1206,12 @@ app.listen(PORT, async () => {
     console.log(`📱 Webhook URL: https://your-domain.railway.app/webhook\n`);
     
     try {
+        // Initialize Google Sheets
+        const sheetsInitialized = initializeGoogleSheets();
+        if (sheetsInitialized) {
+            console.log(`✅ Google Sheets integration active`);
+        }
+        
         // Load restaurants on startup
         const restaurantData = await loadRestaurantsFromDatabase();
         console.log(`✅ Loaded ${restaurantData.data.length} restaurants from database`);

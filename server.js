@@ -101,9 +101,7 @@ async function loadRestaurantsFromDatabase() {
                 delivery_fee,
                 notify_on_order,
                 notify_on_booking,
-                owner_name,
-                logo_url,
-                banner_image_url
+                owner_name
             FROM restaurants
             WHERE (delivery_available = true OR table_booking_available = true)
             ORDER BY name

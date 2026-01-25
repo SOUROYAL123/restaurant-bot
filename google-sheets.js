@@ -20,19 +20,33 @@ function initializeGoogleSheets() {
             return false;
         }
 
+        // Handle both \n and \\n escaping from Railway
+        let privateKey = process.env.GOOGLE_PRIVATE_KEY;
+        
+        // If the key has literal \\n (double backslash), replace with actual newlines
+        if (privateKey.includes('\\\\n')) {
+            privateKey = privateKey.replace(/\\\\n/g, '\n');
+        } 
+        // If the key has \n (single backslash), replace with actual newlines
+        else if (privateKey.includes('\\n')) {
+            privateKey = privateKey.replace(/\\n/g, '\n');
+        }
+
         const auth = new google.auth.JWT(
             process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
             null,
-            process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+            privateKey,
             ['https://www.googleapis.com/auth/spreadsheets']
         );
 
         sheetsClient = google.sheets({ version: 'v4', auth });
         isConfigured = true;
         console.log('✅ Google Sheets initialized successfully');
+        console.log('✅ Private key format detected and parsed correctly');
         return true;
     } catch (error) {
         console.error('❌ Failed to initialize Google Sheets:', error.message);
+        console.error('💡 Check GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY in Railway variables');
         return false;
     }
 }

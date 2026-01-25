@@ -1,37 +1,71 @@
-// google-sheets.js
-// Google Sheets Integration for Order & Booking Logging
+// google-sheets.js - DIAGNOSTIC VERSION
+// Google Sheets Integration with Enhanced Debugging
 
 const { google } = require('googleapis');
-
-// =====================================================
-// GOOGLE SHEETS CONFIGURATION
-// =====================================================
 
 let sheetsClient = null;
 let isConfigured = false;
 
 /**
- * Initialize Google Sheets client
+ * Initialize Google Sheets client with detailed debugging
  */
 function initializeGoogleSheets() {
     try {
-        if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || !process.env.GOOGLE_PRIVATE_KEY) {
-            console.log('⚠️ Google Sheets not configured (missing credentials)');
+        console.log('🔍 DIAGNOSTIC: Starting Google Sheets initialization...');
+        
+        // Check if credentials exist
+        if (!process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL) {
+            console.log('❌ DIAGNOSTIC: GOOGLE_SERVICE_ACCOUNT_EMAIL is missing');
+            return false;
+        }
+        
+        if (!process.env.GOOGLE_PRIVATE_KEY) {
+            console.log('❌ DIAGNOSTIC: GOOGLE_PRIVATE_KEY is missing');
             return false;
         }
 
-        // Handle both \n and \\n escaping from Railway
+        console.log('✅ DIAGNOSTIC: Both credentials present');
+        console.log('📧 Service Email:', process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL);
+        
+        // Get private key and check its format
         let privateKey = process.env.GOOGLE_PRIVATE_KEY;
         
-        // If the key has literal \\n (double backslash), replace with actual newlines
+        console.log('🔑 DIAGNOSTIC: Private key length:', privateKey.length);
+        console.log('🔑 DIAGNOSTIC: First 50 chars:', privateKey.substring(0, 50));
+        console.log('🔑 DIAGNOSTIC: Contains \\\\n (double):', privateKey.includes('\\\\n'));
+        console.log('🔑 DIAGNOSTIC: Contains \\n (single):', privateKey.includes('\\n'));
+        console.log('🔑 DIAGNOSTIC: Contains actual newline:', privateKey.includes('\n'));
+        
+        // Handle both \n and \\n escaping from Railway
         if (privateKey.includes('\\\\n')) {
+            console.log('🔧 DIAGNOSTIC: Converting \\\\n to newlines...');
             privateKey = privateKey.replace(/\\\\n/g, '\n');
-        } 
-        // If the key has \n (single backslash), replace with actual newlines
-        else if (privateKey.includes('\\n')) {
+        } else if (privateKey.includes('\\n') && !privateKey.includes('\n')) {
+            console.log('🔧 DIAGNOSTIC: Converting \\n to newlines...');
             privateKey = privateKey.replace(/\\n/g, '\n');
+        } else {
+            console.log('✅ DIAGNOSTIC: Key already has proper newlines');
         }
+        
+        console.log('🔑 DIAGNOSTIC: After conversion, first 50 chars:', privateKey.substring(0, 50));
+        console.log('🔑 DIAGNOSTIC: After conversion, contains newlines:', privateKey.includes('\n'));
+        
+        // Verify key format
+        if (!privateKey.startsWith('-----BEGIN PRIVATE KEY-----')) {
+            console.log('❌ DIAGNOSTIC: Key does not start with BEGIN marker!');
+            console.log('🔑 DIAGNOSTIC: Key starts with:', privateKey.substring(0, 30));
+            return false;
+        }
+        
+        if (!privateKey.includes('-----END PRIVATE KEY-----')) {
+            console.log('❌ DIAGNOSTIC: Key does not contain END marker!');
+            return false;
+        }
+        
+        console.log('✅ DIAGNOSTIC: Key has proper BEGIN and END markers');
 
+        // Create JWT auth
+        console.log('🔐 DIAGNOSTIC: Creating JWT authentication...');
         const auth = new google.auth.JWT(
             process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
             null,
@@ -39,14 +73,57 @@ function initializeGoogleSheets() {
             ['https://www.googleapis.com/auth/spreadsheets']
         );
 
+        console.log('✅ DIAGNOSTIC: JWT auth object created');
+
+        // Create sheets client
         sheetsClient = google.sheets({ version: 'v4', auth });
         isConfigured = true;
+        
         console.log('✅ Google Sheets initialized successfully');
         console.log('✅ Private key format detected and parsed correctly');
+        
         return true;
     } catch (error) {
-        console.error('❌ Failed to initialize Google Sheets:', error.message);
-        console.error('💡 Check GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY in Railway variables');
+        console.error('❌ DIAGNOSTIC: Failed to initialize Google Sheets');
+        console.error('❌ Error name:', error.name);
+        console.error('❌ Error message:', error.message);
+        console.error('❌ Error stack:', error.stack);
+        return false;
+    }
+}
+
+/**
+ * Test authentication by attempting to create a spreadsheet
+ */
+async function testAuthentication() {
+    if (!isConfigured) {
+        console.log('⚠️ DIAGNOSTIC TEST: Google Sheets not configured');
+        return false;
+    }
+    
+    try {
+        console.log('🧪 DIAGNOSTIC TEST: Attempting to create test spreadsheet...');
+        
+        const response = await sheetsClient.spreadsheets.create({
+            requestBody: {
+                properties: {
+                    title: 'Test - Delete Me'
+                }
+            }
+        });
+        
+        console.log('✅ DIAGNOSTIC TEST: Authentication successful!');
+        console.log('✅ DIAGNOSTIC TEST: Created spreadsheet:', response.data.spreadsheetId);
+        console.log('🗑️ DIAGNOSTIC TEST: You can delete this test sheet manually');
+        
+        return true;
+    } catch (error) {
+        console.error('❌ DIAGNOSTIC TEST: Authentication test failed');
+        console.error('❌ DIAGNOSTIC TEST: Error:', error.message);
+        if (error.response) {
+            console.error('❌ DIAGNOSTIC TEST: Response status:', error.response.status);
+            console.error('❌ DIAGNOSTIC TEST: Response data:', JSON.stringify(error.response.data));
+        }
         return false;
     }
 }
@@ -59,46 +136,25 @@ async function getOrCreateSpreadsheet() {
         const spreadsheetId = process.env.GOOGLE_SHEET_ID;
 
         if (spreadsheetId) {
-            // Verify spreadsheet exists
             try {
                 await sheetsClient.spreadsheets.get({ spreadsheetId });
+                console.log('✅ Using existing spreadsheet:', spreadsheetId);
                 return spreadsheetId;
             } catch (error) {
                 console.log('⚠️ Spreadsheet ID not found, will create new one');
             }
         }
 
-        // Create new spreadsheet
+        console.log('📊 Creating new spreadsheet...');
         const response = await sheetsClient.spreadsheets.create({
             requestBody: {
                 properties: {
                     title: `Restaurant Orders - ${new Date().toISOString().split('T')[0]}`
                 },
                 sheets: [
-                    {
-                        properties: {
-                            title: 'Orders',
-                            gridProperties: {
-                                frozenRowCount: 1
-                            }
-                        }
-                    },
-                    {
-                        properties: {
-                            title: 'Order Items',
-                            gridProperties: {
-                                frozenRowCount: 1
-                            }
-                        }
-                    },
-                    {
-                        properties: {
-                            title: 'Summary',
-                            gridProperties: {
-                                frozenRowCount: 1
-                            }
-                        }
-                    }
+                    { properties: { title: 'Orders', gridProperties: { frozenRowCount: 1 } } },
+                    { properties: { title: 'Order Items', gridProperties: { frozenRowCount: 1 } } },
+                    { properties: { title: 'Summary', gridProperties: { frozenRowCount: 1 } } }
                 ]
             }
         });
@@ -107,9 +163,7 @@ async function getOrCreateSpreadsheet() {
         console.log(`✅ Created new spreadsheet: ${newSpreadsheetId}`);
         console.log(`📊 View at: https://docs.google.com/spreadsheets/d/${newSpreadsheetId}`);
 
-        // Initialize headers
         await initializeSheetHeaders(newSpreadsheetId);
-
         return newSpreadsheetId;
     } catch (error) {
         console.error('❌ Failed to get/create spreadsheet:', error.message);
@@ -122,132 +176,31 @@ async function getOrCreateSpreadsheet() {
  */
 async function initializeSheetHeaders(spreadsheetId) {
     try {
-        // Orders sheet headers
         const ordersHeaders = [
-            'Order ID',
-            'Date & Time',
-            'Restaurant Name',
-            'Restaurant ID',
-            'Customer Phone',
-            'Customer Name',
-            'Order Type',
-            'Delivery Address',
-            'Subtotal',
-            'Delivery Fee',
-            'Total Amount',
-            'Special Instructions',
-            'Status',
-            'Payment Status',
-            'Estimated Delivery'
+            'Order ID', 'Date & Time', 'Restaurant Name', 'Restaurant ID',
+            'Customer Phone', 'Customer Name', 'Order Type', 'Delivery Address',
+            'Subtotal', 'Delivery Fee', 'Total Amount', 'Special Instructions',
+            'Status', 'Payment Status', 'Estimated Delivery'
         ];
 
-        // Order Items sheet headers
         const itemsHeaders = [
-            'Order ID',
-            'Date & Time',
-            'Restaurant Name',
-            'Item Name',
-            'Category',
-            'Quantity',
-            'Unit Price',
-            'Subtotal',
-            'Is Vegetarian'
+            'Order ID', 'Date & Time', 'Restaurant Name', 'Item Name',
+            'Category', 'Quantity', 'Unit Price', 'Subtotal', 'Is Vegetarian'
         ];
 
-        // Summary sheet headers
         const summaryHeaders = [
-            'Restaurant Name',
-            'Total Orders',
-            'Total Revenue',
-            'Total Items Sold',
-            'Avg Order Value',
-            'Last Order Date'
+            'Restaurant Name', 'Total Orders', 'Total Revenue',
+            'Total Items Sold', 'Avg Order Value', 'Last Order Date'
         ];
 
-        // Write headers
         await sheetsClient.spreadsheets.values.batchUpdate({
             spreadsheetId,
             requestBody: {
                 valueInputOption: 'RAW',
                 data: [
-                    {
-                        range: 'Orders!A1:O1',
-                        values: [ordersHeaders]
-                    },
-                    {
-                        range: 'Order Items!A1:I1',
-                        values: [itemsHeaders]
-                    },
-                    {
-                        range: 'Summary!A1:F1',
-                        values: [summaryHeaders]
-                    }
-                ]
-            }
-        });
-
-        // Format headers (bold, background color)
-        await sheetsClient.spreadsheets.batchUpdate({
-            spreadsheetId,
-            requestBody: {
-                requests: [
-                    {
-                        repeatCell: {
-                            range: {
-                                sheetId: 0, // Orders sheet
-                                startRowIndex: 0,
-                                endRowIndex: 1
-                            },
-                            cell: {
-                                userEnteredFormat: {
-                                    backgroundColor: { red: 0.2, green: 0.6, blue: 1 },
-                                    textFormat: {
-                                        bold: true,
-                                        foregroundColor: { red: 1, green: 1, blue: 1 }
-                                    }
-                                }
-                            },
-                            fields: 'userEnteredFormat(backgroundColor,textFormat)'
-                        }
-                    },
-                    {
-                        repeatCell: {
-                            range: {
-                                sheetId: 1, // Order Items sheet
-                                startRowIndex: 0,
-                                endRowIndex: 1
-                            },
-                            cell: {
-                                userEnteredFormat: {
-                                    backgroundColor: { red: 0.2, green: 0.8, blue: 0.6 },
-                                    textFormat: {
-                                        bold: true,
-                                        foregroundColor: { red: 1, green: 1, blue: 1 }
-                                    }
-                                }
-                            },
-                            fields: 'userEnteredFormat(backgroundColor,textFormat)'
-                        }
-                    },
-                    {
-                        repeatCell: {
-                            range: {
-                                sheetId: 2, // Summary sheet
-                                startRowIndex: 0,
-                                endRowIndex: 1
-                            },
-                            cell: {
-                                userEnteredFormat: {
-                                    backgroundColor: { red: 1, green: 0.6, blue: 0.2 },
-                                    textFormat: {
-                                        bold: true,
-                                        foregroundColor: { red: 1, green: 1, blue: 1 }
-                                    }
-                                }
-                            },
-                            fields: 'userEnteredFormat(backgroundColor,textFormat)'
-                        }
-                    }
+                    { range: 'Orders!A1:O1', values: [ordersHeaders] },
+                    { range: 'Order Items!A1:I1', values: [itemsHeaders] },
+                    { range: 'Summary!A1:F1', values: [summaryHeaders] }
                 ]
             }
         });
@@ -272,7 +225,6 @@ async function logOrderToSheets(orderData) {
         const spreadsheetId = await getOrCreateSpreadsheet();
         const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
-        // Prepare order row
         const orderRow = [
             orderData.orderId,
             timestamp,
@@ -291,7 +243,6 @@ async function logOrderToSheets(orderData) {
             orderData.estimatedDeliveryTime || 'N/A'
         ];
 
-        // Prepare order items rows
         const itemRows = orderData.items.map(item => [
             orderData.orderId,
             timestamp,
@@ -304,26 +255,20 @@ async function logOrderToSheets(orderData) {
             item.is_vegetarian ? 'Yes' : 'No'
         ]);
 
-        // Append to sheets
         await sheetsClient.spreadsheets.values.append({
             spreadsheetId,
             range: 'Orders!A:O',
             valueInputOption: 'RAW',
-            requestBody: {
-                values: [orderRow]
-            }
+            requestBody: { values: [orderRow] }
         });
 
         await sheetsClient.spreadsheets.values.append({
             spreadsheetId,
             range: 'Order Items!A:I',
             valueInputOption: 'RAW',
-            requestBody: {
-                values: itemRows
-            }
+            requestBody: { values: itemRows }
         });
 
-        // Update summary
         await updateRestaurantSummary(spreadsheetId, orderData);
 
         console.log(`✅ Order #${orderData.orderId} logged to Google Sheets`);
@@ -344,7 +289,6 @@ async function logOrderToSheets(orderData) {
  */
 async function updateRestaurantSummary(spreadsheetId, orderData) {
     try {
-        // Get existing summary data
         const summaryResponse = await sheetsClient.spreadsheets.values.get({
             spreadsheetId,
             range: 'Summary!A:F'
@@ -353,7 +297,6 @@ async function updateRestaurantSummary(spreadsheetId, orderData) {
         const summaryRows = summaryResponse.data.values || [[]];
         const restaurantName = orderData.restaurantName;
 
-        // Find restaurant row
         let restaurantRowIndex = -1;
         for (let i = 1; i < summaryRows.length; i++) {
             if (summaryRows[i][0] === restaurantName) {
@@ -367,7 +310,6 @@ async function updateRestaurantSummary(spreadsheetId, orderData) {
         let totalItems = orderData.items.reduce((sum, item) => sum + item.quantity, 0);
 
         if (restaurantRowIndex >= 0) {
-            // Update existing row
             totalOrders = parseInt(summaryRows[restaurantRowIndex][1] || 0) + 1;
             totalRevenue = parseFloat(summaryRows[restaurantRowIndex][2] || 0) + orderData.total;
             totalItems = parseInt(summaryRows[restaurantRowIndex][3] || 0) + orderData.items.reduce((sum, item) => sum + item.quantity, 0);
@@ -386,24 +328,18 @@ async function updateRestaurantSummary(spreadsheetId, orderData) {
         ];
 
         if (restaurantRowIndex >= 0) {
-            // Update existing row
             await sheetsClient.spreadsheets.values.update({
                 spreadsheetId,
                 range: `Summary!A${restaurantRowIndex + 1}:F${restaurantRowIndex + 1}`,
                 valueInputOption: 'RAW',
-                requestBody: {
-                    values: [summaryRow]
-                }
+                requestBody: { values: [summaryRow] }
             });
         } else {
-            // Append new row
             await sheetsClient.spreadsheets.values.append({
                 spreadsheetId,
                 range: 'Summary!A:F',
                 valueInputOption: 'RAW',
-                requestBody: {
-                    values: [summaryRow]
-                }
+                requestBody: { values: [summaryRow] }
             });
         }
     } catch (error) {
@@ -424,14 +360,12 @@ async function logBookingToSheets(bookingData) {
         const spreadsheetId = await getOrCreateSpreadsheet();
         const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
 
-        // Check if Bookings sheet exists, create if not
         try {
             await sheetsClient.spreadsheets.values.get({
                 spreadsheetId,
                 range: 'Bookings!A1'
             });
         } catch (error) {
-            // Create Bookings sheet
             await sheetsClient.spreadsheets.batchUpdate({
                 spreadsheetId,
                 requestBody: {
@@ -439,41 +373,27 @@ async function logBookingToSheets(bookingData) {
                         addSheet: {
                             properties: {
                                 title: 'Bookings',
-                                gridProperties: {
-                                    frozenRowCount: 1
-                                }
+                                gridProperties: { frozenRowCount: 1 }
                             }
                         }
                     }]
                 }
             });
 
-            // Add headers
             const headers = [
-                'Booking ID',
-                'Date & Time',
-                'Restaurant Name',
-                'Restaurant ID',
-                'Customer Name',
-                'Customer Phone',
-                'Booking Date',
-                'Booking Time',
-                'Number of Guests',
-                'Special Requests',
-                'Status'
+                'Booking ID', 'Date & Time', 'Restaurant Name', 'Restaurant ID',
+                'Customer Name', 'Customer Phone', 'Booking Date', 'Booking Time',
+                'Number of Guests', 'Special Requests', 'Status'
             ];
 
             await sheetsClient.spreadsheets.values.update({
                 spreadsheetId,
                 range: 'Bookings!A1:K1',
                 valueInputOption: 'RAW',
-                requestBody: {
-                    values: [headers]
-                }
+                requestBody: { values: [headers] }
             });
         }
 
-        // Prepare booking row
         const bookingRow = [
             bookingData.bookingId,
             timestamp,
@@ -488,14 +408,11 @@ async function logBookingToSheets(bookingData) {
             bookingData.status || 'pending'
         ];
 
-        // Append to sheet
         await sheetsClient.spreadsheets.values.append({
             spreadsheetId,
             range: 'Bookings!A:K',
             valueInputOption: 'RAW',
-            requestBody: {
-                values: [bookingRow]
-            }
+            requestBody: { values: [bookingRow] }
         });
 
         console.log(`✅ Booking #${bookingData.bookingId} logged to Google Sheets`);
@@ -511,9 +428,6 @@ async function logBookingToSheets(bookingData) {
     }
 }
 
-/**
- * Get spreadsheet URL
- */
 function getSpreadsheetUrl() {
     const spreadsheetId = process.env.GOOGLE_SHEET_ID;
     if (spreadsheetId) {
@@ -525,10 +439,18 @@ function getSpreadsheetUrl() {
 // Initialize on module load
 initializeGoogleSheets();
 
+// Run diagnostic test after 5 seconds (give server time to start)
+setTimeout(async () => {
+    console.log('\n🧪 Running authentication diagnostic test...');
+    await testAuthentication();
+    console.log('🧪 Diagnostic test complete\n');
+}, 5000);
+
 module.exports = {
     initializeGoogleSheets,
     logOrderToSheets,
     logBookingToSheets,
     getSpreadsheetUrl,
+    testAuthentication,
     isConfigured: () => isConfigured
 };

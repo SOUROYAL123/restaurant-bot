@@ -3,11 +3,10 @@ const express = require('express');
 const { Pool } = require('pg');
 const twilio = require('twilio');
 const {
-    initializeGoogleSheets,
     logOrderToSheets,
     logBookingToSheets,
-    getSpreadsheetUrl
-} = require('./google-sheets');
+    testConnection
+} = require('./apps-script-logger');
 
 const app = express();
 app.use(express.json());
@@ -1206,10 +1205,13 @@ app.listen(PORT, async () => {
     console.log(`📱 Webhook URL: https://your-domain.railway.app/webhook\n`);
     
     try {
-        // Initialize Google Sheets
-        const sheetsInitialized = initializeGoogleSheets();
-        if (sheetsInitialized) {
-            console.log(`✅ Google Sheets integration active`);
+        // Test Google Apps Script connection
+        console.log('🧪 Testing Google Apps Script connection...');
+        const connected = await testConnection();
+        if (connected) {
+            console.log(`✅ Google Apps Script integration active\n`);
+        } else {
+            console.log(`⚠️ Google Apps Script not configured (orders won't be logged to sheets)\n`);
         }
         
         // Load restaurants on startup

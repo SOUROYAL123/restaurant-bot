@@ -5,8 +5,10 @@ const twilio = require('twilio');
 const {
     logOrderToSheets,
     logBookingToSheets,
-    testConnection
-} = require('./apps-script-logger');
+    testConnection,
+    getSpreadsheetUrl,
+    isConfigured
+} = require('./google-sheets');
 
 const app = express();
 app.use(express.json());
@@ -25,13 +27,13 @@ const pool = new Pool({
 
 // Database health check
 pool.on('error', (err) => {
-    console.error('Unexpected database error:', err);
+    console.error('💥 Unexpected database error:', err);
 });
 
-// Test connection
+// Test connection on startup
 pool.query('SELECT NOW()', (err) => {
     if (err) {
-        console.error('❌ Database connection failed:', err);
+        console.error('❌ Database connection failed:', err.message);
     } else {
         console.log('✅ Database connected successfully');
     }
@@ -154,7 +156,7 @@ async function sendWhatsAppMessage(to, body, retries = 3) {
         try {
             const message = await twilioClient.messages.create({
                 body: body,
-                messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID,
+                from: process.env.WABA_NUMBER,
                 to: `whatsapp:${to}`
             });
             console.log(`✅ Message sent to ${to}: ${message.sid}`);
@@ -247,7 +249,7 @@ async function notifyRestaurantOwner(restaurantId, notificationType, data) {
         console.log(`✅ Notification sent to ${restaurant.name} owner at ${ownerPhone}`);
 
     } catch (error) {
-        console.error(`❌ Failed to notify owner for restaurant ${restaurantId}:`, error);
+        console.error(`❌ Failed to notify owner for restaurant ${restaurantId}:`, error.message);
     }
 }
 
@@ -400,7 +402,7 @@ async function getUserSession(phoneNumber) {
 
         return result.rows[0];
     } catch (error) {
-        console.error('Error getting user session:', error);
+        console.error('❌ Error getting user session:', error);
         throw error;
     }
 }
@@ -419,7 +421,7 @@ async function updateUserSession(phoneNumber, state, data = null) {
         const result = await pool.query(query, params);
         return result.rows[0];
     } catch (error) {
-        console.error('Error updating user session:', error);
+        console.error('❌ Error updating user session:', error);
         throw error;
     }
 }
@@ -430,7 +432,7 @@ function getSessionData(session) {
             ? JSON.parse(session.session_data) 
             : session.session_data;
     } catch (error) {
-        console.error('Error parsing session data:', error);
+        console.error('❌ Error parsing session data:', error);
         return {};
     }
 }
@@ -453,7 +455,7 @@ async function detectRestaurantFromKeyword(message) {
 
         return null;
     } catch (error) {
-        console.error('Error detecting keyword:', error);
+        console.error('❌ Error detecting keyword:', error);
         return null;
     }
 }
@@ -507,7 +509,7 @@ async function getRestaurantsList() {
         message += 'Reply with the restaurant number to continue.';
         return { message, restaurants };
     } catch (error) {
-        console.error('Error getting restaurants list:', error);
+        console.error('❌ Error getting restaurants list:', error);
         return { 
             message: '❌ Sorry, unable to load restaurants. Please try again.', 
             restaurants: [] 
@@ -562,7 +564,7 @@ async function getRestaurantMenu(restaurantId) {
 
         return { message, menuItems: menuItems.rows, restaurant };
     } catch (error) {
-        console.error('Error getting restaurant menu:', error);
+        console.error('❌ Error getting restaurant menu:', error);
         return { 
             message: '❌ Sorry, unable to load menu. Please try again.', 
             menuItems: [] 
@@ -598,13 +600,15 @@ async function addOrderItem(sessionData, itemId, quantity) {
                 id: itemId,
                 name: item.name,
                 price: parseFloat(item.price),
-                quantity: quantity
+                quantity: quantity,
+                category: item.category || 'Other',
+                is_vegetarian: item.is_vegetarian || false
             });
         }
 
         return { success: true, sessionData };
     } catch (error) {
-        console.error('Error adding order item:', error);
+        console.error('❌ Error adding order item:', error);
         return { success: false, message: '❌ Error adding item to cart. Please try again.' };
     }
 }
@@ -681,40 +685,42 @@ async function createOrder(phoneNumber, sessionData) {
 
         await client.query('COMMIT');
 
-        // Send notification to owner
-        await notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_order', {
+        // Send notification to owner (async - don't wait)
+        notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_order', {
             orderId: orderId,
             customerPhone: phoneNumber,
             deliveryAddress: sessionData.deliveryAddress,
             items: sessionData.cart,
             total: total,
             specialInstructions: sessionData.specialInstructions
-        });
+        }).catch(err => console.error('⚠️ Owner notification failed:', err.message));
 
-        // Log to Google Sheets
-        await logOrderToSheets({
-            orderId: orderId,
-            restaurantName: restaurant.rows[0].name,
-            restaurantId: sessionData.selectedRestaurant,
-            customerPhone: phoneNumber,
-            customerName: sessionData.customerName || 'Customer',
-            orderType: 'delivery',
-            deliveryAddress: sessionData.deliveryAddress,
-            items: sessionData.cart,
-            subtotal: subtotal,
-            deliveryFee: deliveryFee,
-            total: total,
-            specialInstructions: sessionData.specialInstructions || '',
-            status: 'pending',
-            paymentStatus: 'COD',
-            estimatedDeliveryTime: '45 minutes'
-        });
+        // Log to Google Sheets (async - don't wait)
+        if (isConfigured()) {
+            logOrderToSheets({
+                orderId: orderId,
+                restaurantName: restaurant.rows[0].name,
+                restaurantId: sessionData.selectedRestaurant,
+                customerPhone: phoneNumber,
+                customerName: sessionData.customerName || 'Customer',
+                orderType: 'delivery',
+                deliveryAddress: sessionData.deliveryAddress,
+                items: sessionData.cart,
+                subtotal: subtotal,
+                deliveryFee: deliveryFee,
+                total: total,
+                specialInstructions: sessionData.specialInstructions || '',
+                status: 'pending',
+                paymentStatus: 'COD',
+                estimatedDeliveryTime: '45 minutes'
+            }).catch(err => console.error('⚠️ Sheets logging failed:', err.message));
+        }
 
         return { success: true, orderId, order: orderResult.rows[0] };
 
     } catch (error) {
         await client.query('ROLLBACK');
-        console.error('Error creating order:', error);
+        console.error('❌ Error creating order:', error);
         return { success: false, error };
     } finally {
         client.release();
@@ -745,8 +751,8 @@ async function createBooking(phoneNumber, sessionData) {
             [sessionData.selectedRestaurant]
         );
 
-        // Send notification to owner
-        await notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_booking', {
+        // Send notification to owner (async - don't wait)
+        notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_booking', {
             bookingId: result.rows[0].id,
             customerName: sessionData.customerName,
             customerPhone: phoneNumber,
@@ -754,25 +760,27 @@ async function createBooking(phoneNumber, sessionData) {
             bookingTime: sessionData.bookingTime,
             numberOfGuests: sessionData.numberOfGuests,
             specialRequests: sessionData.specialRequests
-        });
+        }).catch(err => console.error('⚠️ Owner notification failed:', err.message));
 
-        // Log to Google Sheets
-        await logBookingToSheets({
-            bookingId: result.rows[0].id,
-            restaurantName: restaurant.rows[0].name,
-            restaurantId: sessionData.selectedRestaurant,
-            customerPhone: phoneNumber,
-            customerName: sessionData.customerName,
-            bookingDate: sessionData.bookingDate,
-            bookingTime: sessionData.bookingTime,
-            numberOfGuests: sessionData.numberOfGuests,
-            specialRequests: sessionData.specialRequests || '',
-            status: 'pending'
-        });
+        // Log to Google Sheets (async - don't wait)
+        if (isConfigured()) {
+            logBookingToSheets({
+                bookingId: result.rows[0].id,
+                restaurantName: restaurant.rows[0].name,
+                restaurantId: sessionData.selectedRestaurant,
+                customerPhone: phoneNumber,
+                customerName: sessionData.customerName,
+                bookingDate: sessionData.bookingDate,
+                bookingTime: sessionData.bookingTime,
+                numberOfGuests: sessionData.numberOfGuests,
+                specialRequests: sessionData.specialRequests || '',
+                status: 'pending'
+            }).catch(err => console.error('⚠️ Sheets logging failed:', err.message));
+        }
 
         return { success: true, bookingId: result.rows[0].id, booking: result.rows[0] };
     } catch (error) {
-        console.error('Error creating booking:', error);
+        console.error('❌ Error creating booking:', error);
         return { success: false, error };
     }
 }
@@ -867,8 +875,8 @@ async function handleIncomingMessage(from, body) {
             } else if (message === '3') {
                 const restaurants = await getRestaurantsList();
                 responseMessage = restaurants.message + '\n\n_Type "menu" anytime to return to main menu._';
-                updatedData.action = 'delivery'; // Default to delivery when just viewing
-                newState = STATES.SELECT_RESTAURANT; // FIX: Move to SELECT_RESTAURANT state
+                updatedData.action = 'delivery';
+                newState = STATES.SELECT_RESTAURANT;
             } else {
                 responseMessage = getMainMenuMessage();
             }
@@ -1144,6 +1152,7 @@ app.get('/health', async (req, res) => {
             database: 'Connected',
             restaurants: restaurantData.data.length,
             keywords: Object.keys(restaurantData.keywords).length,
+            googleSheets: isConfigured() ? 'Configured' : 'Not Configured',
             cache: {
                 lastUpdated: restaurantData.lastUpdated ? new Date(restaurantData.lastUpdated).toISOString() : null,
                 ttl: restaurantData.ttl / 1000 + 's'
@@ -1192,6 +1201,17 @@ app.post('/reload-cache', async (req, res) => {
     }
 });
 
+app.get('/sheets-status', (req, res) => {
+    const configured = isConfigured();
+    res.json({
+        configured: configured,
+        spreadsheetUrl: configured ? getSpreadsheetUrl() : null,
+        message: configured 
+            ? 'Google Sheets integration is active' 
+            : 'Google Sheets not configured - set GOOGLE_SHEET_ID in .env'
+    });
+});
+
 // =====================================================
 // START SERVER
 // =====================================================
@@ -1199,19 +1219,28 @@ const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, async () => {
     console.log(`\n${'='.repeat(60)}`);
-    console.log(`🚀 SMART RESTAURANT BOT - FULLY DYNAMIC`);
+    console.log(`🚀 SMART RESTAURANT BOT - PRODUCTION READY`);
     console.log(`${'='.repeat(60)}\n`);
     console.log(`✅ Server running on port ${PORT}`);
     console.log(`📱 Webhook URL: https://your-domain.railway.app/webhook\n`);
     
     try {
-        // Test Google Apps Script connection
-        console.log('🧪 Testing Google Apps Script connection...');
-        const connected = await testConnection();
-        if (connected) {
-            console.log(`✅ Google Apps Script integration active\n`);
+        // Test Google Sheets connection
+        if (isConfigured()) {
+            console.log('🧪 Testing Google Sheets connection...');
+            const connected = await testConnection();
+            if (connected) {
+                const sheetUrl = getSpreadsheetUrl();
+                console.log(`✅ Google Sheets integration active`);
+                if (sheetUrl) {
+                    console.log(`📊 View sheet: ${sheetUrl}\n`);
+                }
+            } else {
+                console.log(`⚠️ Google Sheets authentication test failed\n`);
+            }
         } else {
-            console.log(`⚠️ Google Apps Script not configured (orders won't be logged to sheets)\n`);
+            console.log(`ℹ️ Google Sheets not configured (orders won't be logged to sheets)`);
+            console.log(`   To enable: Set GOOGLE_SHEET_ID in .env file\n`);
         }
         
         // Load restaurants on startup
@@ -1230,7 +1259,7 @@ app.listen(PORT, async () => {
         });
         
     } catch (error) {
-        console.error('⚠️ Warning: Could not load restaurants on startup');
+        console.error('⚠️ Warning: Could not complete startup checks');
         console.error('   Error:', error.message);
     }
     

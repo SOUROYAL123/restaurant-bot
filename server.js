@@ -15,29 +15,26 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // =====================================================
-// DATABASE CONNECTION WITH RETRY LOGIC
+// DATABASE CONNECTION WITH BETTER ERROR HANDLING
 // =====================================================
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
     max: 20,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
+    connectionTimeoutMillis: 10000, // 10 seconds timeout
 });
 
-// Database health check
+// Handle database errors without crashing
 pool.on('error', (err) => {
-    console.error('💥 Unexpected database error:', err);
+    console.error('💥 Unexpected database error:', err.message);
+    // Don't crash - just log the error
 });
 
-// Test connection on startup
-pool.query('SELECT NOW()', (err) => {
-    if (err) {
-        console.error('❌ Database connection failed:', err.message);
-    } else {
-        console.log('✅ Database connected successfully');
-    }
-});
+// Test connection on startup (non-blocking)
+pool.query('SELECT NOW()')
+    .then(() => console.log('✅ Initial database connection successful'))
+    .catch(err => console.error('❌ Initial database connection failed:', err.message));
 
 // =====================================================
 // INITIALIZE SAFETY TABLES ON STARTUP
@@ -1595,143 +1592,169 @@ app.get('/customer-reliability/:phone', async (req, res) => {
 });
 
 // =====================================================
-// START SERVER
+// START SERVER - BULLETPROOF VERSION
 // =====================================================
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, async () => {
+// Critical: Start HTTP server FIRST before any database operations
+const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${'='.repeat(60)}`);
-    console.log(`🚀 SMART RESTAURANT BOT - PRODUCTION READY`);
+    console.log(`🚀 SERVER STARTED - Port ${PORT}`);
     console.log(`${'='.repeat(60)}\n`);
-    console.log(`✅ Server running on port ${PORT}`);
-    console.log(`📱 Webhook URL: https://your-domain.railway.app/webhook\n`);
+    console.log(`✅ HTTP Server: RUNNING`);
+    console.log(`📱 Webhook: https://restaurant.legacylens.co.in/webhook`);
+    console.log(`🏥 Health: https://restaurant.legacylens.co.in/health\n`);
+});
+
+// Keep server alive even if initialization fails
+server.on('error', (error) => {
+    console.error('❌ Server error:', error);
+    if (error.code === 'EADDRINUSE') {
+        console.error(`❌ Port ${PORT} is already in use`);
+        process.exit(1);
+    }
+});
+
+// Initialize features AFTER server is listening (async, non-blocking)
+setImmediate(async () => {
+    console.log('🔧 Starting feature initialization...\n');
     
     try {
-        // Initialize safety tables
-        await initializeSafetyTables();
-        
-        // Test Google Sheets connection
+        // Step 1: Test database
+        console.log('1️⃣ Testing database connection...');
+        try {
+            await pool.query('SELECT NOW()');
+            console.log('   ✅ Database: CONNECTED\n');
+        } catch (dbError) {
+            console.error('   ❌ Database: FAILED');
+            console.error('   Error:', dbError.message);
+            console.error('   ⚠️ Bot will work with limited functionality\n');
+        }
+
+        // Step 2: Initialize safety tables
+        console.log('2️⃣ Initializing safety tables...');
+        try {
+            await initializeSafetyTables();
+            console.log('   ✅ Safety tables: READY\n');
+        } catch (error) {
+            console.error('   ❌ Safety tables: FAILED');
+            console.error('   Error:', error.message, '\n');
+        }
+
+        // Step 3: Load restaurants
+        console.log('3️⃣ Loading restaurants...');
+        try {
+            const restaurantData = await loadRestaurantsFromDatabase();
+            console.log(`   ✅ Loaded ${restaurantData.data.length} restaurants`);
+            console.log(`   ✅ Active keywords: ${Object.keys(restaurantData.keywords).join(', ')}\n`);
+            
+            // Display configuration
+            if (restaurantData.data.length > 0) {
+                console.log('📋 Restaurant Details:\n');
+                restaurantData.data.forEach(r => {
+                    console.log(`   ${r.name}`);
+                    console.log(`   ├─ Keyword: ${r.qr_keyword || 'Not set'}`);
+                    console.log(`   ├─ WhatsApp: ${r.whatsapp_number || 'Not set'}`);
+                    console.log(`   ├─ Delivery: ${r.delivery_available ? '✅' : '❌'}`);
+                    console.log(`   └─ Booking: ${r.table_booking_available ? '✅' : '❌'}\n`);
+                });
+            }
+        } catch (error) {
+            console.error('   ❌ Restaurant loading: FAILED');
+            console.error('   Error:', error.message, '\n');
+        }
+
+        // Step 4: Test Google Sheets (optional)
+        console.log('4️⃣ Testing Google Sheets...');
         if (isConfigured()) {
-            console.log('🧪 Testing Google Sheets connection...');
-            const connected = await testConnection();
-            if (connected) {
-                const sheetUrl = getSpreadsheetUrl();
-                console.log(`✅ Google Sheets integration active`);
-                if (sheetUrl) {
-                    console.log(`📊 View sheet: ${sheetUrl}\n`);
+            try {
+                const connected = await testConnection();
+                if (connected) {
+                    console.log('   ✅ Google Sheets: CONNECTED');
+                    console.log(`   📊 Sheet: ${getSpreadsheetUrl()}\n`);
+                } else {
+                    console.log('   ⚠️ Google Sheets: Test failed (optional)\n');
                 }
-            } else {
-                console.log(`⚠️ Google Sheets authentication test failed\n`);
+            } catch (error) {
+                console.log('   ⚠️ Google Sheets: SKIPPED (optional)\n');
             }
         } else {
-            console.log(`ℹ️ Google Sheets not configured (orders won't be logged to sheets)`);
-            console.log(`   To enable: Set GOOGLE_SHEET_ID in .env file\n`);
+            console.log('   ℹ️ Google Sheets: Not configured (optional)\n');
         }
-        
-        // Load restaurants on startup
-        const restaurantData = await loadRestaurantsFromDatabase();
-        console.log(`✅ Loaded ${restaurantData.data.length} restaurants from database`);
-        console.log(`✅ Active keywords: ${Object.keys(restaurantData.keywords).join(', ')}\n`);
-        
-        // Display restaurant details
-        console.log('📋 Restaurant Configuration:\n');
-        restaurantData.data.forEach(r => {
-            console.log(`   ${r.name}`);
-            console.log(`   ├─ Keyword: ${r.qr_keyword || 'Not set'}`);
-            console.log(`   ├─ WhatsApp: ${r.whatsapp_number || 'Not set'}`);
-            console.log(`   ├─ Delivery: ${r.delivery_available ? '✅' : '❌'}`);
-            console.log(`   └─ Booking: ${r.table_booking_available ? '✅' : '❌'}\n`);
-        });
 
-        console.log('🔒 Safety Features Enabled:');
+        // Step 5: Verify Twilio
+        console.log('5️⃣ Verifying Twilio credentials...');
+        if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.WABA_NUMBER) {
+            console.log('   ✅ Twilio: CONFIGURED\n');
+        } else {
+            console.error('   ❌ Twilio: Missing credentials');
+            console.error('   ⚠️ WhatsApp messaging will not work\n');
+        }
+
+        // Final status
+        console.log('🔒 Safety Features:');
         console.log('   ✅ Customer reliability tracking');
-        console.log('   ✅ COD double confirmation (10-min timeout)');
+        console.log('   ✅ COD confirmation (10-min timeout)');
         console.log('   ✅ Fraud detection & auto-blocking');
-        console.log('   ✅ Trust score calculation');
-        console.log('   ✅ Enhanced owner notifications');
-        console.log('   ✅ QR code-only restaurant access\n');
+        console.log('   ✅ Trust score system');
+        console.log('   ✅ QR code-only access\n');
         
+        console.log(`${'='.repeat(60)}`);
+        console.log('✅ INITIALIZATION COMPLETE');
+        console.log('🎉 Bot is ready to receive messages!');
+        console.log(`${'='.repeat(60)}\n`);
+
     } catch (error) {
-        console.error('⚠️ Warning: Could not complete startup checks');
-        console.error('   Error:', error.message);
+        console.error('\n⚠️ INITIALIZATION ERROR:', error.message);
+        console.log('⚠️ Server is running but some features may be limited');
+        console.log('⚠️ Check environment variables and database connection\n');
     }
-    
-    console.log(`${'='.repeat(60)}`);
-    console.log('Bot is ready to receive messages! 🎉');
-    console.log(`${'='.repeat(60)}\n`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
-    console.log('\n⚠️ SIGTERM received, closing server gracefully...');
-    await pool.end();
-    process.exit(0);
+    console.log('\n⚠️ SIGTERM received, shutting down gracefully...');
+    server.close(async () => {
+        console.log('✅ HTTP server closed');
+        try {
+            await pool.end();
+            console.log('✅ Database connections closed');
+        } catch (error) {
+            console.error('❌ Error closing database:', error.message);
+        }
+        process.exit(0);
+    });
+    
+    // Force close after 10 seconds
+    setTimeout(() => {
+        console.error('❌ Forced shutdown after timeout');
+        process.exit(1);
+    }, 10000);
 });
 
 process.on('SIGINT', async () => {
-    console.log('\n⚠️ SIGINT received, closing server gracefully...');
-    await pool.end();
-    process.exit(0);
+    console.log('\n⚠️ SIGINT received, shutting down gracefully...');
+    server.close(async () => {
+        console.log('✅ HTTP server closed');
+        try {
+            await pool.end();
+            console.log('✅ Database connections closed');
+        } catch (error) {
+            console.error('❌ Error closing database:', error.message);
+        }
+        process.exit(0);
+    });
 });
-```
 
----
+// Handle uncaught errors
+process.on('uncaughtException', (error) => {
+    console.error('\n❌ UNCAUGHT EXCEPTION:', error);
+    console.error('Stack:', error.stack);
+    // Don't exit - let the server continue running
+});
 
-## 🎯 Complete List of Changes
-
-### ✅ 1. Confirmation Timeout: 3 → 10 Minutes
-- Line ~965: `sessionData.confirmationExpiry = Date.now() + (10 * 60 * 1000);`
-- Line ~940: `⏱️ You have 10 minutes to respond.`
-- Line ~976: `}, 10 * 60 * 1000);`
-
-### ✅ 2. All "Type menu" → "Scan QR code"
-- Line ~1048: Expired confirmation
-- Line ~1082: Cancelled order
-- Line ~1089: Order confirmed success
-- Line ~1095: Order error
-- Line ~1131: Expired confirmation timeout
-- Line ~1385: Booking confirmed
-- Line ~1389: Booking error
-- Line ~1398: General error handler
-
-### ✅ 3. Updated Main Menu
-- Line ~753: Removed restaurant browsing, just prompts to scan QR
-
-### ✅ 4. QR Detection Shows 1/2 Options
-- Line ~1156-1182: Shows delivery/booking choice after QR scan
-
-### ✅ 5. SELECT_RESTAURANT Handles 1/2
-- Line ~1194-1253: Processes choice 1 (delivery) or 2 (booking)
-
-### ✅ 6. MAIN_MENU Simplified
-- Line ~1188: Just shows help message, no restaurant lists
-
----
-
-## 🧪 Test Your Updated System
-
-### Test 1: QR Scan Flow
-```
-Customer: ZAMZAM
-Bot: 🎉 Welcome to Zam Zam Restaurant!
-     What would you like to do?
-     1️⃣ Order Delivery
-     2️⃣ Book a Table
-     Reply with 1 or 2
-
-Customer: 1
-Bot: [Shows menu]
-```
-
-### Test 2: 10-Minute Timeout
-```
-1. Start order
-2. Get confirmation request
-3. Wait 3 minutes → Should NOT cancel
-4. Wait 10 minutes → Should cancel with "Scan QR code" message
-5. Time display: "9m 45s" format
-```
-
-### Test 3: Error Messages
-```
-Any error → "Scan QR code to place order" (NOT "Type menu")
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('\n❌ UNHANDLED REJECTION at:', promise);
+    console.error('Reason:', reason);
+    // Don't exit - let the server continue running
+});

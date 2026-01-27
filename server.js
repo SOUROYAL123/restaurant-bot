@@ -40,6 +40,45 @@ pool.query('SELECT NOW()', (err) => {
 });
 
 // =====================================================
+// INITIALIZE SAFETY TABLES ON STARTUP
+// =====================================================
+async function initializeSafetyTables() {
+    try {
+        // Customer reliability tracking
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS customer_reliability (
+                phone_number VARCHAR(20) PRIMARY KEY,
+                total_orders INT DEFAULT 0,
+                completed_orders INT DEFAULT 0,
+                cancelled_orders INT DEFAULT 0,
+                no_show_orders INT DEFAULT 0,
+                trust_score DECIMAL(3,2) DEFAULT 1.00,
+                is_blocked BOOLEAN DEFAULT FALSE,
+                last_order_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        // Fraud alerts
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fraud_alerts (
+                id SERIAL PRIMARY KEY,
+                phone_number VARCHAR(20),
+                alert_type VARCHAR(50),
+                order_id INT,
+                details TEXT,
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+
+        console.log('✅ Safety tables initialized');
+    } catch (error) {
+        console.error('❌ Error initializing safety tables:', error.message);
+    }
+}
+
+// =====================================================
 // TWILIO CLIENT
 // =====================================================
 const twilioClient = twilio(
@@ -57,6 +96,12 @@ let restaurantCache = {
     ttl: 5 * 60 * 1000 // 5 minutes cache
 };
 
+// OTP Store for verification
+const otpStore = new Map();
+
+// Confirmation timeouts
+const confirmationTimeouts = new Map();
+
 // =====================================================
 // SESSION STATES
 // =====================================================
@@ -68,6 +113,7 @@ const STATES = {
     ADD_ITEMS: 'add_items',
     DELIVERY_ADDRESS: 'delivery_address',
     CONFIRM_ORDER: 'confirm_order',
+    COD_CONFIRMATION: 'cod_confirmation', // NEW: COD double-check
     BOOK_TABLE: 'book_table',
     BOOKING_DATE: 'booking_date',
     BOOKING_TIME: 'booking_time',
@@ -75,6 +121,150 @@ const STATES = {
     BOOKING_NAME: 'booking_name',
     CONFIRM_BOOKING: 'confirm_booking'
 };
+
+// =====================================================
+// CUSTOMER RELIABILITY FUNCTIONS
+// =====================================================
+
+// Check customer reliability and trust score
+async function checkCustomerReliability(phoneNumber) {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM customer_reliability WHERE phone_number = $1',
+            [phoneNumber]
+        );
+
+        if (result.rows.length === 0) {
+            // New customer - create record
+            await pool.query(
+                'INSERT INTO customer_reliability (phone_number, trust_score) VALUES ($1, 1.0)',
+                [phoneNumber]
+            );
+            return {
+                isNew: true,
+                isBlocked: false,
+                trustScore: 1.0,
+                totalOrders: 0,
+                completedOrders: 0,
+                completionRate: 0,
+                redFlags: []
+            };
+        }
+
+        const data = result.rows[0];
+        
+        // Calculate rates
+        const completionRate = data.total_orders > 0 ? data.completed_orders / data.total_orders : 0;
+        const cancelRate = data.total_orders > 0 ? data.cancelled_orders / data.total_orders : 0;
+        const noShowRate = data.total_orders > 0 ? data.no_show_orders / data.total_orders : 0;
+
+        // Identify red flags
+        const redFlags = [];
+        if (cancelRate > 0.5) redFlags.push('High cancellation rate');
+        if (noShowRate > 0.3) redFlags.push('Multiple no-shows');
+        if (data.total_orders > 10 && completionRate < 0.3) redFlags.push('Low completion rate');
+
+        // Auto-block criteria
+        const shouldBlock = (
+            data.is_blocked ||
+            (cancelRate > 0.7 && data.total_orders > 3) ||
+            (noShowRate > 0.5 && data.total_orders > 2) ||
+            data.no_show_orders >= 3
+        );
+
+        if (shouldBlock && !data.is_blocked) {
+            await pool.query(
+                'UPDATE customer_reliability SET is_blocked = TRUE, updated_at = NOW() WHERE phone_number = $1',
+                [phoneNumber]
+            );
+
+            await pool.query(
+                'INSERT INTO fraud_alerts (phone_number, alert_type, details) VALUES ($1, $2, $3)',
+                [phoneNumber, 'AUTO_BLOCKED', `Cancel rate: ${(cancelRate * 100).toFixed(0)}%, No-shows: ${data.no_show_orders}`]
+            );
+        }
+
+        return {
+            isNew: false,
+            isBlocked: shouldBlock,
+            trustScore: data.trust_score,
+            totalOrders: data.total_orders,
+            completedOrders: data.completed_orders,
+            completionRate: completionRate,
+            cancelRate: cancelRate,
+            noShowRate: noShowRate,
+            redFlags: redFlags
+        };
+
+    } catch (error) {
+        console.error('❌ Error checking customer reliability:', error);
+        return { isNew: true, isBlocked: false, trustScore: 1.0, totalOrders: 0 };
+    }
+}
+
+// Update customer reliability after order outcome
+async function updateCustomerReliability(phoneNumber, outcome) {
+    // outcome: 'COMPLETED', 'CANCELLED', 'NO_SHOW'
+    try {
+        const existing = await pool.query(
+            'SELECT * FROM customer_reliability WHERE phone_number = $1',
+            [phoneNumber]
+        );
+
+        if (existing.rows.length === 0) {
+            // Create new record
+            await pool.query(`
+                INSERT INTO customer_reliability 
+                (phone_number, total_orders, completed_orders, cancelled_orders, no_show_orders, last_order_at)
+                VALUES ($1, 1, $2, $3, $4, NOW())
+            `, [
+                phoneNumber,
+                outcome === 'COMPLETED' ? 1 : 0,
+                outcome === 'CANCELLED' ? 1 : 0,
+                outcome === 'NO_SHOW' ? 1 : 0
+            ]);
+        } else {
+            // Update existing
+            let updateQuery = `
+                UPDATE customer_reliability 
+                SET total_orders = total_orders + 1,
+                    last_order_at = NOW(),
+                    updated_at = NOW()
+            `;
+
+            if (outcome === 'COMPLETED') {
+                updateQuery += ', completed_orders = completed_orders + 1';
+            } else if (outcome === 'CANCELLED') {
+                updateQuery += ', cancelled_orders = cancelled_orders + 1';
+            } else if (outcome === 'NO_SHOW') {
+                updateQuery += ', no_show_orders = no_show_orders + 1';
+            }
+
+            updateQuery += ' WHERE phone_number = $1';
+            await pool.query(updateQuery, [phoneNumber]);
+
+            // Recalculate trust score
+            const stats = await pool.query(
+                'SELECT * FROM customer_reliability WHERE phone_number = $1',
+                [phoneNumber]
+            );
+
+            const data = stats.rows[0];
+            const completionRate = data.completed_orders / data.total_orders;
+            const trustScore = Math.max(0.1, completionRate); // Minimum 0.1
+
+            await pool.query(
+                'UPDATE customer_reliability SET trust_score = $1 WHERE phone_number = $2',
+                [trustScore, phoneNumber]
+            );
+        }
+
+        console.log(`✅ Updated reliability for ${phoneNumber}: ${outcome}`);
+
+    } catch (error) {
+        console.error('❌ Error updating customer reliability:', error);
+    }
+}
 
 // =====================================================
 // SMART RESTAURANT LOADER - LOADS FROM DATABASE
@@ -173,7 +363,7 @@ async function sendWhatsAppMessage(to, body, retries = 3) {
 }
 
 // =====================================================
-// SMART OWNER NOTIFICATION - USES DB WHATSAPP NUMBER
+// ENHANCED OWNER NOTIFICATION WITH TRUST SCORES
 // =====================================================
 async function notifyRestaurantOwner(restaurantId, notificationType, data) {
     try {
@@ -216,20 +406,55 @@ async function notifyRestaurantOwner(restaurantId, notificationType, data) {
         let message = '';
 
         if (notificationType === 'new_order') {
+            // Get customer reliability
+            const reliability = await checkCustomerReliability(data.customerPhone);
+
+            // Risk indicator
+            let riskEmoji = '🟢';
+            let riskText = 'Trusted Customer';
+
+            if (reliability.isNew) {
+                riskEmoji = '🟡';
+                riskText = 'New Customer - First Order';
+            } else if (reliability.trustScore < 0.5) {
+                riskEmoji = '🔴';
+                riskText = 'High Risk - Previous Issues';
+            } else if (reliability.trustScore < 0.7) {
+                riskEmoji = '🟡';
+                riskText = 'Medium Risk - Monitor Closely';
+            }
+
             message = `🔔 *NEW ORDER #${data.orderId}*\n\n`;
+            message += `${riskEmoji} *${riskText}*\n\n`;
             message += `🏪 Restaurant: ${restaurant.name}\n`;
-            message += `📱 Customer: ${data.customerPhone}\n`;
+            message += `📱 Customer Phone: ${data.customerPhone}\n`;
+            message += `👤 Customer Name: ${data.customerName || 'Not provided'}\n`;
             message += `📍 Address: ${data.deliveryAddress}\n\n`;
+
+            // Customer history (if not new)
+            if (!reliability.isNew) {
+                message += `👤 *Customer History:*\n`;
+                message += `• Total Orders: ${reliability.totalOrders}\n`;
+                message += `• Completed: ${reliability.completedOrders}\n`;
+                message += `• Success Rate: ${(reliability.completionRate * 100).toFixed(0)}%\n`;
+                message += `• Trust Score: ${(reliability.trustScore * 100).toFixed(0)}%\n\n`;
+            }
+
             message += `*Items:*\n`;
             data.items.forEach(item => {
                 message += `• ${item.quantity}× ${item.name} - ₹${(item.price * item.quantity).toFixed(2)}\n`;
             });
-            message += `\n💰 Total: ₹${data.total.toFixed(2)}\n`;
+            message += `\n💰 *Total: ₹${data.total.toFixed(2)}*\n`;
+            message += `💵 *Payment: CASH ON DELIVERY*\n`;
+
             if (data.specialInstructions) {
-                message += `\n📝 Special: ${data.specialInstructions}\n`;
+                message += `\n📝 *Special Instructions:*\n${data.specialInstructions}\n`;
             }
-            message += `\n⏰ Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}\n`;
-            message += `\n✅ Please confirm and prepare!`;
+            message += `\n⏰ Order Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}\n`;
+            message += `\n✅ *Please confirm and prepare the order!*\n`;
+            message += `\nExpected delivery: 30-45 minutes from now\n`;
+            message += `\n---\nPowered by Legacylens Automation\nSupport: +91 8013610018`;
+
         } else if (notificationType === 'new_booking') {
             message = `📅 *NEW TABLE BOOKING #${data.bookingId}*\n\n`;
             message += `🏪 Restaurant: ${restaurant.name}\n`;
@@ -637,6 +862,92 @@ function getCartSummary(sessionData, deliveryFee = 0) {
     return message;
 }
 
+// =====================================================
+// COD CONFIRMATION WITH TIMEOUT
+// =====================================================
+async function requestCODConfirmation(phoneNumber, sessionData) {
+    try {
+        const restaurant = await pool.query(
+            'SELECT * FROM restaurants WHERE id = $1',
+            [sessionData.selectedRestaurant]
+        );
+
+        if (restaurant.rows.length === 0) {
+            return null;
+        }
+
+        const deliveryFee = parseFloat(restaurant.rows[0].delivery_fee || 0);
+        const subtotal = sessionData.cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+        const total = subtotal + deliveryFee;
+
+        // Format items list
+        let itemsList = '';
+        sessionData.cart.forEach(item => {
+            itemsList += `${item.quantity}× ${item.name} - ₹${(item.price * item.quantity).toFixed(0)}\n`;
+        });
+
+        const confirmationMessage = `
+📋 *CONFIRM YOUR ORDER*
+
+🏪 ${restaurant.rows[0].name}
+
+*Your Order:*
+${itemsList}
+💰 *Total: ₹${total.toFixed(0)}*
+📍 Delivery: ${sessionData.deliveryAddress}
+
+💵 *PAYMENT: CASH ON DELIVERY*
+
+⚠️ *IMPORTANT - Please Read:*
+
+By confirming, you agree to:
+✅ Pay ₹${total.toFixed(0)} in CASH when food arrives
+✅ Have EXACT change ready (helps delivery person)
+✅ Be available at the delivery address
+✅ Accept the order within 30-45 minutes
+
+⚠️ Fake orders or no-shows may result in being blocked from the system.
+
+---
+
+Type *CONFIRM* to place your order
+Type *CANCEL* to cancel
+
+⏱️ You have 3 minutes to respond.`;
+
+        await sendWhatsAppMessage(phoneNumber, confirmationMessage);
+
+        // Store confirmation timestamp
+        sessionData.confirmationExpiry = Date.now() + (3 * 60 * 1000); // 3 minutes
+        sessionData.awaitingCODConfirmation = true;
+
+        // Set timeout to auto-cancel
+        const timeoutId = setTimeout(async () => {
+            try {
+                const session = await getUserSession(phoneNumber);
+                const currentData = getSessionData(session);
+
+                if (currentData.awaitingCODConfirmation && session.current_state === STATES.COD_CONFIRMATION) {
+                    await updateCustomerReliability(phoneNumber, 'CANCELLED');
+                    await sendWhatsAppMessage(phoneNumber,
+                        '⏱️ Order confirmation expired. Your order has been cancelled.\n\nFeel free to order again anytime!');
+                    await updateUserSession(phoneNumber, STATES.MAIN_MENU, {});
+                }
+            } catch (error) {
+                console.error('❌ Timeout cleanup error:', error);
+            }
+        }, 3 * 60 * 1000);
+
+        confirmationTimeouts.set(phoneNumber, timeoutId);
+
+        return { total, deliveryFee, subtotal };
+
+    } catch (error) {
+        console.error('❌ Error requesting COD confirmation:', error);
+        return null;
+    }
+}
+
 async function createOrder(phoneNumber, sessionData) {
     const client = await pool.connect();
 
@@ -658,8 +969,9 @@ async function createOrder(phoneNumber, sessionData) {
 
         const orderResult = await client.query(
             `INSERT INTO orders (customer_phone, customer_name, restaurant_id, order_type, 
-             delivery_address, total_amount, delivery_fee, special_instructions, estimated_delivery_time)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP + INTERVAL '45 minutes')
+             delivery_address, total_amount, delivery_fee, special_instructions, 
+             payment_method, payment_status, status, estimated_delivery_time)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP + INTERVAL '45 minutes')
              RETURNING *`,
             [
                 phoneNumber,
@@ -669,7 +981,10 @@ async function createOrder(phoneNumber, sessionData) {
                 sessionData.deliveryAddress,
                 total,
                 deliveryFee,
-                sessionData.specialInstructions || null
+                sessionData.specialInstructions || null,
+                'COD',
+                'PENDING',
+                'CONFIRMED'
             ]
         );
 
@@ -685,38 +1000,45 @@ async function createOrder(phoneNumber, sessionData) {
 
         await client.query('COMMIT');
 
-        // Send notification to owner (async - don't wait)
+        // Update customer reliability (async)
+        updateCustomerReliability(phoneNumber, 'COMPLETED').catch(err => 
+            console.error('⚠️ Reliability update failed:', err.message));
+
+        // Send notification to owner (async)
         notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_order', {
             orderId: orderId,
             customerPhone: phoneNumber,
+            customerName: sessionData.customerName || 'Customer',
             deliveryAddress: sessionData.deliveryAddress,
             items: sessionData.cart,
             total: total,
             specialInstructions: sessionData.specialInstructions
         }).catch(err => console.error('⚠️ Owner notification failed:', err.message));
 
-        // Log to Google Sheets (async - don't wait)
+        // Log to Google Sheets (async)
         if (isConfigured()) {
             logOrderToSheets({
                 orderId: orderId,
+                dateTime: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
                 restaurantName: restaurant.rows[0].name,
                 restaurantId: sessionData.selectedRestaurant,
                 customerPhone: phoneNumber,
                 customerName: sessionData.customerName || 'Customer',
-                orderType: 'delivery',
+                orderType: 'Delivery',
                 deliveryAddress: sessionData.deliveryAddress,
-                items: sessionData.cart,
+                itemsOrdered: sessionData.cart.map(i => `${i.quantity}× ${i.name}`).join(', '),
+                totalItems: sessionData.cart.reduce((sum, i) => sum + i.quantity, 0),
                 subtotal: subtotal,
                 deliveryFee: deliveryFee,
-                total: total,
+                totalAmount: total,
                 specialInstructions: sessionData.specialInstructions || '',
-                status: 'pending',
-                paymentStatus: 'COD',
-                estimatedDeliveryTime: '45 minutes'
+                status: 'Confirmed',
+                paymentStatus: 'Pending',
+                estimatedDelivery: '45 minutes'
             }).catch(err => console.error('⚠️ Sheets logging failed:', err.message));
         }
 
-        return { success: true, orderId, order: orderResult.rows[0] };
+        return { success: true, orderId, order: orderResult.rows[0], total, deliveryFee, subtotal };
 
     } catch (error) {
         await client.query('ROLLBACK');
@@ -731,8 +1053,8 @@ async function createBooking(phoneNumber, sessionData) {
     try {
         const result = await pool.query(
             `INSERT INTO table_bookings (customer_phone, customer_name, restaurant_id, 
-             booking_date, booking_time, number_of_guests, special_requests)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             booking_date, booking_time, number_of_guests, special_requests, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              RETURNING *`,
             [
                 phoneNumber,
@@ -741,17 +1063,18 @@ async function createBooking(phoneNumber, sessionData) {
                 sessionData.bookingDate,
                 sessionData.bookingTime,
                 sessionData.numberOfGuests,
-                sessionData.specialRequests || null
+                sessionData.specialRequests || null,
+                'pending'
             ]
         );
 
-        // Get restaurant details for sheets
+        // Get restaurant details
         const restaurant = await pool.query(
             'SELECT name, address, phone FROM restaurants WHERE id = $1',
             [sessionData.selectedRestaurant]
         );
 
-        // Send notification to owner (async - don't wait)
+        // Send notification to owner (async)
         notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_booking', {
             bookingId: result.rows[0].id,
             customerName: sessionData.customerName,
@@ -762,10 +1085,11 @@ async function createBooking(phoneNumber, sessionData) {
             specialRequests: sessionData.specialRequests
         }).catch(err => console.error('⚠️ Owner notification failed:', err.message));
 
-        // Log to Google Sheets (async - don't wait)
+        // Log to Google Sheets (async)
         if (isConfigured()) {
             logBookingToSheets({
                 bookingId: result.rows[0].id,
+                dateTime: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
                 restaurantName: restaurant.rows[0].name,
                 restaurantId: sessionData.selectedRestaurant,
                 customerPhone: phoneNumber,
@@ -786,7 +1110,7 @@ async function createBooking(phoneNumber, sessionData) {
 }
 
 // =====================================================
-// MAIN MESSAGE HANDLER - ULTRA SMART
+// MAIN MESSAGE HANDLER - WITH SAFETY CHECKS
 // =====================================================
 async function handleIncomingMessage(from, body) {
     const phoneNumber = from.replace('whatsapp:', '');
@@ -802,11 +1126,112 @@ async function handleIncomingMessage(from, body) {
         let updatedData = { ...sessionData };
 
         // =====================================================
+        // HANDLE COD CONFIRMATION STATE
+        // =====================================================
+        if (session.current_state === STATES.COD_CONFIRMATION) {
+            const response = message.toUpperCase();
+
+            // Check expiry
+            if (Date.now() > (sessionData.confirmationExpiry || 0)) {
+                await updateCustomerReliability(phoneNumber, 'CANCELLED');
+                responseMessage = '⏱️ Confirmation expired. Order cancelled.\n\nType "menu" to start over.';
+                newState = STATES.MAIN_MENU;
+                updatedData = {};
+                
+                // Clear timeout
+                if (confirmationTimeouts.has(phoneNumber)) {
+                    clearTimeout(confirmationTimeouts.get(phoneNumber));
+                    confirmationTimeouts.delete(phoneNumber);
+                }
+            }
+            else if (response === 'CONFIRM') {
+                // Check if customer is blocked
+                const reliability = await checkCustomerReliability(phoneNumber);
+
+                if (reliability.isBlocked) {
+                    responseMessage = `❌ Sorry, you cannot place orders at this time.\n\n*Reason:* Multiple cancelled/no-show orders.\n\nPlease contact support: +91 8013610018`;
+                    newState = STATES.MAIN_MENU;
+                    updatedData = {};
+                } else {
+                    // Create order
+                    const orderResult = await createOrder(phoneNumber, sessionData);
+
+                    if (orderResult.success) {
+                        const restaurant = await pool.query(
+                            'SELECT name FROM restaurants WHERE id = $1',
+                            [sessionData.selectedRestaurant]
+                        );
+
+                        responseMessage = '🎉 *Order Confirmed!*\n\n';
+                        responseMessage += `Order ID: #${orderResult.orderId}\n`;
+                        responseMessage += `Restaurant: ${restaurant.rows[0].name}\n\n`;
+                        responseMessage += getCartSummary(sessionData, orderResult.deliveryFee);
+                        responseMessage += `\n\n📍 Delivery Address:\n${sessionData.deliveryAddress}\n`;
+                        if (sessionData.specialInstructions) {
+                            responseMessage += `\n📝 Instructions: ${sessionData.specialInstructions}\n`;
+                        }
+                        responseMessage += `\n💵 Payment: Cash on Delivery\n`;
+                        responseMessage += `💰 Total: ₹${orderResult.total.toFixed(0)}\n`;
+                        responseMessage += `\n⏱️ Estimated Delivery: 45 minutes\n`;
+                        responseMessage += `\nThe restaurant has been notified and is preparing your food.\n`;
+                        responseMessage += `\nThank you for your order! 🍽️\n\n`;
+                        responseMessage += 'Type "menu" to place another order.';
+
+                        newState = STATES.MAIN_MENU;
+                        updatedData = {};
+                    } else {
+                        responseMessage = '❌ Sorry, there was an error processing your order. Please try again or contact support at +91 8013610018';
+                        newState = STATES.MAIN_MENU;
+                        updatedData = {};
+                    }
+                }
+
+                // Clear timeout
+                if (confirmationTimeouts.has(phoneNumber)) {
+                    clearTimeout(confirmationTimeouts.get(phoneNumber));
+                    confirmationTimeouts.delete(phoneNumber);
+                }
+            }
+            else if (response === 'CANCEL') {
+                await updateCustomerReliability(phoneNumber, 'CANCELLED');
+                responseMessage = '❌ Order cancelled. Feel free to order again anytime!\n\nType "menu" to start over.';
+                newState = STATES.MAIN_MENU;
+                updatedData = {};
+
+                // Clear timeout
+                if (confirmationTimeouts.has(phoneNumber)) {
+                    clearTimeout(confirmationTimeouts.get(phoneNumber));
+                    confirmationTimeouts.delete(phoneNumber);
+                }
+            }
+            else {
+                const timeLeft = Math.floor(((sessionData.confirmationExpiry || 0) - Date.now()) / 1000);
+                if (timeLeft > 0) {
+                    responseMessage = `Please reply with *CONFIRM* or *CANCEL*\n\nTime remaining: ${timeLeft} seconds`;
+                } else {
+                    responseMessage = '⏱️ Confirmation expired. Please start over.\n\nType "menu" to begin.';
+                    newState = STATES.MAIN_MENU;
+                    updatedData = {};
+                }
+            }
+
+            await updateUserSession(phoneNumber, newState, updatedData);
+            return responseMessage;
+        }
+
+        // =====================================================
         // SMART QR KEYWORD DETECTION (DATABASE-DRIVEN)
         // =====================================================
         const detectedRestaurant = await detectRestaurantFromKeyword(message);
         
         if (detectedRestaurant && !sessionData.selectedRestaurant) {
+            // Check if customer is blocked
+            const reliability = await checkCustomerReliability(phoneNumber);
+
+            if (reliability.isBlocked) {
+                return `❌ Sorry, you cannot place orders at this time.\n\n*Reason:* Multiple cancelled/no-show orders.\n\nPlease contact support: +91 8013610018`;
+            }
+
             updatedData.selectedRestaurant = detectedRestaurant.id;
             updatedData.restaurantName = detectedRestaurant.name;
             updatedData.action = 'delivery';
@@ -990,37 +1415,23 @@ async function handleIncomingMessage(from, body) {
             responseMessage += 'Any special instructions? (Type "no" if none)';
             newState = STATES.CONFIRM_ORDER;
         }
-        // Confirm order
+        // Special instructions -> COD Confirmation
         else if (session.current_state === STATES.CONFIRM_ORDER) {
             if (messageLower !== 'no') {
                 updatedData.specialInstructions = body.trim();
             }
 
-            const orderResult = await createOrder(phoneNumber, sessionData);
+            // Request COD confirmation
+            const confirmResult = await requestCODConfirmation(phoneNumber, sessionData);
 
-            if (orderResult.success) {
-                const restaurant = await pool.query(
-                    'SELECT name, delivery_fee FROM restaurants WHERE id = $1',
-                    [sessionData.selectedRestaurant]
-                );
-                const deliveryFee = parseFloat(restaurant.rows[0].delivery_fee || 0);
-
-                responseMessage = '🎉 *Order Confirmed!*\n\n';
-                responseMessage += `Order ID: #${orderResult.orderId}\n`;
-                responseMessage += `Restaurant: ${restaurant.rows[0].name}\n\n`;
-                responseMessage += getCartSummary(sessionData, deliveryFee);
-                responseMessage += `\n\n📍 Delivery Address:\n${sessionData.deliveryAddress}\n`;
-                if (sessionData.specialInstructions) {
-                    responseMessage += `\n📝 Instructions: ${sessionData.specialInstructions}\n`;
-                }
-                responseMessage += `\n⏱️ Estimated Delivery: 45 minutes\n`;
-                responseMessage += `\nThank you for your order!\n\n`;
-                responseMessage += 'Type "menu" to place another order.';
-
+            if (confirmResult) {
+                newState = STATES.COD_CONFIRMATION;
+                // responseMessage already sent in requestCODConfirmation
+                responseMessage = ''; // Prevent double message
+            } else {
+                responseMessage = '❌ Error preparing order confirmation. Please try again or contact support at +91 8013610018';
                 newState = STATES.MAIN_MENU;
                 updatedData = {};
-            } else {
-                responseMessage = '❌ Sorry, there was an error processing your order. Please try again or contact support.';
             }
         }
         // Booking date
@@ -1129,7 +1540,10 @@ app.post('/webhook', async (req, res) => {
         console.log(`📨 Received message from ${from}: ${body}`);
 
         const response = await handleIncomingMessage(from, body);
-        await sendWhatsAppMessage(from.replace('whatsapp:', ''), response);
+        
+        if (response) { // Only send if there's a response
+            await sendWhatsAppMessage(from.replace('whatsapp:', ''), response);
+        }
 
         res.status(200).send('OK');
     } catch (error) {
@@ -1153,6 +1567,12 @@ app.get('/health', async (req, res) => {
             restaurants: restaurantData.data.length,
             keywords: Object.keys(restaurantData.keywords).length,
             googleSheets: isConfigured() ? 'Configured' : 'Not Configured',
+            safetyFeatures: {
+                customerReliabilityTracking: true,
+                codConfirmation: true,
+                fraudDetection: true,
+                autoBlocking: true
+            },
             cache: {
                 lastUpdated: restaurantData.lastUpdated ? new Date(restaurantData.lastUpdated).toISOString() : null,
                 ttl: restaurantData.ttl / 1000 + 's'
@@ -1212,6 +1632,17 @@ app.get('/sheets-status', (req, res) => {
     });
 });
 
+// Customer reliability endpoint (for testing)
+app.get('/customer-reliability/:phone', async (req, res) => {
+    try {
+        const phoneNumber = req.params.phone;
+        const reliability = await checkCustomerReliability(phoneNumber);
+        res.json(reliability);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // =====================================================
 // START SERVER
 // =====================================================
@@ -1225,6 +1656,9 @@ app.listen(PORT, async () => {
     console.log(`📱 Webhook URL: https://your-domain.railway.app/webhook\n`);
     
     try {
+        // Initialize safety tables
+        await initializeSafetyTables();
+        
         // Test Google Sheets connection
         if (isConfigured()) {
             console.log('🧪 Testing Google Sheets connection...');
@@ -1257,6 +1691,13 @@ app.listen(PORT, async () => {
             console.log(`   ├─ Delivery: ${r.delivery_available ? '✅' : '❌'}`);
             console.log(`   └─ Booking: ${r.table_booking_available ? '✅' : '❌'}\n`);
         });
+
+        console.log('🔒 Safety Features Enabled:');
+        console.log('   ✅ Customer reliability tracking');
+        console.log('   ✅ COD double confirmation (3-min timeout)');
+        console.log('   ✅ Fraud detection & auto-blocking');
+        console.log('   ✅ Trust score calculation');
+        console.log('   ✅ Enhanced owner notifications\n');
         
     } catch (error) {
         console.error('⚠️ Warning: Could not complete startup checks');

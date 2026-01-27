@@ -8,7 +8,7 @@ const {
     testConnection,
     getSpreadsheetUrl,
     isConfigured
-} = require('./google-sheets');
+} = require('./apps-script-logger');
 
 const app = express();
 app.use(express.json());

@@ -814,7 +814,7 @@ function getCartSummary(sessionData, deliveryFee = 0) {
 }
 
 // =====================================================
-// COD CONFIRMATION WITH 10-MINUTE TIMEOUT
+// COD CONFIRMATION WITH 10-MINUTE TIMEOUT - FIXED
 // =====================================================
 async function requestCODConfirmation(phoneNumber, sessionData) {
     try {
@@ -868,9 +868,11 @@ Type *CANCEL* to cancel
 
         await sendWhatsAppMessage(phoneNumber, confirmationMessage);
 
-        // Store confirmation timestamp - 10 MINUTES
-        sessionData.confirmationExpiry = Date.now() + (10 * 60 * 1000); // 10 minutes
-        sessionData.awaitingCODConfirmation = true;
+        // Calculate expiry timestamp - 10 MINUTES from NOW
+        const expiryTimestamp = Date.now() + (10 * 60 * 1000);
+        
+        console.log(`✅ COD confirmation sent to ${phoneNumber}`);
+        console.log(`⏰ Expiry set to: ${new Date(expiryTimestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
 
         // Set timeout to auto-cancel after 10 MINUTES
         const timeoutId = setTimeout(async () => {
@@ -883,6 +885,7 @@ Type *CANCEL* to cancel
                     await sendWhatsAppMessage(phoneNumber,
                         '⏱️ Order confirmation expired. Your order has been cancelled.\n\nScan QR code to place order.');
                     await updateUserSession(phoneNumber, STATES.MAIN_MENU, {});
+                    console.log(`⏰ Auto-cancelled order for ${phoneNumber} after 10 minutes`);
                 }
             } catch (error) {
                 console.error('❌ Timeout cleanup error:', error);
@@ -891,7 +894,14 @@ Type *CANCEL* to cancel
 
         confirmationTimeouts.set(phoneNumber, timeoutId);
 
-        return { total, deliveryFee, subtotal };
+        // Return data including expiry timestamp
+        return { 
+            total, 
+            deliveryFee, 
+            subtotal,
+            confirmationExpiry: expiryTimestamp,
+            awaitingCODConfirmation: true
+        };
 
     } catch (error) {
         console.error('❌ Error requesting COD confirmation:', error);
@@ -1077,10 +1087,15 @@ async function handleIncomingMessage(from, body) {
         let updatedData = { ...sessionData };
 
         // =====================================================
-        // HANDLE COD CONFIRMATION STATE
+        // HANDLE COD CONFIRMATION STATE - FIXED WITH LOGGING
         // =====================================================
         if (session.current_state === STATES.COD_CONFIRMATION) {
             const response = message.toUpperCase();
+            
+            console.log(`📋 COD Confirmation received from ${phoneNumber}: ${response}`);
+            console.log(`⏰ Current time: ${Date.now()}`);
+            console.log(`⏰ Expiry time: ${sessionData.confirmationExpiry || 'NOT SET'}`);
+            console.log(`⏰ Time remaining: ${sessionData.confirmationExpiry ? Math.floor((sessionData.confirmationExpiry - Date.now()) / 1000) : 0} seconds`);
 
             // Check expiry
             if (Date.now() > (sessionData.confirmationExpiry || 0)) {
@@ -1089,6 +1104,8 @@ async function handleIncomingMessage(from, body) {
                 newState = STATES.MAIN_MENU;
                 updatedData = {};
                 
+                console.log(`❌ Order expired for ${phoneNumber}`);
+                
                 // Clear timeout
                 if (confirmationTimeouts.has(phoneNumber)) {
                     clearTimeout(confirmationTimeouts.get(phoneNumber));
@@ -1096,6 +1113,8 @@ async function handleIncomingMessage(from, body) {
                 }
             }
             else if (response === 'CONFIRM') {
+                console.log(`✅ Processing CONFIRM from ${phoneNumber}`);
+                
                 // Check if customer is blocked
                 const reliability = await checkCustomerReliability(phoneNumber);
 
@@ -1130,6 +1149,8 @@ async function handleIncomingMessage(from, body) {
 
                         newState = STATES.MAIN_MENU;
                         updatedData = {};
+                        
+                        console.log(`✅ Order #${orderResult.orderId} confirmed for ${phoneNumber}`);
                     } else {
                         responseMessage = '❌ Sorry, there was an error processing your order.\n\nContact support: +91 8013610018\n\nScan QR code to try again.';
                         newState = STATES.MAIN_MENU;
@@ -1141,6 +1162,7 @@ async function handleIncomingMessage(from, body) {
                 if (confirmationTimeouts.has(phoneNumber)) {
                     clearTimeout(confirmationTimeouts.get(phoneNumber));
                     confirmationTimeouts.delete(phoneNumber);
+                    console.log(`✅ Cleared timeout for ${phoneNumber}`);
                 }
             }
             else if (response === 'CANCEL') {
@@ -1148,6 +1170,8 @@ async function handleIncomingMessage(from, body) {
                 responseMessage = '❌ Order cancelled. Feel free to order again anytime!\n\nScan QR code to place order.';
                 newState = STATES.MAIN_MENU;
                 updatedData = {};
+
+                console.log(`❌ Order cancelled by user ${phoneNumber}`);
 
                 // Clear timeout
                 if (confirmationTimeouts.has(phoneNumber)) {
@@ -1362,7 +1386,7 @@ async function handleIncomingMessage(from, body) {
             responseMessage += 'Any special instructions? (Type "no" if none)';
             newState = STATES.CONFIRM_ORDER;
         }
-        // Special instructions -> COD Confirmation
+        // Special instructions -> COD Confirmation - FIXED
         else if (session.current_state === STATES.CONFIRM_ORDER) {
             if (messageLower !== 'no') {
                 updatedData.specialInstructions = body.trim();
@@ -1372,9 +1396,19 @@ async function handleIncomingMessage(from, body) {
             const confirmResult = await requestCODConfirmation(phoneNumber, sessionData);
 
             if (confirmResult) {
+                // CRITICAL FIX: Save confirmation expiry and flag to session
+                updatedData.confirmationExpiry = confirmResult.confirmationExpiry;
+                updatedData.awaitingCODConfirmation = confirmResult.awaitingCODConfirmation;
+                
                 newState = STATES.COD_CONFIRMATION;
-                // responseMessage already sent in requestCODConfirmation
-                responseMessage = ''; // Prevent double message
+                
+                console.log(`✅ Session updated with expiry: ${confirmResult.confirmationExpiry}`);
+                
+                // Update session with the expiry data BEFORE returning
+                await updateUserSession(phoneNumber, newState, updatedData);
+                
+                // Return empty string because message already sent in requestCODConfirmation
+                return '';
             } else {
                 responseMessage = '❌ Error preparing order confirmation.\n\nContact support: +91 8013610018\n\nScan QR code to try again.';
                 newState = STATES.MAIN_MENU;
@@ -1586,6 +1620,29 @@ app.get('/customer-reliability/:phone', async (req, res) => {
         const phoneNumber = req.params.phone;
         const reliability = await checkCustomerReliability(phoneNumber);
         res.json(reliability);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// DEBUG: Test session data
+app.get('/test-session/:phone', async (req, res) => {
+    try {
+        const phoneNumber = req.params.phone;
+        const session = await getUserSession(phoneNumber);
+        const sessionData = getSessionData(session);
+        
+        res.json({
+            phoneNumber: phoneNumber,
+            currentState: session.current_state,
+            confirmationExpiry: sessionData.confirmationExpiry,
+            awaitingCOD: sessionData.awaitingCODConfirmation,
+            expiryDate: sessionData.confirmationExpiry ? new Date(sessionData.confirmationExpiry).toISOString() : null,
+            timeRemaining: sessionData.confirmationExpiry ? Math.floor((sessionData.confirmationExpiry - Date.now()) / 1000) : 0,
+            timeRemainingFormatted: sessionData.confirmationExpiry ? 
+                `${Math.floor((sessionData.confirmationExpiry - Date.now()) / 60000)}m ${Math.floor(((sessionData.confirmationExpiry - Date.now()) % 60000) / 1000)}s` : 
+                'N/A'
+        });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

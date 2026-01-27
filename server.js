@@ -113,7 +113,7 @@ const STATES = {
     ADD_ITEMS: 'add_items',
     DELIVERY_ADDRESS: 'delivery_address',
     CONFIRM_ORDER: 'confirm_order',
-    COD_CONFIRMATION: 'cod_confirmation', // NEW: COD double-check
+    COD_CONFIRMATION: 'cod_confirmation',
     BOOK_TABLE: 'book_table',
     BOOKING_DATE: 'booking_date',
     BOOKING_TIME: 'booking_time',
@@ -691,55 +691,9 @@ async function detectRestaurantFromKeyword(message) {
 function getMainMenuMessage() {
     return `🍽️ *Welcome to Restaurant Bot!*
 
-What would you like to do today?
+Please scan a restaurant QR code to start ordering or booking a table.
 
-1️⃣ Order Delivery
-2️⃣ Book a Table
-3️⃣ View Restaurants
-
-Reply with the number of your choice.`;
-}
-
-async function getRestaurantsList() {
-    try {
-        const restaurantData = await loadRestaurantsFromDatabase();
-        const restaurants = restaurantData.data;
-
-        let message = '🏪 *Available Restaurants:*\n\n';
-        
-        restaurants.forEach((restaurant, index) => {
-            message += `${index + 1}️⃣ *${restaurant.name}*\n`;
-            message += `   ${restaurant.cuisine_type || 'Multi-Cuisine'}\n`;
-            message += `   📍 ${restaurant.address || 'Location available'}\n`;
-            
-            if (restaurant.delivery_available) {
-                const minOrder = restaurant.min_delivery_amount || 0;
-                const deliveryFee = restaurant.delivery_fee || 0;
-                message += `   🚚 Delivery: ₹${deliveryFee} (Min: ₹${minOrder})\n`;
-            }
-            
-            if (restaurant.table_booking_available) {
-                message += `   🪑 Table booking available\n`;
-            }
-            
-            if (restaurant.opening_time && restaurant.closing_time) {
-                const openTime = restaurant.opening_time.substring(0, 5);
-                const closeTime = restaurant.closing_time.substring(0, 5);
-                message += `   ⏰ ${openTime} - ${closeTime}\n`;
-            }
-            
-            message += `\n`;
-        });
-
-        message += 'Reply with the restaurant number to continue.';
-        return { message, restaurants };
-    } catch (error) {
-        console.error('❌ Error getting restaurants list:', error);
-        return { 
-            message: '❌ Sorry, unable to load restaurants. Please try again.', 
-            restaurants: [] 
-        };
-    }
+If you need help, contact: +91 8013610018`;
 }
 
 async function getRestaurantMenu(restaurantId) {
@@ -863,7 +817,7 @@ function getCartSummary(sessionData, deliveryFee = 0) {
 }
 
 // =====================================================
-// COD CONFIRMATION WITH TIMEOUT
+// COD CONFIRMATION WITH 10-MINUTE TIMEOUT
 // =====================================================
 async function requestCODConfirmation(phoneNumber, sessionData) {
     try {
@@ -913,15 +867,15 @@ By confirming, you agree to:
 Type *CONFIRM* to place your order
 Type *CANCEL* to cancel
 
-⏱️ You have 3 minutes to respond.`;
+⏱️ You have 10 minutes to respond.`;
 
         await sendWhatsAppMessage(phoneNumber, confirmationMessage);
 
-        // Store confirmation timestamp
-        sessionData.confirmationExpiry = Date.now() + (3 * 60 * 1000); // 3 minutes
+        // Store confirmation timestamp - 10 MINUTES
+        sessionData.confirmationExpiry = Date.now() + (10 * 60 * 1000); // 10 minutes
         sessionData.awaitingCODConfirmation = true;
 
-        // Set timeout to auto-cancel
+        // Set timeout to auto-cancel after 10 MINUTES
         const timeoutId = setTimeout(async () => {
             try {
                 const session = await getUserSession(phoneNumber);
@@ -930,13 +884,13 @@ Type *CANCEL* to cancel
                 if (currentData.awaitingCODConfirmation && session.current_state === STATES.COD_CONFIRMATION) {
                     await updateCustomerReliability(phoneNumber, 'CANCELLED');
                     await sendWhatsAppMessage(phoneNumber,
-                        '⏱️ Order confirmation expired. Your order has been cancelled.\n\nFeel free to order again anytime!');
+                        '⏱️ Order confirmation expired. Your order has been cancelled.\n\nScan QR code to place order.');
                     await updateUserSession(phoneNumber, STATES.MAIN_MENU, {});
                 }
             } catch (error) {
                 console.error('❌ Timeout cleanup error:', error);
             }
-        }, 3 * 60 * 1000);
+        }, 10 * 60 * 1000); // 10 MINUTES
 
         confirmationTimeouts.set(phoneNumber, timeoutId);
 
@@ -1110,7 +1064,7 @@ async function createBooking(phoneNumber, sessionData) {
 }
 
 // =====================================================
-// MAIN MESSAGE HANDLER - WITH SAFETY CHECKS
+// MAIN MESSAGE HANDLER - WITH UPDATED QR FLOW
 // =====================================================
 async function handleIncomingMessage(from, body) {
     const phoneNumber = from.replace('whatsapp:', '');
@@ -1134,7 +1088,7 @@ async function handleIncomingMessage(from, body) {
             // Check expiry
             if (Date.now() > (sessionData.confirmationExpiry || 0)) {
                 await updateCustomerReliability(phoneNumber, 'CANCELLED');
-                responseMessage = '⏱️ Confirmation expired. Order cancelled.\n\nType "menu" to start over.';
+                responseMessage = '⏱️ Confirmation expired. Order cancelled.\n\nScan QR code to place order.';
                 newState = STATES.MAIN_MENU;
                 updatedData = {};
                 
@@ -1149,7 +1103,7 @@ async function handleIncomingMessage(from, body) {
                 const reliability = await checkCustomerReliability(phoneNumber);
 
                 if (reliability.isBlocked) {
-                    responseMessage = `❌ Sorry, you cannot place orders at this time.\n\n*Reason:* Multiple cancelled/no-show orders.\n\nPlease contact support: +91 8013610018`;
+                    responseMessage = `❌ Sorry, you cannot place orders at this time.\n\n*Reason:* Multiple cancelled/no-show orders.\n\nContact support: +91 8013610018\n\nScan QR code to try again.`;
                     newState = STATES.MAIN_MENU;
                     updatedData = {};
                 } else {
@@ -1175,12 +1129,12 @@ async function handleIncomingMessage(from, body) {
                         responseMessage += `\n⏱️ Estimated Delivery: 45 minutes\n`;
                         responseMessage += `\nThe restaurant has been notified and is preparing your food.\n`;
                         responseMessage += `\nThank you for your order! 🍽️\n\n`;
-                        responseMessage += 'Type "menu" to place another order.';
+                        responseMessage += 'Scan QR code to place another order.';
 
                         newState = STATES.MAIN_MENU;
                         updatedData = {};
                     } else {
-                        responseMessage = '❌ Sorry, there was an error processing your order. Please try again or contact support at +91 8013610018';
+                        responseMessage = '❌ Sorry, there was an error processing your order.\n\nContact support: +91 8013610018\n\nScan QR code to try again.';
                         newState = STATES.MAIN_MENU;
                         updatedData = {};
                     }
@@ -1194,7 +1148,7 @@ async function handleIncomingMessage(from, body) {
             }
             else if (response === 'CANCEL') {
                 await updateCustomerReliability(phoneNumber, 'CANCELLED');
-                responseMessage = '❌ Order cancelled. Feel free to order again anytime!\n\nType "menu" to start over.';
+                responseMessage = '❌ Order cancelled. Feel free to order again anytime!\n\nScan QR code to place order.';
                 newState = STATES.MAIN_MENU;
                 updatedData = {};
 
@@ -1207,9 +1161,11 @@ async function handleIncomingMessage(from, body) {
             else {
                 const timeLeft = Math.floor(((sessionData.confirmationExpiry || 0) - Date.now()) / 1000);
                 if (timeLeft > 0) {
-                    responseMessage = `Please reply with *CONFIRM* or *CANCEL*\n\nTime remaining: ${timeLeft} seconds`;
+                    const minutesLeft = Math.floor(timeLeft / 60);
+                    const secondsLeft = timeLeft % 60;
+                    responseMessage = `Please reply with *CONFIRM* or *CANCEL*\n\nTime remaining: ${minutesLeft}m ${secondsLeft}s`;
                 } else {
-                    responseMessage = '⏱️ Confirmation expired. Please start over.\n\nType "menu" to begin.';
+                    responseMessage = '⏱️ Confirmation expired. Please start over.\n\nScan QR code to place order.';
                     newState = STATES.MAIN_MENU;
                     updatedData = {};
                 }
@@ -1220,7 +1176,7 @@ async function handleIncomingMessage(from, body) {
         }
 
         // =====================================================
-        // SMART QR KEYWORD DETECTION (DATABASE-DRIVEN)
+        // SMART QR KEYWORD DETECTION - SHOWS DELIVERY/BOOKING OPTIONS
         // =====================================================
         const detectedRestaurant = await detectRestaurantFromKeyword(message);
         
@@ -1229,54 +1185,35 @@ async function handleIncomingMessage(from, body) {
             const reliability = await checkCustomerReliability(phoneNumber);
 
             if (reliability.isBlocked) {
-                return `❌ Sorry, you cannot place orders at this time.\n\n*Reason:* Multiple cancelled/no-show orders.\n\nPlease contact support: +91 8013610018`;
+                return `❌ Sorry, you cannot place orders at this time.\n\n*Reason:* Multiple cancelled/no-show orders.\n\nContact support: +91 8013610018\n\nScan QR code to try again.`;
             }
 
             updatedData.selectedRestaurant = detectedRestaurant.id;
             updatedData.restaurantName = detectedRestaurant.name;
-            updatedData.action = 'delivery';
 
-            const menuData = await getRestaurantMenu(detectedRestaurant.id);
-            responseMessage = `🎉 Welcome to *${detectedRestaurant.name}*!\n\n`;
-            responseMessage += menuData.message;
-            responseMessage += '\n\n*To order:*\n';
-            responseMessage += 'Type item ID and quantity (e.g., "15 2")\n';
-            responseMessage += 'Type "done" when finished\n';
-            responseMessage += 'Type "cart" to view cart\n';
-            if (detectedRestaurant.table_booking_available) {
-                responseMessage += 'Type "booking" for table reservation';
-            }
-
-            newState = STATES.ADD_ITEMS;
-            updatedData.cart = [];
-
-            await updateUserSession(phoneNumber, newState, updatedData);
-            return responseMessage;
-        }
-
-        // Handle booking from QR flow
-        if (messageLower === 'booking' && sessionData.selectedRestaurant) {
-            const restaurant = await pool.query(
-                'SELECT * FROM restaurants WHERE id = $1',
-                [sessionData.selectedRestaurant]
-            );
-
-            if (restaurant.rows.length > 0) {
-                if (!restaurant.rows[0].table_booking_available) {
-                    return '❌ Sorry, table booking is not available at this location.\n\nYou can still order delivery! Type "menu" to continue.';
-                }
-
-                responseMessage = `📅 *Table Booking at ${restaurant.rows[0].name}*\n\n`;
-                responseMessage += 'Please enter the date for your booking\n\n';
-                responseMessage += 'Examples:\n';
-                responseMessage += '• Today\n';
-                responseMessage += '• Tomorrow\n';
-                responseMessage += '• 25-01-2026\n';
-                responseMessage += '• 25/01 (this year)';
-                newState = STATES.BOOKING_DATE;
-                await updateUserSession(phoneNumber, newState, updatedData);
+            // Show restaurant-specific menu with delivery and booking options
+            responseMessage = `🎉 *Welcome to ${detectedRestaurant.name}!*\n\n`;
+            responseMessage += `What would you like to do?\n\n`;
+            
+            if (detectedRestaurant.delivery_available && detectedRestaurant.table_booking_available) {
+                responseMessage += `1️⃣ Order Delivery\n`;
+                responseMessage += `2️⃣ Book a Table\n\n`;
+                responseMessage += `Reply with 1 or 2`;
+            } else if (detectedRestaurant.delivery_available) {
+                responseMessage += `1️⃣ Order Delivery\n\n`;
+                responseMessage += `Reply with 1 to start ordering`;
+            } else if (detectedRestaurant.table_booking_available) {
+                responseMessage += `2️⃣ Book a Table\n\n`;
+                responseMessage += `Reply with 2 to book a table`;
+            } else {
+                responseMessage = `⚠️ Service temporarily unavailable at ${detectedRestaurant.name}.\n\nPlease contact: ${detectedRestaurant.phone || 'restaurant directly'}`;
+                await updateUserSession(phoneNumber, STATES.MAIN_MENU, {});
                 return responseMessage;
             }
+
+            newState = STATES.SELECT_RESTAURANT;
+            await updateUserSession(phoneNumber, newState, updatedData);
+            return responseMessage;
         }
 
         // Handle menu/restart commands
@@ -1285,67 +1222,80 @@ async function handleIncomingMessage(from, body) {
             newState = STATES.MAIN_MENU;
             updatedData = {};
         }
-        // Main menu
+        // Main menu - only accessible if someone types "menu" (not through QR)
         else if (session.current_state === STATES.MAIN_MENU) {
-            if (message === '1') {
-                const restaurants = await getRestaurantsList();
-                responseMessage = restaurants.message + '\n\n_Type "menu" anytime to return to main menu._';
-                updatedData.action = 'delivery';
-                newState = STATES.SELECT_RESTAURANT;
-            } else if (message === '2') {
-                const restaurants = await getRestaurantsList();
-                responseMessage = restaurants.message + '\n\n_Type "menu" anytime to return to main menu._';
-                updatedData.action = 'booking';
-                newState = STATES.SELECT_RESTAURANT;
-            } else if (message === '3') {
-                const restaurants = await getRestaurantsList();
-                responseMessage = restaurants.message + '\n\n_Type "menu" anytime to return to main menu._';
-                updatedData.action = 'delivery';
-                newState = STATES.SELECT_RESTAURANT;
-            } else {
-                responseMessage = getMainMenuMessage();
-            }
+            // No options - just tell them to scan QR code
+            responseMessage = getMainMenuMessage();
         }
-        // Restaurant selection
+        // Restaurant selection - handles delivery/booking choice from QR flow
         else if (session.current_state === STATES.SELECT_RESTAURANT) {
-            const restaurantNumber = parseInt(message);
-            const restaurantData = await loadRestaurantsFromDatabase();
-            const restaurants = restaurantData.data;
+            const choice = message.trim();
 
-            if (restaurantNumber > 0 && restaurantNumber <= restaurants.length) {
-                const selectedRestaurant = restaurants[restaurantNumber - 1];
-                updatedData.selectedRestaurant = selectedRestaurant.id;
-                updatedData.restaurantName = selectedRestaurant.name;
+            // Get current selected restaurant
+            if (!sessionData.selectedRestaurant) {
+                responseMessage = '❌ No restaurant selected.\n\nScan QR code to start.';
+                newState = STATES.MAIN_MENU;
+            }
+            else if (choice === '1') {
+                // Order Delivery
+                const restaurant = await pool.query(
+                    'SELECT * FROM restaurants WHERE id = $1',
+                    [sessionData.selectedRestaurant]
+                );
 
-                if (sessionData.action === 'delivery') {
-                    if (!selectedRestaurant.delivery_available) {
-                        responseMessage = '❌ Sorry, delivery is not available at this restaurant.\n\nPlease select another restaurant or type "menu" to return.';
-                    } else {
-                        const menuData = await getRestaurantMenu(selectedRestaurant.id);
-                        responseMessage = menuData.message;
-                        responseMessage += '\n\n*To order:*\n';
-                        responseMessage += 'Type item ID and quantity (e.g., "15 2")\n';
-                        responseMessage += 'Type "done" when finished\n';
-                        responseMessage += 'Type "cart" to view cart';
-                        newState = STATES.ADD_ITEMS;
-                        updatedData.cart = [];
-                    }
-                } else if (sessionData.action === 'booking') {
-                    if (!selectedRestaurant.table_booking_available) {
-                        responseMessage = '❌ Sorry, table booking is not available at this restaurant.\n\nPlease select another restaurant or type "menu" to return.';
-                    } else {
-                        responseMessage = `📅 *Table Booking at ${selectedRestaurant.name}*\n\n`;
-                        responseMessage += 'Please enter the date for your booking\n\n';
-                        responseMessage += 'Examples:\n';
-                        responseMessage += '• Today\n';
-                        responseMessage += '• Tomorrow\n';
-                        responseMessage += '• 25-01-2026\n';
-                        responseMessage += '• 25/01 (this year)';
-                        newState = STATES.BOOKING_DATE;
-                    }
+                if (restaurant.rows.length === 0) {
+                    responseMessage = '❌ Restaurant not found.\n\nScan QR code to try again.';
+                    newState = STATES.MAIN_MENU;
+                    updatedData = {};
                 }
-            } else {
-                responseMessage = '❌ Invalid selection. Please enter a valid restaurant number.';
+                else if (!restaurant.rows[0].delivery_available) {
+                    responseMessage = '❌ Sorry, delivery is not available at this restaurant.\n\nScan QR code to try another restaurant.';
+                    newState = STATES.MAIN_MENU;
+                    updatedData = {};
+                }
+                else {
+                    const menuData = await getRestaurantMenu(sessionData.selectedRestaurant);
+                    responseMessage = menuData.message;
+                    responseMessage += '\n\n*To order:*\n';
+                    responseMessage += 'Type item ID and quantity (e.g., "15 2")\n';
+                    responseMessage += 'Type "done" when finished\n';
+                    responseMessage += 'Type "cart" to view cart';
+                    newState = STATES.ADD_ITEMS;
+                    updatedData.cart = [];
+                    updatedData.action = 'delivery';
+                }
+            }
+            else if (choice === '2') {
+                // Book a Table
+                const restaurant = await pool.query(
+                    'SELECT * FROM restaurants WHERE id = $1',
+                    [sessionData.selectedRestaurant]
+                );
+
+                if (restaurant.rows.length === 0) {
+                    responseMessage = '❌ Restaurant not found.\n\nScan QR code to try again.';
+                    newState = STATES.MAIN_MENU;
+                    updatedData = {};
+                }
+                else if (!restaurant.rows[0].table_booking_available) {
+                    responseMessage = '❌ Sorry, table booking is not available at this restaurant.\n\nScan QR code to try another restaurant.';
+                    newState = STATES.MAIN_MENU;
+                    updatedData = {};
+                }
+                else {
+                    responseMessage = `📅 *Table Booking at ${restaurant.rows[0].name}*\n\n`;
+                    responseMessage += 'Please enter the date for your booking\n\n';
+                    responseMessage += 'Examples:\n';
+                    responseMessage += '• Today\n';
+                    responseMessage += '• Tomorrow\n';
+                    responseMessage += '• 25-01-2026\n';
+                    responseMessage += '• 25/01 (this year)';
+                    newState = STATES.BOOKING_DATE;
+                    updatedData.action = 'booking';
+                }
+            }
+            else {
+                responseMessage = '❌ Invalid choice.\n\nPlease reply with:\n1️⃣ for Order Delivery\n2️⃣ for Book a Table';
             }
         }
         // Add items to cart
@@ -1364,7 +1314,7 @@ async function handleIncomingMessage(from, body) {
 
                     if (subtotal < minAmount) {
                         responseMessage = `❌ Minimum order amount is ₹${minAmount}. Your cart total is ₹${subtotal}.\n\n`;
-                        responseMessage += 'Please add more items or type "menu" to cancel.';
+                        responseMessage += 'Please add more items or scan QR code to cancel.';
                     } else {
                         responseMessage = getCartSummary(sessionData, deliveryFee);
                         responseMessage += '\n\n📍 Please enter your delivery address:';
@@ -1429,7 +1379,7 @@ async function handleIncomingMessage(from, body) {
                 // responseMessage already sent in requestCODConfirmation
                 responseMessage = ''; // Prevent double message
             } else {
-                responseMessage = '❌ Error preparing order confirmation. Please try again or contact support at +91 8013610018';
+                responseMessage = '❌ Error preparing order confirmation.\n\nContact support: +91 8013610018\n\nScan QR code to try again.';
                 newState = STATES.MAIN_MENU;
                 updatedData = {};
             }
@@ -1511,12 +1461,12 @@ async function handleIncomingMessage(from, body) {
                     responseMessage += `Special Requests: ${sessionData.specialRequests}\n`;
                 }
                 responseMessage += '\nWe look forward to serving you!\n\n';
-                responseMessage += 'Type "menu" for more options.';
+                responseMessage += 'Scan QR code to place order.';
 
                 newState = STATES.MAIN_MENU;
                 updatedData = {};
             } else {
-                responseMessage = '❌ Sorry, there was an error processing your booking. Please try again or contact support.';
+                responseMessage = '❌ Sorry, there was an error processing your booking.\n\nContact support: +91 8013610018\n\nScan QR code to try again.';
             }
         }
 
@@ -1525,7 +1475,7 @@ async function handleIncomingMessage(from, body) {
 
     } catch (error) {
         console.error('❌ Error handling message:', error);
-        return '❌ Sorry, something went wrong. Please type "menu" to restart.';
+        return '❌ Sorry, something went wrong.\n\nScan QR code to place order.';
     }
 }
 
@@ -1570,6 +1520,7 @@ app.get('/health', async (req, res) => {
             safetyFeatures: {
                 customerReliabilityTracking: true,
                 codConfirmation: true,
+                codTimeout: '10 minutes',
                 fraudDetection: true,
                 autoBlocking: true
             },
@@ -1694,10 +1645,11 @@ app.listen(PORT, async () => {
 
         console.log('🔒 Safety Features Enabled:');
         console.log('   ✅ Customer reliability tracking');
-        console.log('   ✅ COD double confirmation (3-min timeout)');
+        console.log('   ✅ COD double confirmation (10-min timeout)');
         console.log('   ✅ Fraud detection & auto-blocking');
         console.log('   ✅ Trust score calculation');
-        console.log('   ✅ Enhanced owner notifications\n');
+        console.log('   ✅ Enhanced owner notifications');
+        console.log('   ✅ QR code-only restaurant access\n');
         
     } catch (error) {
         console.error('⚠️ Warning: Could not complete startup checks');
@@ -1721,3 +1673,65 @@ process.on('SIGINT', async () => {
     await pool.end();
     process.exit(0);
 });
+```
+
+---
+
+## 🎯 Complete List of Changes
+
+### ✅ 1. Confirmation Timeout: 3 → 10 Minutes
+- Line ~965: `sessionData.confirmationExpiry = Date.now() + (10 * 60 * 1000);`
+- Line ~940: `⏱️ You have 10 minutes to respond.`
+- Line ~976: `}, 10 * 60 * 1000);`
+
+### ✅ 2. All "Type menu" → "Scan QR code"
+- Line ~1048: Expired confirmation
+- Line ~1082: Cancelled order
+- Line ~1089: Order confirmed success
+- Line ~1095: Order error
+- Line ~1131: Expired confirmation timeout
+- Line ~1385: Booking confirmed
+- Line ~1389: Booking error
+- Line ~1398: General error handler
+
+### ✅ 3. Updated Main Menu
+- Line ~753: Removed restaurant browsing, just prompts to scan QR
+
+### ✅ 4. QR Detection Shows 1/2 Options
+- Line ~1156-1182: Shows delivery/booking choice after QR scan
+
+### ✅ 5. SELECT_RESTAURANT Handles 1/2
+- Line ~1194-1253: Processes choice 1 (delivery) or 2 (booking)
+
+### ✅ 6. MAIN_MENU Simplified
+- Line ~1188: Just shows help message, no restaurant lists
+
+---
+
+## 🧪 Test Your Updated System
+
+### Test 1: QR Scan Flow
+```
+Customer: ZAMZAM
+Bot: 🎉 Welcome to Zam Zam Restaurant!
+     What would you like to do?
+     1️⃣ Order Delivery
+     2️⃣ Book a Table
+     Reply with 1 or 2
+
+Customer: 1
+Bot: [Shows menu]
+```
+
+### Test 2: 10-Minute Timeout
+```
+1. Start order
+2. Get confirmation request
+3. Wait 3 minutes → Should NOT cancel
+4. Wait 10 minutes → Should cancel with "Scan QR code" message
+5. Time display: "9m 45s" format
+```
+
+### Test 3: Error Messages
+```
+Any error → "Scan QR code to place order" (NOT "Type menu")

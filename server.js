@@ -323,42 +323,77 @@ async function sendWhatsAppMessage(to, body, retries = 3) {
 }
 
 // =====================================================
-// ENHANCED OWNER NOTIFICATION
+// ENHANCED OWNER NOTIFICATION WITH DETAILED LOGGING
 // =====================================================
 async function notifyRestaurantOwner(restaurantId, notificationType, data) {
+    console.log('\n' + '='.repeat(70));
+    console.log(`🔔 OWNER NOTIFICATION ATTEMPT`);
+    console.log('='.repeat(70));
+    console.log(`📊 Restaurant ID: ${restaurantId}`);
+    console.log(`📊 Notification Type: ${notificationType}`);
+    console.log(`📊 Timestamp: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
+    console.log('='.repeat(70));
+    
     try {
+        // Step 1: Query restaurant details
+        console.log(`\n[STEP 1] Querying database for restaurant ID ${restaurantId}...`);
         const restaurantResult = await pool.query(`
             SELECT name, whatsapp_number, notify_on_order, notify_on_booking, owner_name
             FROM restaurants WHERE id = $1
         `, [restaurantId]);
 
         if (restaurantResult.rows.length === 0) {
-            console.log(`⚠️ Restaurant ID ${restaurantId} not found`);
+            console.log(`❌ [FAIL] Restaurant ID ${restaurantId} not found in database`);
+            console.log('='.repeat(70) + '\n');
             return;
         }
 
         const restaurant = restaurantResult.rows[0];
+        console.log(`✅ [SUCCESS] Restaurant found: ${restaurant.name}`);
+        console.log(`   ├─ Owner Name: ${restaurant.owner_name || 'Not set'}`);
+        console.log(`   ├─ WhatsApp: ${restaurant.whatsapp_number || 'NOT SET'}`);
+        console.log(`   ├─ Notify Orders: ${restaurant.notify_on_order ? '✅ ENABLED' : '❌ DISABLED'}`);
+        console.log(`   └─ Notify Bookings: ${restaurant.notify_on_booking ? '✅ ENABLED' : '❌ DISABLED'}`);
+
         const ownerPhone = restaurant.whatsapp_number;
 
+        // Step 2: Validate WhatsApp number
+        console.log(`\n[STEP 2] Validating WhatsApp number...`);
         if (!ownerPhone) {
-            console.log(`⚠️ No WhatsApp number configured for ${restaurant.name}`);
+            console.log(`❌ [FAIL] No WhatsApp number configured for ${restaurant.name}`);
+            console.log(`   └─ ACTION REQUIRED: Add whatsapp_number to database`);
+            console.log('='.repeat(70) + '\n');
             return;
         }
+        console.log(`✅ [VALID] WhatsApp number present: ${ownerPhone}`);
 
+        // Step 3: Check notification preferences
+        console.log(`\n[STEP 3] Checking notification preferences...`);
         if (notificationType === 'new_order' && !restaurant.notify_on_order) {
-            console.log(`ℹ️ Order notifications disabled for ${restaurant.name}`);
+            console.log(`❌ [SKIP] Order notifications DISABLED for ${restaurant.name}`);
+            console.log(`   └─ Database setting: notify_on_order = ${restaurant.notify_on_order}`);
+            console.log('='.repeat(70) + '\n');
             return;
         }
 
         if (notificationType === 'new_booking' && !restaurant.notify_on_booking) {
-            console.log(`ℹ️ Booking notifications disabled for ${restaurant.name}`);
+            console.log(`❌ [SKIP] Booking notifications DISABLED for ${restaurant.name}`);
+            console.log(`   └─ Database setting: notify_on_booking = ${restaurant.notify_on_booking}`);
+            console.log('='.repeat(70) + '\n');
             return;
         }
+        console.log(`✅ [ENABLED] Notifications are enabled for this type`);
 
+        // Step 4: Prepare notification message
+        console.log(`\n[STEP 4] Preparing notification message...`);
         let message = '';
 
         if (notificationType === 'new_order') {
+            console.log(`   ├─ Getting customer reliability for ${data.customerPhone}...`);
             const reliability = await checkCustomerReliability(data.customerPhone);
+            console.log(`   ├─ Customer Status: ${reliability.isNew ? 'NEW' : 'EXISTING'}`);
+            console.log(`   ├─ Trust Score: ${(reliability.trustScore * 100).toFixed(0)}%`);
+            console.log(`   └─ Is Blocked: ${reliability.isBlocked ? 'YES ⚠️' : 'NO ✅'}`);
 
             let riskEmoji = '🟢';
             let riskText = 'Trusted Customer';
@@ -419,11 +454,38 @@ async function notifyRestaurantOwner(restaurantId, notificationType, data) {
             message += `\n✅ Please confirm table availability!`;
         }
 
+        console.log(`✅ [SUCCESS] Message prepared`);
+        console.log(`   ├─ Length: ${message.length} characters`);
+        console.log(`   └─ Preview: ${message.substring(0, 80)}...`);
+
+        // Step 5: Send WhatsApp message
+        console.log(`\n[STEP 5] Sending WhatsApp message to ${ownerPhone}...`);
+        console.log(`   ├─ From: ${process.env.WABA_NUMBER}`);
+        console.log(`   ├─ To: whatsapp:${ownerPhone}`);
+        console.log(`   └─ Attempting send...`);
+
         await sendWhatsAppMessage(ownerPhone, message);
-        console.log(`✅ Notification sent to ${restaurant.name} owner at ${ownerPhone}`);
+        
+        console.log(`\n${'🎉'.repeat(35)}`);
+        console.log(`✅✅✅ NOTIFICATION SENT SUCCESSFULLY! ✅✅✅`);
+        console.log(`${'🎉'.repeat(35)}`);
+        console.log(`📱 Recipient: ${restaurant.name} owner`);
+        console.log(`📞 WhatsApp: ${ownerPhone}`);
+        console.log(`🕐 Time: ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
+        console.log('='.repeat(70) + '\n');
 
     } catch (error) {
-        console.error(`❌ Failed to notify owner for restaurant ${restaurantId}:`, error.message);
+        console.log(`\n${'❌'.repeat(35)}`);
+        console.error(`❌ NOTIFICATION FAILED - CRITICAL ERROR`);
+        console.log(`${'❌'.repeat(35)}`);
+        console.error(`📊 Restaurant ID: ${restaurantId}`);
+        console.error(`📊 Notification Type: ${notificationType}`);
+        console.error(`❌ Error Message: ${error.message}`);
+        console.error(`❌ Error Code: ${error.code || 'N/A'}`);
+        console.error(`❌ Error Status: ${error.status || 'N/A'}`);
+        console.error(`\n❌ Full Error Stack:`);
+        console.error(error.stack);
+        console.log('='.repeat(70) + '\n');
     }
 }
 
@@ -838,7 +900,7 @@ Type *CANCEL* to cancel
 }
 
 // =====================================================
-// CREATE ORDER - FIXED FOR GOOGLE SHEETS
+// CREATE ORDER - ENHANCED LOGGING
 // =====================================================
 async function createOrder(phoneNumber, sessionData) {
     const client = await pool.connect();
@@ -898,7 +960,15 @@ async function createOrder(phoneNumber, sessionData) {
         updateCustomerReliability(phoneNumber, 'COMPLETED').catch(err => 
             console.error('⚠️ Reliability update failed:', err.message));
 
-        // Send notification to owner (async)
+        // Send notification to owner (async) - ENHANCED LOGGING
+        console.log(`\n📤 Calling notifyRestaurantOwner for restaurant ID: ${sessionData.selectedRestaurant}`);
+        console.log(`📦 Notification data:`, {
+            orderId: orderId,
+            customerPhone: phoneNumber,
+            items: sessionData.cart.length + ' items',
+            total: total
+        });
+
         notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_order', {
             orderId: orderId,
             customerPhone: phoneNumber,
@@ -907,11 +977,17 @@ async function createOrder(phoneNumber, sessionData) {
             items: sessionData.cart,
             total: total,
             specialInstructions: sessionData.specialInstructions
-        }).catch(err => console.error('⚠️ Owner notification failed:', err.message));
+        }).then(() => {
+            console.log('✅ Owner notification completed successfully');
+        }).catch(err => {
+            console.error('❌ Owner notification FAILED:', err);
+            console.error('❌ Error details:', err.message);
+            console.error('❌ Error stack:', err.stack);
+        });
 
-        // ✅ FIXED: Log to Google Sheets with correct field names
+        // Log to Google Sheets
         if (isConfigured()) {
-            console.log(`📊 Attempting to log order #${orderId} to Google Sheets...`);
+            console.log(`📊 Logging order #${orderId} to Google Sheets...`);
             logOrderToSheets({
                 orderId: orderId,
                 restaurantName: restaurant.rows[0].name,
@@ -920,20 +996,17 @@ async function createOrder(phoneNumber, sessionData) {
                 customerName: sessionData.customerName || 'Customer',
                 orderType: 'delivery',
                 deliveryAddress: sessionData.deliveryAddress,
-                items: sessionData.cart,  // ✅ Pass cart array directly
+                items: sessionData.cart,
                 subtotal: subtotal,
                 deliveryFee: deliveryFee,
-                total: total,  // ✅ Changed from totalAmount
+                total: total,
                 specialInstructions: sessionData.specialInstructions || '',
                 status: 'Confirmed',
                 paymentStatus: 'Pending',
-                estimatedDeliveryTime: '45 minutes'  // ✅ Changed from estimatedDelivery
+                estimatedDeliveryTime: '45 minutes'
             }).catch(err => {
                 console.error('⚠️ Sheets logging failed:', err.message);
-                console.error('⚠️ Full error:', err);
             });
-        } else {
-            console.log('⚠️ Google Sheets not configured - skipping logging');
         }
 
         return { success: true, orderId, order: orderResult.rows[0], total, deliveryFee, subtotal };

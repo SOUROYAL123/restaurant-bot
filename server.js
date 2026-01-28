@@ -22,16 +22,13 @@ const pool = new Pool({
     ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
     max: 20,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000, // 10 seconds timeout
+    connectionTimeoutMillis: 10000,
 });
 
-// Handle database errors without crashing
 pool.on('error', (err) => {
     console.error('💥 Unexpected database error:', err.message);
-    // Don't crash - just log the error
 });
 
-// Test connection on startup (non-blocking)
 pool.query('SELECT NOW()')
     .then(() => console.log('✅ Initial database connection successful'))
     .catch(err => console.error('❌ Initial database connection failed:', err.message));
@@ -41,7 +38,6 @@ pool.query('SELECT NOW()')
 // =====================================================
 async function initializeSafetyTables() {
     try {
-        // Customer reliability tracking
         await pool.query(`
             CREATE TABLE IF NOT EXISTS customer_reliability (
                 phone_number VARCHAR(20) PRIMARY KEY,
@@ -57,7 +53,6 @@ async function initializeSafetyTables() {
             )
         `);
 
-        // Fraud alerts
         await pool.query(`
             CREATE TABLE IF NOT EXISTS fraud_alerts (
                 id SERIAL PRIMARY KEY,
@@ -90,13 +85,10 @@ let restaurantCache = {
     data: null,
     keywords: {},
     lastUpdated: null,
-    ttl: 5 * 60 * 1000 // 5 minutes cache
+    ttl: 5 * 60 * 1000
 };
 
-// OTP Store for verification
 const otpStore = new Map();
-
-// Confirmation timeouts
 const confirmationTimeouts = new Map();
 
 // =====================================================
@@ -122,8 +114,6 @@ const STATES = {
 // =====================================================
 // CUSTOMER RELIABILITY FUNCTIONS
 // =====================================================
-
-// Check customer reliability and trust score
 async function checkCustomerReliability(phoneNumber) {
     try {
         const result = await pool.query(
@@ -132,7 +122,6 @@ async function checkCustomerReliability(phoneNumber) {
         );
 
         if (result.rows.length === 0) {
-            // New customer - create record
             await pool.query(
                 'INSERT INTO customer_reliability (phone_number, trust_score) VALUES ($1, 1.0)',
                 [phoneNumber]
@@ -149,19 +138,15 @@ async function checkCustomerReliability(phoneNumber) {
         }
 
         const data = result.rows[0];
-        
-        // Calculate rates
         const completionRate = data.total_orders > 0 ? data.completed_orders / data.total_orders : 0;
         const cancelRate = data.total_orders > 0 ? data.cancelled_orders / data.total_orders : 0;
         const noShowRate = data.total_orders > 0 ? data.no_show_orders / data.total_orders : 0;
 
-        // Identify red flags
         const redFlags = [];
         if (cancelRate > 0.5) redFlags.push('High cancellation rate');
         if (noShowRate > 0.3) redFlags.push('Multiple no-shows');
         if (data.total_orders > 10 && completionRate < 0.3) redFlags.push('Low completion rate');
 
-        // Auto-block criteria
         const shouldBlock = (
             data.is_blocked ||
             (cancelRate > 0.7 && data.total_orders > 3) ||
@@ -199,9 +184,7 @@ async function checkCustomerReliability(phoneNumber) {
     }
 }
 
-// Update customer reliability after order outcome
 async function updateCustomerReliability(phoneNumber, outcome) {
-    // outcome: 'COMPLETED', 'CANCELLED', 'NO_SHOW'
     try {
         const existing = await pool.query(
             'SELECT * FROM customer_reliability WHERE phone_number = $1',
@@ -209,7 +192,6 @@ async function updateCustomerReliability(phoneNumber, outcome) {
         );
 
         if (existing.rows.length === 0) {
-            // Create new record
             await pool.query(`
                 INSERT INTO customer_reliability 
                 (phone_number, total_orders, completed_orders, cancelled_orders, no_show_orders, last_order_at)
@@ -221,7 +203,6 @@ async function updateCustomerReliability(phoneNumber, outcome) {
                 outcome === 'NO_SHOW' ? 1 : 0
             ]);
         } else {
-            // Update existing
             let updateQuery = `
                 UPDATE customer_reliability 
                 SET total_orders = total_orders + 1,
@@ -240,7 +221,6 @@ async function updateCustomerReliability(phoneNumber, outcome) {
             updateQuery += ' WHERE phone_number = $1';
             await pool.query(updateQuery, [phoneNumber]);
 
-            // Recalculate trust score
             const stats = await pool.query(
                 'SELECT * FROM customer_reliability WHERE phone_number = $1',
                 [phoneNumber]
@@ -248,7 +228,7 @@ async function updateCustomerReliability(phoneNumber, outcome) {
 
             const data = stats.rows[0];
             const completionRate = data.completed_orders / data.total_orders;
-            const trustScore = Math.max(0.1, completionRate); // Minimum 0.1
+            const trustScore = Math.max(0.1, completionRate);
 
             await pool.query(
                 'UPDATE customer_reliability SET trust_score = $1 WHERE phone_number = $2',
@@ -264,11 +244,10 @@ async function updateCustomerReliability(phoneNumber, outcome) {
 }
 
 // =====================================================
-// SMART RESTAURANT LOADER - LOADS FROM DATABASE
+// SMART RESTAURANT LOADER
 // =====================================================
 async function loadRestaurantsFromDatabase() {
     try {
-        // Check cache first
         if (restaurantCache.data && 
             restaurantCache.lastUpdated &&
             (Date.now() - restaurantCache.lastUpdated) < restaurantCache.ttl) {
@@ -280,22 +259,10 @@ async function loadRestaurantsFromDatabase() {
         
         const result = await pool.query(`
             SELECT 
-                id,
-                name,
-                cuisine_type,
-                address,
-                phone,
-                whatsapp_number,
-                qr_keyword,
-                opening_time,
-                closing_time,
-                delivery_available,
-                table_booking_available,
-                min_delivery_amount,
-                delivery_fee,
-                notify_on_order,
-                notify_on_booking,
-                owner_name
+                id, name, cuisine_type, address, phone, whatsapp_number,
+                qr_keyword, opening_time, closing_time, delivery_available,
+                table_booking_available, min_delivery_amount, delivery_fee,
+                notify_on_order, notify_on_booking, owner_name
             FROM restaurants
             WHERE (delivery_available = true OR table_booking_available = true)
             ORDER BY name
@@ -304,7 +271,6 @@ async function loadRestaurantsFromDatabase() {
         const restaurants = result.rows;
         const keywords = {};
 
-        // Build keyword map (case-insensitive)
         restaurants.forEach(restaurant => {
             if (restaurant.qr_keyword) {
                 const keyword = restaurant.qr_keyword.toLowerCase();
@@ -313,7 +279,6 @@ async function loadRestaurantsFromDatabase() {
             }
         });
 
-        // Update cache
         restaurantCache = {
             data: restaurants,
             keywords: keywords,
@@ -326,7 +291,6 @@ async function loadRestaurantsFromDatabase() {
 
     } catch (error) {
         console.error('❌ Error loading restaurants:', error);
-        // Return existing cache if available
         if (restaurantCache.data) {
             console.log('⚠️ Using stale cache due to error');
             return restaurantCache;
@@ -336,7 +300,7 @@ async function loadRestaurantsFromDatabase() {
 }
 
 // =====================================================
-// SEND WHATSAPP MESSAGE WITH RETRY LOGIC
+// SEND WHATSAPP MESSAGE
 // =====================================================
 async function sendWhatsAppMessage(to, body, retries = 3) {
     for (let attempt = 1; attempt <= retries; attempt++) {
@@ -353,27 +317,19 @@ async function sendWhatsAppMessage(to, body, retries = 3) {
             if (attempt === retries) {
                 throw error;
             }
-            // Wait before retry (exponential backoff)
             await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
         }
     }
 }
 
 // =====================================================
-// ENHANCED OWNER NOTIFICATION WITH TRUST SCORES
+// ENHANCED OWNER NOTIFICATION
 // =====================================================
 async function notifyRestaurantOwner(restaurantId, notificationType, data) {
     try {
-        // Get restaurant details from database
         const restaurantResult = await pool.query(`
-            SELECT 
-                name, 
-                whatsapp_number, 
-                notify_on_order, 
-                notify_on_booking,
-                owner_name
-            FROM restaurants 
-            WHERE id = $1
+            SELECT name, whatsapp_number, notify_on_order, notify_on_booking, owner_name
+            FROM restaurants WHERE id = $1
         `, [restaurantId]);
 
         if (restaurantResult.rows.length === 0) {
@@ -389,7 +345,6 @@ async function notifyRestaurantOwner(restaurantId, notificationType, data) {
             return;
         }
 
-        // Check notification preferences
         if (notificationType === 'new_order' && !restaurant.notify_on_order) {
             console.log(`ℹ️ Order notifications disabled for ${restaurant.name}`);
             return;
@@ -403,10 +358,8 @@ async function notifyRestaurantOwner(restaurantId, notificationType, data) {
         let message = '';
 
         if (notificationType === 'new_order') {
-            // Get customer reliability
             const reliability = await checkCustomerReliability(data.customerPhone);
 
-            // Risk indicator
             let riskEmoji = '🟢';
             let riskText = 'Trusted Customer';
 
@@ -428,7 +381,6 @@ async function notifyRestaurantOwner(restaurantId, notificationType, data) {
             message += `👤 Customer Name: ${data.customerName || 'Not provided'}\n`;
             message += `📍 Address: ${data.deliveryAddress}\n\n`;
 
-            // Customer history (if not new)
             if (!reliability.isNew) {
                 message += `👤 *Customer History:*\n`;
                 message += `• Total Orders: ${reliability.totalOrders}\n`;
@@ -476,20 +428,17 @@ async function notifyRestaurantOwner(restaurantId, notificationType, data) {
 }
 
 // =====================================================
-// SMART TIME PARSER - HANDLES MULTIPLE FORMATS
+// TIME & DATE PARSERS
 // =====================================================
 function parseFlexibleTime(timeString) {
     const input = timeString.trim().toUpperCase();
     
-    // Pattern 1: "8PM", "8 PM", "8pm"
     const pattern1 = input.match(/^(\d{1,2})\s*(AM|PM)$/);
     if (pattern1) {
         let hour = parseInt(pattern1[1]);
         const meridiem = pattern1[2];
         
-        if (hour < 1 || hour > 12) {
-            return null;
-        }
+        if (hour < 1 || hour > 12) return null;
         
         if (meridiem === 'PM' && hour !== 12) {
             hour += 12;
@@ -500,16 +449,13 @@ function parseFlexibleTime(timeString) {
         return `${hour.toString().padStart(2, '0')}:00`;
     }
     
-    // Pattern 2: "8:30PM", "8:30 PM", "8:30pm"
     const pattern2 = input.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/);
     if (pattern2) {
         let hour = parseInt(pattern2[1]);
         const minute = parseInt(pattern2[2]);
         const meridiem = pattern2[3];
         
-        if (hour < 1 || hour > 12 || minute < 0 || minute > 59) {
-            return null;
-        }
+        if (hour < 1 || hour > 12 || minute < 0 || minute > 59) return null;
         
         if (meridiem === 'PM' && hour !== 12) {
             hour += 12;
@@ -520,27 +466,21 @@ function parseFlexibleTime(timeString) {
         return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
     }
     
-    // Pattern 3: "20:00", "08:30" (24-hour format)
     const pattern3 = input.match(/^(\d{1,2}):(\d{2})$/);
     if (pattern3) {
         const hour = parseInt(pattern3[1]);
         const minute = parseInt(pattern3[2]);
         
-        if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-            return null;
-        }
+        if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
         
         return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
     }
     
-    // Pattern 4: "8", "20" (just hour, no minutes)
     const pattern4 = input.match(/^(\d{1,2})$/);
     if (pattern4) {
         const hour = parseInt(pattern4[1]);
         
-        if (hour < 0 || hour > 23) {
-            return null;
-        }
+        if (hour < 0 || hour > 23) return null;
         
         return `${hour.toString().padStart(2, '0')}:00`;
     }
@@ -548,14 +488,10 @@ function parseFlexibleTime(timeString) {
     return null;
 }
 
-// =====================================================
-// SMART DATE PARSER - HANDLES MULTIPLE FORMATS
-// =====================================================
 function parseFlexibleDate(dateString) {
     const input = dateString.trim().toLowerCase();
     const today = new Date();
     
-    // Pattern 1: "today", "tomorrow"
     if (input === 'today') {
         const year = today.getFullYear();
         const month = (today.getMonth() + 1).toString().padStart(2, '0');
@@ -572,7 +508,6 @@ function parseFlexibleDate(dateString) {
         return `${year}-${month}-${day}`;
     }
     
-    // Pattern 2: "DD-MM-YYYY", "DD/MM/YYYY", "DD.MM.YYYY"
     const pattern1 = input.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/);
     if (pattern1) {
         const day = parseInt(pattern1[1]);
@@ -586,7 +521,6 @@ function parseFlexibleDate(dateString) {
         return `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
     }
     
-    // Pattern 3: "DD-MM", "DD/MM" (assume current year)
     const pattern2 = input.match(/^(\d{1,2})[-\/.](\d{1,2})$/);
     if (pattern2) {
         const day = parseInt(pattern2[1]);
@@ -660,7 +594,7 @@ function getSessionData(session) {
 }
 
 // =====================================================
-// SMART KEYWORD DETECTION - LOADS FROM DATABASE
+// KEYWORD DETECTION
 // =====================================================
 async function detectRestaurantFromKeyword(message) {
     try {
@@ -715,7 +649,6 @@ async function getRestaurantMenu(restaurantId) {
 
         let message = `📋 *${restaurant.name} - Menu*\n\n`;
 
-        // Group by category
         const categories = {};
         menuItems.rows.forEach(item => {
             const category = item.category || 'Other';
@@ -725,7 +658,6 @@ async function getRestaurantMenu(restaurantId) {
             categories[category].push(item);
         });
 
-        // Format menu
         for (const [category, items] of Object.entries(categories)) {
             message += `*${category.toUpperCase()}*\n`;
             items.forEach(item => {
@@ -814,7 +746,7 @@ function getCartSummary(sessionData, deliveryFee = 0) {
 }
 
 // =====================================================
-// COD CONFIRMATION WITH 10-MINUTE TIMEOUT - FIXED
+// COD CONFIRMATION - FIXED
 // =====================================================
 async function requestCODConfirmation(phoneNumber, sessionData) {
     try {
@@ -831,7 +763,6 @@ async function requestCODConfirmation(phoneNumber, sessionData) {
         const subtotal = sessionData.cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
         const total = subtotal + deliveryFee;
 
-        // Format items list
         let itemsList = '';
         sessionData.cart.forEach(item => {
             itemsList += `${item.quantity}× ${item.name} - ₹${(item.price * item.quantity).toFixed(0)}\n`;
@@ -868,13 +799,11 @@ Type *CANCEL* to cancel
 
         await sendWhatsAppMessage(phoneNumber, confirmationMessage);
 
-        // Calculate expiry timestamp - 10 MINUTES from NOW
         const expiryTimestamp = Date.now() + (10 * 60 * 1000);
         
         console.log(`✅ COD confirmation sent to ${phoneNumber}`);
         console.log(`⏰ Expiry set to: ${new Date(expiryTimestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`);
 
-        // Set timeout to auto-cancel after 10 MINUTES
         const timeoutId = setTimeout(async () => {
             try {
                 const session = await getUserSession(phoneNumber);
@@ -890,11 +819,10 @@ Type *CANCEL* to cancel
             } catch (error) {
                 console.error('❌ Timeout cleanup error:', error);
             }
-        }, 10 * 60 * 1000); // 10 MINUTES
+        }, 10 * 60 * 1000);
 
         confirmationTimeouts.set(phoneNumber, timeoutId);
 
-        // Return data including expiry timestamp
         return { 
             total, 
             deliveryFee, 
@@ -909,6 +837,9 @@ Type *CANCEL* to cancel
     }
 }
 
+// =====================================================
+// CREATE ORDER - FIXED FOR GOOGLE SHEETS
+// =====================================================
 async function createOrder(phoneNumber, sessionData) {
     const client = await pool.connect();
 
@@ -961,6 +892,8 @@ async function createOrder(phoneNumber, sessionData) {
 
         await client.query('COMMIT');
 
+        console.log(`✅ Order #${orderId} created in database`);
+
         // Update customer reliability (async)
         updateCustomerReliability(phoneNumber, 'COMPLETED').catch(err => 
             console.error('⚠️ Reliability update failed:', err.message));
@@ -976,27 +909,31 @@ async function createOrder(phoneNumber, sessionData) {
             specialInstructions: sessionData.specialInstructions
         }).catch(err => console.error('⚠️ Owner notification failed:', err.message));
 
-        // Log to Google Sheets (async)
+        // ✅ FIXED: Log to Google Sheets with correct field names
         if (isConfigured()) {
+            console.log(`📊 Attempting to log order #${orderId} to Google Sheets...`);
             logOrderToSheets({
                 orderId: orderId,
-                dateTime: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
                 restaurantName: restaurant.rows[0].name,
                 restaurantId: sessionData.selectedRestaurant,
                 customerPhone: phoneNumber,
                 customerName: sessionData.customerName || 'Customer',
-                orderType: 'Delivery',
+                orderType: 'delivery',
                 deliveryAddress: sessionData.deliveryAddress,
-                itemsOrdered: sessionData.cart.map(i => `${i.quantity}× ${i.name}`).join(', '),
-                totalItems: sessionData.cart.reduce((sum, i) => sum + i.quantity, 0),
+                items: sessionData.cart,  // ✅ Pass cart array directly
                 subtotal: subtotal,
                 deliveryFee: deliveryFee,
-                totalAmount: total,
+                total: total,  // ✅ Changed from totalAmount
                 specialInstructions: sessionData.specialInstructions || '',
                 status: 'Confirmed',
                 paymentStatus: 'Pending',
-                estimatedDelivery: '45 minutes'
-            }).catch(err => console.error('⚠️ Sheets logging failed:', err.message));
+                estimatedDeliveryTime: '45 minutes'  // ✅ Changed from estimatedDelivery
+            }).catch(err => {
+                console.error('⚠️ Sheets logging failed:', err.message);
+                console.error('⚠️ Full error:', err);
+            });
+        } else {
+            console.log('⚠️ Google Sheets not configured - skipping logging');
         }
 
         return { success: true, orderId, order: orderResult.rows[0], total, deliveryFee, subtotal };
@@ -1029,13 +966,11 @@ async function createBooking(phoneNumber, sessionData) {
             ]
         );
 
-        // Get restaurant details
         const restaurant = await pool.query(
             'SELECT name, address, phone FROM restaurants WHERE id = $1',
             [sessionData.selectedRestaurant]
         );
 
-        // Send notification to owner (async)
         notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_booking', {
             bookingId: result.rows[0].id,
             customerName: sessionData.customerName,
@@ -1046,11 +981,9 @@ async function createBooking(phoneNumber, sessionData) {
             specialRequests: sessionData.specialRequests
         }).catch(err => console.error('⚠️ Owner notification failed:', err.message));
 
-        // Log to Google Sheets (async)
         if (isConfigured()) {
             logBookingToSheets({
                 bookingId: result.rows[0].id,
-                dateTime: new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }),
                 restaurantName: restaurant.rows[0].name,
                 restaurantId: sessionData.selectedRestaurant,
                 customerPhone: phoneNumber,
@@ -1071,7 +1004,7 @@ async function createBooking(phoneNumber, sessionData) {
 }
 
 // =====================================================
-// MAIN MESSAGE HANDLER - WITH UPDATED QR FLOW
+// MAIN MESSAGE HANDLER
 // =====================================================
 async function handleIncomingMessage(from, body) {
     const phoneNumber = from.replace('whatsapp:', '');
@@ -1086,9 +1019,7 @@ async function handleIncomingMessage(from, body) {
         let newState = session.current_state;
         let updatedData = { ...sessionData };
 
-        // =====================================================
-        // HANDLE COD CONFIRMATION STATE - FIXED WITH LOGGING
-        // =====================================================
+        // COD CONFIRMATION STATE
         if (session.current_state === STATES.COD_CONFIRMATION) {
             const response = message.toUpperCase();
             
@@ -1097,7 +1028,6 @@ async function handleIncomingMessage(from, body) {
             console.log(`⏰ Expiry time: ${sessionData.confirmationExpiry || 'NOT SET'}`);
             console.log(`⏰ Time remaining: ${sessionData.confirmationExpiry ? Math.floor((sessionData.confirmationExpiry - Date.now()) / 1000) : 0} seconds`);
 
-            // Check expiry
             if (Date.now() > (sessionData.confirmationExpiry || 0)) {
                 await updateCustomerReliability(phoneNumber, 'CANCELLED');
                 responseMessage = '⏱️ Confirmation expired. Order cancelled.\n\nScan QR code to place order.';
@@ -1106,7 +1036,6 @@ async function handleIncomingMessage(from, body) {
                 
                 console.log(`❌ Order expired for ${phoneNumber}`);
                 
-                // Clear timeout
                 if (confirmationTimeouts.has(phoneNumber)) {
                     clearTimeout(confirmationTimeouts.get(phoneNumber));
                     confirmationTimeouts.delete(phoneNumber);
@@ -1115,7 +1044,6 @@ async function handleIncomingMessage(from, body) {
             else if (response === 'CONFIRM') {
                 console.log(`✅ Processing CONFIRM from ${phoneNumber}`);
                 
-                // Check if customer is blocked
                 const reliability = await checkCustomerReliability(phoneNumber);
 
                 if (reliability.isBlocked) {
@@ -1123,7 +1051,6 @@ async function handleIncomingMessage(from, body) {
                     newState = STATES.MAIN_MENU;
                     updatedData = {};
                 } else {
-                    // Create order
                     const orderResult = await createOrder(phoneNumber, sessionData);
 
                     if (orderResult.success) {
@@ -1158,7 +1085,6 @@ async function handleIncomingMessage(from, body) {
                     }
                 }
 
-                // Clear timeout
                 if (confirmationTimeouts.has(phoneNumber)) {
                     clearTimeout(confirmationTimeouts.get(phoneNumber));
                     confirmationTimeouts.delete(phoneNumber);
@@ -1173,7 +1099,6 @@ async function handleIncomingMessage(from, body) {
 
                 console.log(`❌ Order cancelled by user ${phoneNumber}`);
 
-                // Clear timeout
                 if (confirmationTimeouts.has(phoneNumber)) {
                     clearTimeout(confirmationTimeouts.get(phoneNumber));
                     confirmationTimeouts.delete(phoneNumber);
@@ -1196,13 +1121,10 @@ async function handleIncomingMessage(from, body) {
             return responseMessage;
         }
 
-        // =====================================================
-        // SMART QR KEYWORD DETECTION - SHOWS DELIVERY/BOOKING OPTIONS
-        // =====================================================
+        // QR KEYWORD DETECTION
         const detectedRestaurant = await detectRestaurantFromKeyword(message);
         
         if (detectedRestaurant && !sessionData.selectedRestaurant) {
-            // Check if customer is blocked
             const reliability = await checkCustomerReliability(phoneNumber);
 
             if (reliability.isBlocked) {
@@ -1212,7 +1134,6 @@ async function handleIncomingMessage(from, body) {
             updatedData.selectedRestaurant = detectedRestaurant.id;
             updatedData.restaurantName = detectedRestaurant.name;
 
-            // Show restaurant-specific menu with delivery and booking options
             responseMessage = `🎉 *Welcome to ${detectedRestaurant.name}!*\n\n`;
             responseMessage += `What would you like to do?\n\n`;
             
@@ -1237,28 +1158,25 @@ async function handleIncomingMessage(from, body) {
             return responseMessage;
         }
 
-        // Handle menu/restart commands
+        // MENU/RESTART COMMANDS
         if (messageLower === 'menu' || messageLower === 'restart' || messageLower === 'start') {
             responseMessage = getMainMenuMessage();
             newState = STATES.MAIN_MENU;
             updatedData = {};
         }
-        // Main menu - only accessible if someone types "menu" (not through QR)
+        // MAIN MENU
         else if (session.current_state === STATES.MAIN_MENU) {
-            // No options - just tell them to scan QR code
             responseMessage = getMainMenuMessage();
         }
-        // Restaurant selection - handles delivery/booking choice from QR flow
+        // SELECT RESTAURANT
         else if (session.current_state === STATES.SELECT_RESTAURANT) {
             const choice = message.trim();
 
-            // Get current selected restaurant
             if (!sessionData.selectedRestaurant) {
                 responseMessage = '❌ No restaurant selected.\n\nScan QR code to start.';
                 newState = STATES.MAIN_MENU;
             }
             else if (choice === '1') {
-                // Order Delivery
                 const restaurant = await pool.query(
                     'SELECT * FROM restaurants WHERE id = $1',
                     [sessionData.selectedRestaurant]
@@ -1287,7 +1205,6 @@ async function handleIncomingMessage(from, body) {
                 }
             }
             else if (choice === '2') {
-                // Book a Table
                 const restaurant = await pool.query(
                     'SELECT * FROM restaurants WHERE id = $1',
                     [sessionData.selectedRestaurant]
@@ -1319,7 +1236,7 @@ async function handleIncomingMessage(from, body) {
                 responseMessage = '❌ Invalid choice.\n\nPlease reply with:\n1️⃣ for Order Delivery\n2️⃣ for Book a Table';
             }
         }
-        // Add items to cart
+        // ADD ITEMS TO CART
         else if (session.current_state === STATES.ADD_ITEMS) {
             if (messageLower === 'done') {
                 if (!sessionData.cart || sessionData.cart.length === 0) {
@@ -1379,24 +1296,22 @@ async function handleIncomingMessage(from, body) {
                 }
             }
         }
-        // Delivery address
+        // DELIVERY ADDRESS
         else if (session.current_state === STATES.DELIVERY_ADDRESS) {
             updatedData.deliveryAddress = body.trim();
             responseMessage = '✅ Address saved!\n\n';
             responseMessage += 'Any special instructions? (Type "no" if none)';
             newState = STATES.CONFIRM_ORDER;
         }
-        // Special instructions -> COD Confirmation - FIXED
+        // SPECIAL INSTRUCTIONS → COD CONFIRMATION
         else if (session.current_state === STATES.CONFIRM_ORDER) {
             if (messageLower !== 'no') {
                 updatedData.specialInstructions = body.trim();
             }
 
-            // Request COD confirmation
             const confirmResult = await requestCODConfirmation(phoneNumber, sessionData);
 
             if (confirmResult) {
-                // CRITICAL FIX: Save confirmation expiry and flag to session
                 updatedData.confirmationExpiry = confirmResult.confirmationExpiry;
                 updatedData.awaitingCODConfirmation = confirmResult.awaitingCODConfirmation;
                 
@@ -1404,10 +1319,8 @@ async function handleIncomingMessage(from, body) {
                 
                 console.log(`✅ Session updated with expiry: ${confirmResult.confirmationExpiry}`);
                 
-                // Update session with the expiry data BEFORE returning
                 await updateUserSession(phoneNumber, newState, updatedData);
                 
-                // Return empty string because message already sent in requestCODConfirmation
                 return '';
             } else {
                 responseMessage = '❌ Error preparing order confirmation.\n\nContact support: +91 8013610018\n\nScan QR code to try again.';
@@ -1415,7 +1328,7 @@ async function handleIncomingMessage(from, body) {
                 updatedData = {};
             }
         }
-        // Booking date
+        // BOOKING DATE
         else if (session.current_state === STATES.BOOKING_DATE) {
             const parsedDate = parseFlexibleDate(message);
             if (parsedDate) {
@@ -1433,7 +1346,7 @@ async function handleIncomingMessage(from, body) {
                 responseMessage += '• 25-01 (this year)';
             }
         }
-        // Booking time
+        // BOOKING TIME
         else if (session.current_state === STATES.BOOKING_TIME) {
             const parsedTime = parseFlexibleTime(message);
             if (parsedTime) {
@@ -1449,7 +1362,7 @@ async function handleIncomingMessage(from, body) {
                 responseMessage += '• 8 PM or 8:30 PM';
             }
         }
-        // Number of guests
+        // NUMBER OF GUESTS
         else if (session.current_state === STATES.BOOKING_GUESTS) {
             const guests = parseInt(message);
             if (!isNaN(guests) && guests > 0) {
@@ -1461,13 +1374,13 @@ async function handleIncomingMessage(from, body) {
                 responseMessage = '❌ Please enter a valid number of guests.';
             }
         }
-        // Booking name
+        // BOOKING NAME
         else if (session.current_state === STATES.BOOKING_NAME) {
             updatedData.customerName = body.trim();
             responseMessage = '📝 Any special requests? (Type "no" if none)';
             newState = STATES.CONFIRM_BOOKING;
         }
-        // Confirm booking
+        // CONFIRM BOOKING
         else if (session.current_state === STATES.CONFIRM_BOOKING) {
             if (messageLower !== 'no') {
                 updatedData.specialRequests = body.trim();
@@ -1522,7 +1435,7 @@ app.post('/webhook', async (req, res) => {
 
         const response = await handleIncomingMessage(from, body);
         
-        if (response) { // Only send if there's a response
+        if (response) {
             await sendWhatsAppMessage(from.replace('whatsapp:', ''), response);
         }
 
@@ -1587,7 +1500,7 @@ app.get('/restaurants', async (req, res) => {
 
 app.post('/reload-cache', async (req, res) => {
     try {
-        restaurantCache.lastUpdated = null; // Force reload
+        restaurantCache.lastUpdated = null;
         const restaurantData = await loadRestaurantsFromDatabase();
         res.json({
             success: true,
@@ -1614,7 +1527,6 @@ app.get('/sheets-status', (req, res) => {
     });
 });
 
-// Customer reliability endpoint (for testing)
 app.get('/customer-reliability/:phone', async (req, res) => {
     try {
         const phoneNumber = req.params.phone;
@@ -1625,7 +1537,6 @@ app.get('/customer-reliability/:phone', async (req, res) => {
     }
 });
 
-// DEBUG: Test session data
 app.get('/test-session/:phone', async (req, res) => {
     try {
         const phoneNumber = req.params.phone;
@@ -1649,11 +1560,10 @@ app.get('/test-session/:phone', async (req, res) => {
 });
 
 // =====================================================
-// START SERVER - BULLETPROOF VERSION
+// START SERVER
 // =====================================================
 const PORT = process.env.PORT || 3000;
 
-// Critical: Start HTTP server FIRST before any database operations
 const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${'='.repeat(60)}`);
     console.log(`🚀 SERVER STARTED - Port ${PORT}`);
@@ -1663,7 +1573,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`🏥 Health: https://restaurant.legacylens.co.in/health\n`);
 });
 
-// Keep server alive even if initialization fails
 server.on('error', (error) => {
     console.error('❌ Server error:', error);
     if (error.code === 'EADDRINUSE') {
@@ -1672,12 +1581,10 @@ server.on('error', (error) => {
     }
 });
 
-// Initialize features AFTER server is listening (async, non-blocking)
 setImmediate(async () => {
     console.log('🔧 Starting feature initialization...\n');
     
     try {
-        // Step 1: Test database
         console.log('1️⃣ Testing database connection...');
         try {
             await pool.query('SELECT NOW()');
@@ -1688,7 +1595,6 @@ setImmediate(async () => {
             console.error('   ⚠️ Bot will work with limited functionality\n');
         }
 
-        // Step 2: Initialize safety tables
         console.log('2️⃣ Initializing safety tables...');
         try {
             await initializeSafetyTables();
@@ -1698,14 +1604,12 @@ setImmediate(async () => {
             console.error('   Error:', error.message, '\n');
         }
 
-        // Step 3: Load restaurants
         console.log('3️⃣ Loading restaurants...');
         try {
             const restaurantData = await loadRestaurantsFromDatabase();
             console.log(`   ✅ Loaded ${restaurantData.data.length} restaurants`);
             console.log(`   ✅ Active keywords: ${Object.keys(restaurantData.keywords).join(', ')}\n`);
             
-            // Display configuration
             if (restaurantData.data.length > 0) {
                 console.log('📋 Restaurant Details:\n');
                 restaurantData.data.forEach(r => {
@@ -1721,7 +1625,6 @@ setImmediate(async () => {
             console.error('   Error:', error.message, '\n');
         }
 
-        // Step 4: Test Google Sheets (optional)
         console.log('4️⃣ Testing Google Sheets...');
         if (isConfigured()) {
             try {
@@ -1739,7 +1642,6 @@ setImmediate(async () => {
             console.log('   ℹ️ Google Sheets: Not configured (optional)\n');
         }
 
-        // Step 5: Verify Twilio
         console.log('5️⃣ Verifying Twilio credentials...');
         if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.WABA_NUMBER) {
             console.log('   ✅ Twilio: CONFIGURED\n');
@@ -1748,7 +1650,6 @@ setImmediate(async () => {
             console.error('   ⚠️ WhatsApp messaging will not work\n');
         }
 
-        // Final status
         console.log('🔒 Safety Features:');
         console.log('   ✅ Customer reliability tracking');
         console.log('   ✅ COD confirmation (10-min timeout)');
@@ -1768,7 +1669,6 @@ setImmediate(async () => {
     }
 });
 
-// Graceful shutdown
 process.on('SIGTERM', async () => {
     console.log('\n⚠️ SIGTERM received, shutting down gracefully...');
     server.close(async () => {
@@ -1782,7 +1682,6 @@ process.on('SIGTERM', async () => {
         process.exit(0);
     });
     
-    // Force close after 10 seconds
     setTimeout(() => {
         console.error('❌ Forced shutdown after timeout');
         process.exit(1);
@@ -1803,15 +1702,12 @@ process.on('SIGINT', async () => {
     });
 });
 
-// Handle uncaught errors
 process.on('uncaughtException', (error) => {
     console.error('\n❌ UNCAUGHT EXCEPTION:', error);
     console.error('Stack:', error.stack);
-    // Don't exit - let the server continue running
 });
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('\n❌ UNHANDLED REJECTION at:', promise);
     console.error('Reason:', reason);
-    // Don't exit - let the server continue running
 });

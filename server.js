@@ -1076,6 +1076,7 @@ async function createBooking(phoneNumber, sessionData) {
     }
 }
 
+
 // =====================================================
 // MAIN MESSAGE HANDLER
 // =====================================================
@@ -1633,6 +1634,41 @@ app.get('/test-session/:phone', async (req, res) => {
 });
 
 // =====================================================
+// 🧪 TEST OWNER NOTIFICATION ENDPOINT - FOR DEBUGGING
+// =====================================================
+app.get('/test-owner-notify', async (req, res) => {
+    try {
+        console.log('\n🧪 MANUAL TEST: Testing owner notification...\n');
+        
+        await notifyRestaurantOwner(1, 'new_order', {
+            orderId: 999,
+            customerPhone: '+918013610018',
+            customerName: 'Test Customer',
+            deliveryAddress: 'Test Address, Kolkata',
+            items: [
+                { name: 'Test Biryani', quantity: 2, price: 250 },
+                { name: 'Test Paneer', quantity: 1, price: 180 }
+            ],
+            total: 680,
+            specialInstructions: 'Test order - please ignore'
+        });
+        
+        res.json({ 
+            success: true, 
+            message: 'Test notification sent! Check Railway logs for detailed 5-step output.',
+            instructions: 'Look for the "OWNER NOTIFICATION ATTEMPT" section in logs'
+        });
+    } catch (error) {
+        console.error('❌ Test failed:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message,
+            stack: error.stack
+        });
+    }
+});
+
+// =====================================================
 // START SERVER
 // =====================================================
 const PORT = process.env.PORT || 3000;
@@ -1734,6 +1770,11 @@ setImmediate(async () => {
         console.log('✅ INITIALIZATION COMPLETE');
         console.log('🎉 Bot is ready to receive messages!');
         console.log(`${'='.repeat(60)}\n`);
+
+        console.log('🧪 DEBUG ENDPOINTS AVAILABLE:');
+        console.log('   📍 Test notification: https://restaurant.legacylens.co.in/test-owner-notify');
+        console.log('   📍 Health check: https://restaurant.legacylens.co.in/health');
+        console.log('   📍 Restaurants: https://restaurant.legacylens.co.in/restaurants\n');
 
     } catch (error) {
         console.error('\n⚠️ INITIALIZATION ERROR:', error.message);

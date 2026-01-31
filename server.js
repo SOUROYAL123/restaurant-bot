@@ -1,4 +1,3 @@
-
 // ============================================
 // RESTAURANT WHATSAPP BOT - PRODUCTION v3.0
 // Multi-Restaurant Order & Booking System
@@ -48,14 +47,15 @@ if (!accountSid || !authToken || !wabaNumber) {
 const twilioClient = twilio(accountSid, authToken);
 
 // ============================================
-// DATABASE CONNECTION
+// DATABASE CONNECTION (Scalable Configuration)
 // ============================================
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  connectionTimeoutMillis: 10000,
-  max: 20,
-  idleTimeoutMillis: 30000
+  connectionTimeoutMillis: parseInt(process.env.DB_CONNECTION_TIMEOUT || '10000'),
+  max: parseInt(process.env.DB_POOL_MAX || '50'),
+  min: parseInt(process.env.DB_POOL_MIN || '10'),
+  idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT || '30000')
 });
 
 // Database connection handler with retry
@@ -83,11 +83,12 @@ const connectDB = async (retries = 3) => {
 connectDB();
 
 // ============================================
-// IN-MEMORY CACHES & SESSIONS
+// IN-MEMORY CACHES & SESSIONS (Scalable)
 // ============================================
 let restaurantCache = [];
 let lastCacheUpdate = 0;
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = parseInt(process.env.CACHE_TTL || '300000'); // Default: 5 minutes
+const CACHE_MAX_SIZE = parseInt(process.env.CACHE_MAX_SIZE || '1000');
 
 const sessions = new Map();
 const pendingPayments = new Map(); // Track payment timeouts
@@ -95,6 +96,12 @@ const pendingPayments = new Map(); // Track payment timeouts
 // Customer reliability tracking
 const customerReliability = new Map();
 const FRAUD_LOG = [];
+
+// Session timeout configurations
+const SESSION_TIMEOUT = parseInt(process.env.SESSION_TIMEOUT || '1800000'); // 30 minutes
+const OTP_TIMEOUT = parseInt(process.env.OTP_TIMEOUT || '300000'); // 5 minutes
+const PAYMENT_TIMEOUT = parseInt(process.env.PAYMENT_TIMEOUT || '900000'); // 15 minutes
+const COD_CONFIRMATION_TIMEOUT = parseInt(process.env.COD_CONFIRMATION_TIMEOUT || '600000'); // 10 minutes
 
 // ============================================
 // RESTAURANT TRIGGERS (case-insensitive)
@@ -465,22 +472,29 @@ function updateReliability(phone, outcome) {
   console.log(`📊 Reliability updated for ${phone}: Score ${reliability.trustScore}`);
 }
 
-// Notify restaurant owner
+// Notify restaurant owner (scalable - uses database)
 async function notifyOwner(session, orderId, type = 'order') {
   try {
-    const ownerPhoneKey = `${session.restaurantName.toUpperCase().replace(/\s+/g, '')}_OWNER_PHONE`;
-    const ownerPhone = process.env[ownerPhoneKey];
+    // Fetch owner phone from database (scalable for 100+ restaurants)
+    const result = await pool.query(
+      'SELECT phone, owner_name FROM restaurants WHERE id = $1',
+      [session.restaurantId]
+    );
 
-    if (!ownerPhone) {
-      console.log(`⚠️ No owner phone configured for ${session.restaurantName} (${ownerPhoneKey})`);
+    if (!result.rows.length || !result.rows[0].phone) {
+      console.log(`⚠️ No owner phone in database for restaurant ID ${session.restaurantId}`);
       return;
     }
+
+    const ownerPhone = result.rows[0].phone;
+    const ownerName = result.rows[0].owner_name || 'Owner';
 
     let message = '';
 
     if (type === 'order') {
       const paymentStatus = session.paymentMethod === 'online' ? '💳 PAID' : '💵 COD';
       message = `🔔 *NEW ORDER #${orderId}*\n\n`;
+      message += `🍽️ Restaurant: ${session.restaurantName}\n`;
       message += `📱 Customer: ${session.phone}\n`;
       message += `👤 Name: ${session.customerName || 'Not provided'}\n`;
       message += `📍 Address: ${session.deliveryAddress || 'Not provided'}\n\n`;
@@ -493,6 +507,7 @@ async function notifyOwner(session, orderId, type = 'order') {
       message += `⏰ ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`;
     } else if (type === 'booking') {
       message = `🔔 *NEW TABLE BOOKING #${orderId}*\n\n`;
+      message += `🍽️ Restaurant: ${session.restaurantName}\n`;
       message += `📱 Customer: ${session.phone}\n`;
       message += `👤 Name: ${session.customerName || 'Not provided'}\n`;
       message += `📅 Date: ${session.bookingDate}\n`;
@@ -502,7 +517,7 @@ async function notifyOwner(session, orderId, type = 'order') {
     }
 
     await sendMessage(ownerPhone, message);
-    console.log(`✅ Owner notification sent to ${ownerPhone}`);
+    console.log(`✅ Owner notification sent to ${ownerPhone} (${ownerName})`);
 
   } catch (error) {
     console.error('❌ Error notifying owner:', error.message);
@@ -717,11 +732,11 @@ app.post('/webhook', async (req, res) => {
       session.state = STATES.VERIFY_OTP;
       session.otpAttempts = 0;
 
-      // Set OTP timeout (5 minutes)
+      // Set OTP timeout (configurable)
       session.otpTimeout = setTimeout(() => {
         sessions.delete(customerPhone);
         sendMessage(customerPhone, '⏱️ OTP expired. Please start over by typing the restaurant name.');
-      }, 5 * 60 * 1000);
+      }, OTP_TIMEOUT);
 
       sessions.set(customerPhone, session);
 
@@ -921,7 +936,7 @@ app.post('/webhook', async (req, res) => {
             session.paymentLink = paymentData.short_url;
             sessions.set(customerPhone, session);
 
-            // Set payment timeout (15 minutes)
+            // Set payment timeout (configurable)
             const paymentTimeout = setTimeout(async () => {
               const currentSession = sessions.get(customerPhone);
               if (currentSession && currentSession.state === STATES.AWAITING_PAYMENT) {
@@ -934,7 +949,7 @@ app.post('/webhook', async (req, res) => {
                 );
               }
               pendingPayments.delete(customerPhone);
-            }, 15 * 60 * 1000);
+            }, PAYMENT_TIMEOUT);
 
             pendingPayments.set(customerPhone, paymentTimeout);
 
@@ -970,7 +985,7 @@ app.post('/webhook', async (req, res) => {
         session.paymentMethod = 'cod';
         sessions.set(customerPhone, session);
 
-        // Set 10-minute confirmation timeout
+        // Set confirmation timeout (configurable)
         session.confirmationTimeout = setTimeout(async () => {
           const currentSession = sessions.get(customerPhone);
           if (currentSession && currentSession.state === STATES.AWAITING_CONFIRMATION) {
@@ -982,7 +997,7 @@ app.post('/webhook', async (req, res) => {
               `Type restaurant name to start over.`
             );
           }
-        }, 10 * 60 * 1000);
+        }, COD_CONFIRMATION_TIMEOUT);
 
         await sendMessage(
           customerPhone,

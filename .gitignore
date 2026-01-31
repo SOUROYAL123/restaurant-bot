@@ -1,0 +1,59 @@
+# Environment variables (NEVER commit this!)
+.env
+.env.local
+.env.production
+.env.test
+
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Database files
+*.sqlite
+*.db
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+
+# Build files
+dist/
+build/
+.cache/
+
+# Test files
+coverage/
+.nyc_output/
+
+# Ngrok
+ngrok.exe
+ngrok
+
+# Local development
+qr-codes.html
+diagnostic-report.txt
+test-output.txt
+
+# Sensitive data files
+*-private.json
+*-secret.json
+credentials.json
+service-account-key.json

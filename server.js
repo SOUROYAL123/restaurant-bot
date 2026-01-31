@@ -9,6 +9,13 @@ const {
     getSpreadsheetUrl,
     isConfigured
 } = require('./apps-script-logger');
+const {
+    createPaymentLink,
+    verifyPayment,
+    handlePaymentWebhook,
+    getPaymentMessage
+} = require('./features/payment');
+const { FEATURES } = require('./features/config');
 
 const app = express();
 app.use(express.json());
@@ -90,6 +97,7 @@ let restaurantCache = {
 
 const otpStore = new Map();
 const confirmationTimeouts = new Map();
+const paymentTimeouts = new Map();
 
 // =====================================================
 // SESSION STATES
@@ -102,6 +110,8 @@ const STATES = {
     ADD_ITEMS: 'add_items',
     DELIVERY_ADDRESS: 'delivery_address',
     CONFIRM_ORDER: 'confirm_order',
+    PAYMENT_METHOD: 'payment_method',           // NEW
+    AWAITING_PAYMENT: 'awaiting_payment',       // NEW
     COD_CONFIRMATION: 'cod_confirmation',
     BOOK_TABLE: 'book_table',
     BOOKING_DATE: 'booking_date',
@@ -429,7 +439,7 @@ async function notifyRestaurantOwner(restaurantId, notificationType, data) {
                 message += `• ${item.quantity}× ${item.name} - ₹${(item.price * item.quantity).toFixed(2)}\n`;
             });
             message += `\n💰 *Total: ₹${data.total.toFixed(2)}*\n`;
-            message += `💵 *Payment: CASH ON DELIVERY*\n`;
+            message += `💵 *Payment: ${data.paymentStatus === 'PAID' ? '✅ PAID ONLINE' : 'CASH ON DELIVERY'}*\n`;
 
             if (data.specialInstructions) {
                 message += `\n📝 *Special Instructions:*\n${data.specialInstructions}\n`;
@@ -900,6 +910,52 @@ Type *CANCEL* to cancel
 }
 
 // =====================================================
+// CREATE TEMPORARY ORDER (FOR PAYMENT)
+// =====================================================
+async function createTemporaryOrder(phoneNumber, sessionData, total, deliveryFee, paymentMethod) {
+    try {
+        const subtotal = total - deliveryFee;
+        
+        const orderResult = await pool.query(
+            `INSERT INTO orders (customer_phone, customer_name, restaurant_id, order_type, 
+             delivery_address, total_amount, delivery_fee, special_instructions, 
+             payment_method, payment_status, status, estimated_delivery_time)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP + INTERVAL '45 minutes')
+             RETURNING *`,
+            [
+                phoneNumber,
+                sessionData.customerName || 'Customer',
+                sessionData.selectedRestaurant,
+                'delivery',
+                sessionData.deliveryAddress,
+                total,
+                deliveryFee,
+                sessionData.specialInstructions || null,
+                paymentMethod,
+                'PENDING',
+                'PENDING_PAYMENT'
+            ]
+        );
+
+        const orderId = orderResult.rows[0].id;
+
+        for (const item of sessionData.cart) {
+            await pool.query(
+                `INSERT INTO order_items (order_id, menu_item_id, quantity, price, subtotal)
+                 VALUES ($1, $2, $3, $4, $5)`,
+                [orderId, item.id, item.quantity, item.price, item.price * item.quantity]
+            );
+        }
+
+        console.log(`✅ Temporary order #${orderId} created for payment`);
+        return { success: true, orderId };
+    } catch (error) {
+        console.error('❌ Error creating temporary order:', error);
+        return { success: false, error };
+    }
+}
+
+// =====================================================
 // CREATE ORDER - ENHANCED LOGGING
 // =====================================================
 async function createOrder(phoneNumber, sessionData) {
@@ -960,15 +1016,7 @@ async function createOrder(phoneNumber, sessionData) {
         updateCustomerReliability(phoneNumber, 'COMPLETED').catch(err => 
             console.error('⚠️ Reliability update failed:', err.message));
 
-        // Send notification to owner (async) - ENHANCED LOGGING
-        console.log(`\n📤 Calling notifyRestaurantOwner for restaurant ID: ${sessionData.selectedRestaurant}`);
-        console.log(`📦 Notification data:`, {
-            orderId: orderId,
-            customerPhone: phoneNumber,
-            items: sessionData.cart.length + ' items',
-            total: total
-        });
-
+        // Send notification to owner (async)
         notifyRestaurantOwner(sessionData.selectedRestaurant, 'new_order', {
             orderId: orderId,
             customerPhone: phoneNumber,
@@ -976,14 +1024,9 @@ async function createOrder(phoneNumber, sessionData) {
             deliveryAddress: sessionData.deliveryAddress,
             items: sessionData.cart,
             total: total,
+            paymentStatus: 'COD',
             specialInstructions: sessionData.specialInstructions
-        }).then(() => {
-            console.log('✅ Owner notification completed successfully');
-        }).catch(err => {
-            console.error('❌ Owner notification FAILED:', err);
-            console.error('❌ Error details:', err.message);
-            console.error('❌ Error stack:', err.stack);
-        });
+        }).catch(err => console.error('⚠️ Owner notification failed:', err.message));
 
         // Log to Google Sheets
         if (isConfigured()) {
@@ -1076,7 +1119,6 @@ async function createBooking(phoneNumber, sessionData) {
     }
 }
 
-
 // =====================================================
 // MAIN MESSAGE HANDLER
 // =====================================================
@@ -1098,9 +1140,6 @@ async function handleIncomingMessage(from, body) {
             const response = message.toUpperCase();
             
             console.log(`📋 COD Confirmation received from ${phoneNumber}: ${response}`);
-            console.log(`⏰ Current time: ${Date.now()}`);
-            console.log(`⏰ Expiry time: ${sessionData.confirmationExpiry || 'NOT SET'}`);
-            console.log(`⏰ Time remaining: ${sessionData.confirmationExpiry ? Math.floor((sessionData.confirmationExpiry - Date.now()) / 1000) : 0} seconds`);
 
             if (Date.now() > (sessionData.confirmationExpiry || 0)) {
                 await updateCustomerReliability(phoneNumber, 'CANCELLED');
@@ -1108,20 +1147,16 @@ async function handleIncomingMessage(from, body) {
                 newState = STATES.MAIN_MENU;
                 updatedData = {};
                 
-                console.log(`❌ Order expired for ${phoneNumber}`);
-                
                 if (confirmationTimeouts.has(phoneNumber)) {
                     clearTimeout(confirmationTimeouts.get(phoneNumber));
                     confirmationTimeouts.delete(phoneNumber);
                 }
             }
             else if (response === 'CONFIRM') {
-                console.log(`✅ Processing CONFIRM from ${phoneNumber}`);
-                
                 const reliability = await checkCustomerReliability(phoneNumber);
 
                 if (reliability.isBlocked) {
-                    responseMessage = `❌ Sorry, you cannot place orders at this time.\n\n*Reason:* Multiple cancelled/no-show orders.\n\nContact support: +91 8013610018\n\nScan QR code to try again.`;
+                    responseMessage = `❌ Sorry, you cannot place orders at this time.\n\n*Reason:* Multiple cancelled/no-show orders.\n\nContact support: +91 8013610018`;
                     newState = STATES.MAIN_MENU;
                     updatedData = {};
                 } else {
@@ -1150,10 +1185,8 @@ async function handleIncomingMessage(from, body) {
 
                         newState = STATES.MAIN_MENU;
                         updatedData = {};
-                        
-                        console.log(`✅ Order #${orderResult.orderId} confirmed for ${phoneNumber}`);
                     } else {
-                        responseMessage = '❌ Sorry, there was an error processing your order.\n\nContact support: +91 8013610018\n\nScan QR code to try again.';
+                        responseMessage = '❌ Sorry, there was an error processing your order.\n\nContact support: +91 8013610018';
                         newState = STATES.MAIN_MENU;
                         updatedData = {};
                     }
@@ -1162,7 +1195,6 @@ async function handleIncomingMessage(from, body) {
                 if (confirmationTimeouts.has(phoneNumber)) {
                     clearTimeout(confirmationTimeouts.get(phoneNumber));
                     confirmationTimeouts.delete(phoneNumber);
-                    console.log(`✅ Cleared timeout for ${phoneNumber}`);
                 }
             }
             else if (response === 'CANCEL') {
@@ -1170,8 +1202,6 @@ async function handleIncomingMessage(from, body) {
                 responseMessage = '❌ Order cancelled. Feel free to order again anytime!\n\nScan QR code to place order.';
                 newState = STATES.MAIN_MENU;
                 updatedData = {};
-
-                console.log(`❌ Order cancelled by user ${phoneNumber}`);
 
                 if (confirmationTimeouts.has(phoneNumber)) {
                     clearTimeout(confirmationTimeouts.get(phoneNumber));
@@ -1195,6 +1225,60 @@ async function handleIncomingMessage(from, body) {
             return responseMessage;
         }
 
+        // AWAITING PAYMENT STATE
+        if (session.current_state === STATES.AWAITING_PAYMENT) {
+            if (messageLower === 'check' || messageLower === 'status') {
+                const paymentStatus = await verifyPayment(pool, sessionData.paymentId);
+                
+                if (paymentStatus.paid) {
+                    const restaurant = await pool.query(
+                        'SELECT name FROM restaurants WHERE id = $1',
+                        [sessionData.selectedRestaurant]
+                    );
+
+                    responseMessage = '✅ *Payment Confirmed!*\n\n';
+                    responseMessage += `Order ID: #${sessionData.orderId}\n`;
+                    responseMessage += `Restaurant: ${restaurant.rows[0].name}\n\n`;
+                    responseMessage += 'Your order is being prepared.\n';
+                    responseMessage += `Estimated delivery: 45 minutes\n\n`;
+                    responseMessage += 'Thank you for your order! 🍽️';
+                    
+                    await updateCustomerReliability(phoneNumber, 'COMPLETED');
+                    
+                    newState = STATES.MAIN_MENU;
+                    updatedData = {};
+
+                    if (paymentTimeouts.has(phoneNumber)) {
+                        clearTimeout(paymentTimeouts.get(phoneNumber));
+                        paymentTimeouts.delete(phoneNumber);
+                    }
+                } else {
+                    responseMessage = '⏳ Payment pending.\n\nComplete payment using the link sent earlier.\n\nType "check" to verify payment status.';
+                }
+            } else if (messageLower === 'cancel') {
+                await pool.query(
+                    'UPDATE orders SET status = $1 WHERE id = $2',
+                    ['CANCELLED', sessionData.orderId]
+                );
+                
+                await updateCustomerReliability(phoneNumber, 'CANCELLED');
+                
+                responseMessage = '❌ Order cancelled.\n\nScan QR code to place new order.';
+                newState = STATES.MAIN_MENU;
+                updatedData = {};
+
+                if (paymentTimeouts.has(phoneNumber)) {
+                    clearTimeout(paymentTimeouts.get(phoneNumber));
+                    paymentTimeouts.delete(phoneNumber);
+                }
+            } else {
+                responseMessage = '⏳ Waiting for payment...\n\nType "check" to verify status\nType "cancel" to cancel order';
+            }
+
+            await updateUserSession(phoneNumber, newState, updatedData);
+            return responseMessage;
+        }
+
         // QR KEYWORD DETECTION
         const detectedRestaurant = await detectRestaurantFromKeyword(message);
         
@@ -1202,7 +1286,7 @@ async function handleIncomingMessage(from, body) {
             const reliability = await checkCustomerReliability(phoneNumber);
 
             if (reliability.isBlocked) {
-                return `❌ Sorry, you cannot place orders at this time.\n\n*Reason:* Multiple cancelled/no-show orders.\n\nContact support: +91 8013610018\n\nScan QR code to try again.`;
+                return `❌ Sorry, you cannot place orders at this time.\n\n*Reason:* Multiple cancelled/no-show orders.\n\nContact support: +91 8013610018`;
             }
 
             updatedData.selectedRestaurant = detectedRestaurant.id;
@@ -1262,7 +1346,7 @@ async function handleIncomingMessage(from, body) {
                     updatedData = {};
                 }
                 else if (!restaurant.rows[0].delivery_available) {
-                    responseMessage = '❌ Sorry, delivery is not available at this restaurant.\n\nScan QR code to try another restaurant.';
+                    responseMessage = '❌ Sorry, delivery is not available at this restaurant.';
                     newState = STATES.MAIN_MENU;
                     updatedData = {};
                 }
@@ -1285,12 +1369,12 @@ async function handleIncomingMessage(from, body) {
                 );
 
                 if (restaurant.rows.length === 0) {
-                    responseMessage = '❌ Restaurant not found.\n\nScan QR code to try again.';
+                    responseMessage = '❌ Restaurant not found.';
                     newState = STATES.MAIN_MENU;
                     updatedData = {};
                 }
                 else if (!restaurant.rows[0].table_booking_available) {
-                    responseMessage = '❌ Sorry, table booking is not available at this restaurant.\n\nScan QR code to try another restaurant.';
+                    responseMessage = '❌ Sorry, table booking is not available at this restaurant.';
                     newState = STATES.MAIN_MENU;
                     updatedData = {};
                 }
@@ -1377,29 +1461,121 @@ async function handleIncomingMessage(from, body) {
             responseMessage += 'Any special instructions? (Type "no" if none)';
             newState = STATES.CONFIRM_ORDER;
         }
-        // SPECIAL INSTRUCTIONS → COD CONFIRMATION
+        // SPECIAL INSTRUCTIONS → PAYMENT METHOD SELECTION
         else if (session.current_state === STATES.CONFIRM_ORDER) {
             if (messageLower !== 'no') {
                 updatedData.specialInstructions = body.trim();
             }
 
-            const confirmResult = await requestCODConfirmation(phoneNumber, sessionData);
+            // Check if payment is enabled
+            if (FEATURES.PAYMENT) {
+                const restaurant = await pool.query(
+                    'SELECT delivery_fee FROM restaurants WHERE id = $1',
+                    [sessionData.selectedRestaurant]
+                );
+                const deliveryFee = parseFloat(restaurant.rows[0].delivery_fee || 0);
+                const subtotal = sessionData.cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+                const total = subtotal + deliveryFee;
 
-            if (confirmResult) {
-                updatedData.confirmationExpiry = confirmResult.confirmationExpiry;
-                updatedData.awaitingCODConfirmation = confirmResult.awaitingCODConfirmation;
-                
-                newState = STATES.COD_CONFIRMATION;
-                
-                console.log(`✅ Session updated with expiry: ${confirmResult.confirmationExpiry}`);
-                
-                await updateUserSession(phoneNumber, newState, updatedData);
-                
-                return '';
+                responseMessage = '💳 *Select Payment Method*\n\n';
+                responseMessage += getCartSummary(sessionData, deliveryFee);
+                responseMessage += '\n\n*Payment Options:*\n';
+                responseMessage += '1️⃣ Online Payment (UPI/Card/Wallet)\n';
+                responseMessage += '2️⃣ Cash on Delivery\n\n';
+                responseMessage += 'Reply with 1 or 2';
+                newState = STATES.PAYMENT_METHOD;
             } else {
-                responseMessage = '❌ Error preparing order confirmation.\n\nContact support: +91 8013610018\n\nScan QR code to try again.';
-                newState = STATES.MAIN_MENU;
-                updatedData = {};
+                // If payment disabled, go directly to COD
+                const confirmResult = await requestCODConfirmation(phoneNumber, sessionData);
+                if (confirmResult) {
+                    updatedData.confirmationExpiry = confirmResult.confirmationExpiry;
+                    updatedData.awaitingCODConfirmation = confirmResult.awaitingCODConfirmation;
+                    newState = STATES.COD_CONFIRMATION;
+                    await updateUserSession(phoneNumber, newState, updatedData);
+                    return '';
+                }
+            }
+        }
+        // PAYMENT METHOD SELECTION
+        else if (session.current_state === STATES.PAYMENT_METHOD) {
+            const choice = message.trim();
+            
+            if (choice === '1') {
+                // Online Payment
+                const restaurant = await pool.query(
+                    'SELECT delivery_fee, name FROM restaurants WHERE id = $1',
+                    [sessionData.selectedRestaurant]
+                );
+                const deliveryFee = parseFloat(restaurant.rows[0].delivery_fee || 0);
+                const subtotal = sessionData.cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+                const total = subtotal + deliveryFee;
+
+                // Create temporary order to get order ID
+                const tempOrder = await createTemporaryOrder(phoneNumber, sessionData, total, deliveryFee, 'ONLINE');
+                
+                if (tempOrder.success) {
+                    // Create payment link
+                    const paymentResult = await createPaymentLink(
+                        pool,
+                        tempOrder.orderId,
+                        total,
+                        phoneNumber,
+                        sessionData.customerName || 'Customer'
+                    );
+
+                    if (paymentResult.success) {
+                        responseMessage = getPaymentMessage(tempOrder.orderId, total, paymentResult.paymentLink);
+                        responseMessage += '\n\n_Order will be confirmed after successful payment_\n';
+                        responseMessage += '_Link expires in 15 minutes_\n\n';
+                        responseMessage += 'Type "check" to verify payment status\n';
+                        responseMessage += 'Type "cancel" to cancel order';
+                        
+                        updatedData.orderId = tempOrder.orderId;
+                        updatedData.paymentId = paymentResult.paymentId;
+                        updatedData.paymentExpiry = Date.now() + (15 * 60 * 1000);
+                        newState = STATES.AWAITING_PAYMENT;
+
+                        // Set timeout for payment expiry
+                        const timeoutId = setTimeout(async () => {
+                            try {
+                                const session = await getUserSession(phoneNumber);
+                                if (session.current_state === STATES.AWAITING_PAYMENT) {
+                                    await pool.query(
+                                        'UPDATE orders SET status = $1 WHERE id = $2',
+                                        ['CANCELLED', updatedData.orderId]
+                                    );
+                                    await sendWhatsAppMessage(phoneNumber,
+                                        '⏱️ Payment link expired. Order cancelled.\n\nScan QR code to place order.');
+                                    await updateUserSession(phoneNumber, STATES.MAIN_MENU, {});
+                                }
+                            } catch (error) {
+                                console.error('❌ Payment timeout error:', error);
+                            }
+                        }, 15 * 60 * 1000);
+
+                        paymentTimeouts.set(phoneNumber, timeoutId);
+                    } else {
+                        responseMessage = '❌ Error creating payment link.\n\nPlease try Cash on Delivery instead.\n\nReply with 2';
+                    }
+                } else {
+                    responseMessage = '❌ Error processing order.\n\nContact support: +91 8013610018';
+                    newState = STATES.MAIN_MENU;
+                    updatedData = {};
+                }
+            }
+            else if (choice === '2') {
+                // Cash on Delivery
+                const confirmResult = await requestCODConfirmation(phoneNumber, sessionData);
+                if (confirmResult) {
+                    updatedData.confirmationExpiry = confirmResult.confirmationExpiry;
+                    updatedData.awaitingCODConfirmation = confirmResult.awaitingCODConfirmation;
+                    newState = STATES.COD_CONFIRMATION;
+                    await updateUserSession(phoneNumber, newState, updatedData);
+                    return '';
+                }
+            }
+            else {
+                responseMessage = '❌ Invalid choice.\n\nReply with:\n1️⃣ for Online Payment\n2️⃣ for Cash on Delivery';
             }
         }
         // BOOKING DATE
@@ -1484,7 +1660,7 @@ async function handleIncomingMessage(from, body) {
                 newState = STATES.MAIN_MENU;
                 updatedData = {};
             } else {
-                responseMessage = '❌ Sorry, there was an error processing your booking.\n\nContact support: +91 8013610018\n\nScan QR code to try again.';
+                responseMessage = '❌ Sorry, there was an error processing your booking.\n\nContact support: +91 8013610018';
             }
         }
 
@@ -1521,6 +1697,137 @@ app.post('/webhook', async (req, res) => {
 });
 
 // =====================================================
+// PAYMENT WEBHOOK
+// =====================================================
+app.post('/payment/webhook', async (req, res) => {
+    try {
+        const webhookSignature = req.headers['x-razorpay-signature'];
+        const webhookBody = req.body;
+
+        console.log('📨 Payment webhook received');
+
+        const result = await handlePaymentWebhook(pool, webhookBody, webhookSignature);
+
+        if (result.success && result.orderId) {
+            // Get order details
+            const orderData = await pool.query(
+                `SELECT o.*, r.name as restaurant_name, r.id as restaurant_id
+                 FROM orders o
+                 JOIN restaurants r ON o.restaurant_id = r.id
+                 WHERE o.id = $1`,
+                [result.orderId]
+            );
+
+            if (orderData.rows.length > 0) {
+                const order = orderData.rows[0];
+                
+                // Get session to retrieve cart items
+                const session = await getUserSession(order.customer_phone);
+                const sessionData = getSessionData(session);
+                
+                // Get order items
+                const items = await pool.query(
+                    `SELECT mi.name, oi.quantity, oi.price
+                     FROM order_items oi
+                     JOIN menu_items mi ON oi.menu_item_id = mi.id
+                     WHERE oi.order_id = $1`,
+                    [result.orderId]
+                );
+
+                // Notify customer
+                await sendWhatsAppMessage(order.customer_phone,
+                    `✅ *Payment Received!*\n\nOrder #${order.id} confirmed.\n${order.restaurant_name} is preparing your food.\n\nEstimated delivery: 45 minutes\n\nThank you! 🍽️`
+                );
+
+                // Notify owner
+                await notifyRestaurantOwner(order.restaurant_id, 'new_order', {
+                    orderId: order.id,
+                    customerPhone: order.customer_phone,
+                    customerName: order.customer_name,
+                    deliveryAddress: order.delivery_address,
+                    items: items.rows,
+                    total: order.total_amount,
+                    paymentStatus: 'PAID',
+                    specialInstructions: order.special_instructions
+                });
+
+                // Update reliability
+                await updateCustomerReliability(order.customer_phone, 'COMPLETED');
+
+                // Clear payment timeout
+                if (paymentTimeouts.has(order.customer_phone)) {
+                    clearTimeout(paymentTimeouts.get(order.customer_phone));
+                    paymentTimeouts.delete(order.customer_phone);
+                }
+
+                // Reset session
+                await updateUserSession(order.customer_phone, STATES.MAIN_MENU, {});
+            }
+        }
+
+        res.status(200).json({ success: true });
+    } catch (error) {
+        console.error('❌ Payment webhook error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Payment callback page
+app.get('/payment/callback', async (req, res) => {
+    const { razorpay_payment_id, razorpay_payment_link_id, razorpay_payment_link_status } = req.query;
+    
+    const statusEmoji = razorpay_payment_link_status === 'paid' ? '✅' : '❌';
+    const statusText = razorpay_payment_link_status === 'paid' ? 'Payment Successful!' : 'Payment Failed';
+    const message = razorpay_payment_link_status === 'paid' 
+        ? 'Your order has been confirmed. You will receive a WhatsApp message shortly.'
+        : 'Payment was not completed. Please try again or contact support.';
+    
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+            <head>
+                <title>Payment Status</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <style>
+                    body {
+                        font-family: Arial, sans-serif;
+                        text-align: center;
+                        padding: 50px;
+                        background: #f5f5f5;
+                    }
+                    .container {
+                        background: white;
+                        border-radius: 10px;
+                        padding: 40px;
+                        max-width: 500px;
+                        margin: 0 auto;
+                        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                    }
+                    h1 { color: #333; margin-bottom: 20px; }
+                    .emoji { font-size: 64px; margin-bottom: 20px; }
+                    .details {
+                        background: #f9f9f9;
+                        padding: 15px;
+                        border-radius: 5px;
+                        margin-top: 20px;
+                        font-size: 14px;
+                        color: #666;
+                    }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="emoji">${statusEmoji}</div>
+                    <h1>${statusText}</h1>
+                    <p>${message}</p>
+                    ${razorpay_payment_id ? `<div class="details">Payment ID: ${razorpay_payment_id}</div>` : ''}
+                </div>
+            </body>
+        </html>
+    `);
+});
+
+// =====================================================
 // HEALTH CHECK & ADMIN ENDPOINTS
 // =====================================================
 app.get('/health', async (req, res) => {
@@ -1535,10 +1842,13 @@ app.get('/health', async (req, res) => {
             restaurants: restaurantData.data.length,
             keywords: Object.keys(restaurantData.keywords).length,
             googleSheets: isConfigured() ? 'Configured' : 'Not Configured',
+            paymentEnabled: FEATURES.PAYMENT,
+            razorpayConfigured: !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
             safetyFeatures: {
                 customerReliabilityTracking: true,
                 codConfirmation: true,
                 codTimeout: '10 minutes',
+                paymentTimeout: '15 minutes',
                 fraudDetection: true,
                 autoBlocking: true
             },
@@ -1621,21 +1931,17 @@ app.get('/test-session/:phone', async (req, res) => {
             phoneNumber: phoneNumber,
             currentState: session.current_state,
             confirmationExpiry: sessionData.confirmationExpiry,
+            paymentExpiry: sessionData.paymentExpiry,
             awaitingCOD: sessionData.awaitingCODConfirmation,
-            expiryDate: sessionData.confirmationExpiry ? new Date(sessionData.confirmationExpiry).toISOString() : null,
-            timeRemaining: sessionData.confirmationExpiry ? Math.floor((sessionData.confirmationExpiry - Date.now()) / 1000) : 0,
-            timeRemainingFormatted: sessionData.confirmationExpiry ? 
-                `${Math.floor((sessionData.confirmationExpiry - Date.now()) / 60000)}m ${Math.floor(((sessionData.confirmationExpiry - Date.now()) % 60000) / 1000)}s` : 
-                'N/A'
+            orderId: sessionData.orderId,
+            paymentId: sessionData.paymentId
         });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
 
-// =====================================================
-// 🧪 TEST OWNER NOTIFICATION ENDPOINT - FOR DEBUGGING
-// =====================================================
+// Test owner notification
 app.get('/test-owner-notify', async (req, res) => {
     try {
         console.log('\n🧪 MANUAL TEST: Testing owner notification...\n');
@@ -1650,20 +1956,19 @@ app.get('/test-owner-notify', async (req, res) => {
                 { name: 'Test Paneer', quantity: 1, price: 180 }
             ],
             total: 680,
+            paymentStatus: 'PAID',
             specialInstructions: 'Test order - please ignore'
         });
         
         res.json({ 
             success: true, 
-            message: 'Test notification sent! Check Railway logs for detailed 5-step output.',
-            instructions: 'Look for the "OWNER NOTIFICATION ATTEMPT" section in logs'
+            message: 'Test notification sent! Check Railway logs for detailed 5-step output.'
         });
     } catch (error) {
         console.error('❌ Test failed:', error);
         res.status(500).json({ 
             success: false, 
-            error: error.message,
-            stack: error.stack
+            error: error.message
         });
     }
 });
@@ -1679,6 +1984,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`${'='.repeat(60)}\n`);
     console.log(`✅ HTTP Server: RUNNING`);
     console.log(`📱 Webhook: https://restaurant.legacylens.co.in/webhook`);
+    console.log(`💳 Payment Webhook: https://restaurant.legacylens.co.in/payment/webhook`);
     console.log(`🏥 Health: https://restaurant.legacylens.co.in/health\n`);
 });
 
@@ -1759,9 +2065,24 @@ setImmediate(async () => {
             console.error('   ⚠️ WhatsApp messaging will not work\n');
         }
 
+        console.log('6️⃣ Checking Payment Integration...');
+        if (FEATURES.PAYMENT) {
+            if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+                console.log('   ✅ Razorpay: CONFIGURED');
+                console.log('   ✅ Online payments: ENABLED\n');
+            } else {
+                console.log('   ⚠️ Razorpay: Not configured');
+                console.log('   ℹ️ Only COD available\n');
+            }
+        } else {
+            console.log('   ℹ️ Payment feature: DISABLED');
+            console.log('   ℹ️ Only COD available\n');
+        }
+
         console.log('🔒 Safety Features:');
         console.log('   ✅ Customer reliability tracking');
         console.log('   ✅ COD confirmation (10-min timeout)');
+        console.log('   ✅ Payment timeout (15 minutes)');
         console.log('   ✅ Fraud detection & auto-blocking');
         console.log('   ✅ Trust score system');
         console.log('   ✅ QR code-only access\n');
@@ -1771,15 +2092,14 @@ setImmediate(async () => {
         console.log('🎉 Bot is ready to receive messages!');
         console.log(`${'='.repeat(60)}\n`);
 
-        console.log('🧪 DEBUG ENDPOINTS AVAILABLE:');
-        console.log('   📍 Test notification: https://restaurant.legacylens.co.in/test-owner-notify');
-        console.log('   📍 Health check: https://restaurant.legacylens.co.in/health');
-        console.log('   📍 Restaurants: https://restaurant.legacylens.co.in/restaurants\n');
+        console.log('🧪 DEBUG ENDPOINTS:');
+        console.log('   📍 Health: https://restaurant.legacylens.co.in/health');
+        console.log('   📍 Restaurants: https://restaurant.legacylens.co.in/restaurants');
+        console.log('   📍 Test notify: https://restaurant.legacylens.co.in/test-owner-notify\n');
 
     } catch (error) {
         console.error('\n⚠️ INITIALIZATION ERROR:', error.message);
-        console.log('⚠️ Server is running but some features may be limited');
-        console.log('⚠️ Check environment variables and database connection\n');
+        console.log('⚠️ Server is running but some features may be limited\n');
     }
 });
 

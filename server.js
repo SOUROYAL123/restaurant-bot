@@ -1,6 +1,7 @@
 // ============================================
 // RESTAURANT WHATSAPP BOT - PRODUCTION v3.0
 // Multi-Restaurant Order & Booking System
+// STANDALONE VERSION - No external feature files needed
 // ============================================
 
 require('dotenv').config();
@@ -8,17 +9,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const twilio = require('twilio');
 const { Pool } = require('pg');
-const path = require('path');
-
-// Import feature modules
-const { sendToGoogleSheets, getSheetsStatus } = require('./features/sheets');
-const { 
-  createPaymentLink, 
-  verifyPayment, 
-  handlePaymentWebhook,
-  getPaymentMessage 
-} = require('./features/payment');
-const { FEATURES } = require('./features/config');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -28,9 +19,15 @@ const PORT = process.env.PORT || 3000;
 // ============================================
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
-
-// Trust Railway proxy
 app.set('trust proxy', true);
+
+// ============================================
+// FEATURE FLAGS
+// ============================================
+const FEATURES = {
+  PAYMENT: process.env.PAYMENT_ENABLED === 'true',
+  GOOGLE_SHEETS: !!(process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY)
+};
 
 // ============================================
 // TWILIO SETUP
@@ -91,7 +88,7 @@ const CACHE_TTL = parseInt(process.env.CACHE_TTL || '300000'); // Default: 5 min
 const CACHE_MAX_SIZE = parseInt(process.env.CACHE_MAX_SIZE || '1000');
 
 const sessions = new Map();
-const pendingPayments = new Map(); // Track payment timeouts
+const pendingPayments = new Map();
 
 // Customer reliability tracking
 const customerReliability = new Map();
@@ -133,6 +130,138 @@ const STATES = {
 };
 
 // ============================================
+// PAYMENT FUNCTIONS (Inline Razorpay Integration)
+// ============================================
+
+async function createPaymentLink(data) {
+  if (!FEATURES.PAYMENT) return null;
+  
+  try {
+    const Razorpay = require('razorpay');
+    const razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET
+    });
+
+    const paymentLink = await razorpay.paymentLink.create({
+      amount: data.amount * 100, // Convert to paise
+      currency: 'INR',
+      description: data.description || 'Order Payment',
+      customer: {
+        name: data.customerName,
+        contact: data.customerPhone
+      },
+      notify: {
+        sms: true,
+        email: false
+      },
+      reminder_enable: false,
+      callback_url: `${process.env.BASE_URL}/payment/callback`,
+      callback_method: 'get'
+    });
+
+    console.log('✅ Payment link created:', paymentLink.id);
+    return paymentLink;
+  } catch (error) {
+    console.error('❌ Payment link creation error:', error);
+    return null;
+  }
+}
+
+async function verifyPayment(paymentId) {
+  if (!FEATURES.PAYMENT) return 'pending';
+  
+  try {
+    const Razorpay = require('razorpay');
+    const razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET
+    });
+
+    const payment = await razorpay.paymentLink.fetch(paymentId);
+    return payment.status === 'paid' ? 'paid' : 'pending';
+  } catch (error) {
+    console.error('❌ Payment verification error:', error);
+    return 'error';
+  }
+}
+
+function verifyWebhookSignature(body, signature) {
+  if (!process.env.PAYMENT_WEBHOOK_SECRET) {
+    console.warn('⚠️ No webhook secret configured, skipping verification');
+    return true; // Allow for testing
+  }
+
+  try {
+    const expectedSignature = crypto
+      .createHmac('sha256', process.env.PAYMENT_WEBHOOK_SECRET)
+      .update(JSON.stringify(body))
+      .digest('hex');
+
+    return expectedSignature === signature;
+  } catch (error) {
+    console.error('❌ Signature verification error:', error);
+    return false;
+  }
+}
+
+// ============================================
+// GOOGLE SHEETS FUNCTIONS (Inline)
+// ============================================
+
+async function sendToGoogleSheets(orderData) {
+  if (!FEATURES.GOOGLE_SHEETS) return;
+
+  try {
+    const scriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL;
+    const secret = process.env.GOOGLE_APPS_SCRIPT_SECRET;
+
+    if (!scriptUrl || !secret) {
+      console.log('⚠️ Google Sheets not configured');
+      return;
+    }
+
+    const payload = {
+      secret: secret,
+      orderId: orderData.orderId,
+      restaurantName: orderData.restaurantName,
+      customerPhone: orderData.customerPhone,
+      customerName: orderData.customerName,
+      items: orderData.items.map(item => ({
+        name: item.menuItem.name,
+        quantity: item.quantity,
+        price: item.menuItem.price
+      })),
+      total: orderData.total,
+      paymentMethod: orderData.paymentMethod,
+      address: orderData.address,
+      timestamp: new Date().toISOString()
+    };
+
+    const response = await fetch(scriptUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+
+    if (response.ok) {
+      console.log('✅ Order logged to Google Sheets');
+    } else {
+      console.error('❌ Google Sheets logging failed:', response.status);
+    }
+  } catch (error) {
+    console.error('❌ Google Sheets error:', error.message);
+  }
+}
+
+function getSheetsStatus() {
+  return {
+    enabled: FEATURES.GOOGLE_SHEETS,
+    configured: !!(process.env.GOOGLE_APPS_SCRIPT_URL && process.env.GOOGLE_APPS_SCRIPT_SECRET)
+  };
+}
+
+// ============================================
 // HELPER FUNCTIONS
 // ============================================
 
@@ -153,7 +282,7 @@ async function loadRestaurants() {
     return restaurantCache;
   } catch (error) {
     console.error('❌ Error loading restaurants:', error);
-    return restaurantCache; // Return cached data on error
+    return restaurantCache;
   }
 }
 
@@ -280,7 +409,6 @@ async function createTemporaryOrder(session) {
   try {
     await client.query('BEGIN');
 
-    // Create order
     const orderResult = await client.query(
       `INSERT INTO orders (restaurant_id, customer_phone, customer_name, delivery_address, 
        total_amount, status, payment_status, created_at) 
@@ -297,7 +425,6 @@ async function createTemporaryOrder(session) {
 
     const orderId = orderResult.rows[0].id;
 
-    // Insert order items
     for (const item of session.cart) {
       await client.query(
         'INSERT INTO order_items (order_id, menu_item_id, quantity, price) VALUES ($1, $2, $3, $4)',
@@ -338,7 +465,6 @@ async function saveOrder(session) {
   try {
     await client.query('BEGIN');
 
-    // Create order
     const orderResult = await client.query(
       `INSERT INTO orders (restaurant_id, customer_phone, customer_name, delivery_address, 
        total_amount, status, payment_status, created_at, confirmed_at) 
@@ -356,7 +482,6 @@ async function saveOrder(session) {
 
     const orderId = orderResult.rows[0].id;
 
-    // Insert order items
     for (const item of session.cart) {
       await client.query(
         'INSERT INTO order_items (order_id, menu_item_id, quantity, price) VALUES ($1, $2, $3, $4)',
@@ -367,7 +492,6 @@ async function saveOrder(session) {
     await client.query('COMMIT');
     console.log(`✅ Order saved successfully: ${orderId}`);
 
-    // Send to Google Sheets if enabled
     if (FEATURES.GOOGLE_SHEETS) {
       try {
         await sendToGoogleSheets({
@@ -456,7 +580,6 @@ function updateReliability(phone, outcome) {
     reliability.trustScore = Math.max(0, reliability.trustScore - 15);
   }
 
-  // Auto-block if trust score too low
   if (reliability.trustScore < 30) {
     reliability.blocked = true;
     FRAUD_LOG.push({
@@ -475,7 +598,6 @@ function updateReliability(phone, outcome) {
 // Notify restaurant owner (scalable - uses database)
 async function notifyOwner(session, orderId, type = 'order') {
   try {
-    // Fetch owner phone from database (scalable for 100+ restaurants)
     const result = await pool.query(
       'SELECT phone, owner_name FROM restaurants WHERE id = $1',
       [session.restaurantId]
@@ -529,7 +651,6 @@ function parseDate(input) {
   const today = new Date();
   const inputLower = input.toLowerCase().trim();
 
-  // Handle "today", "tomorrow"
   if (inputLower === 'today') {
     return today.toISOString().split('T')[0];
   }
@@ -539,7 +660,6 @@ function parseDate(input) {
     return tomorrow.toISOString().split('T')[0];
   }
 
-  // Try parsing DD/MM/YYYY or DD-MM-YYYY
   const match = input.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (match) {
     const day = match[1].padStart(2, '0');
@@ -569,12 +689,10 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`📱 Message from ${customerPhone}: ${messageText}`);
 
-    // Load restaurants
     await loadRestaurants();
 
     // ============================================
-    // ✅ FIX: ALWAYS CHECK RESTAURANT TRIGGERS FIRST
-    // This allows users to start fresh anytime
+    // ✅ ALWAYS CHECK RESTAURANT TRIGGERS FIRST
     // ============================================
     const restaurantTrigger = Object.entries(RESTAURANT_TRIGGERS).find(
       ([name, triggers]) => triggers.some(t => messageUpper.includes(t))
@@ -587,7 +705,6 @@ app.post('/webhook', async (req, res) => {
       );
 
       if (restaurant) {
-        // Clear any existing session
         let session = sessions.get(customerPhone);
         if (session) {
           if (session.otpTimeout) clearTimeout(session.otpTimeout);
@@ -595,7 +712,6 @@ app.post('/webhook', async (req, res) => {
           console.log(`🔄 Resetting session for ${customerPhone}`);
         }
 
-        // Start fresh session
         session = {
           phone: customerPhone,
           state: STATES.SELECT_SERVICE,
@@ -626,7 +742,7 @@ app.post('/webhook', async (req, res) => {
     let session = sessions.get(customerPhone);
 
     // ============================================
-    // ✅ FIX: HANDLE GREETINGS
+    // ✅ HANDLE GREETINGS
     // ============================================
     const greetings = ['hi', 'hello', 'hey', 'start', 'menu', 'reset', 'help'];
     if (!session || session.state === STATES.INITIAL) {
@@ -645,7 +761,6 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // No session - guide user
     if (!session) {
       await sendMessage(
         customerPhone,
@@ -656,7 +771,7 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // Check for blocked customers (COD only)
+    // Check for blocked customers
     const reliability = getCustomerReliability(customerPhone);
     if (reliability.blocked && session.state === STATES.PAYMENT_METHOD) {
       await sendMessage(
@@ -727,12 +842,10 @@ app.post('/webhook', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // Generate OTP
       session.otp = generateOTP();
       session.state = STATES.VERIFY_OTP;
       session.otpAttempts = 0;
 
-      // Set OTP timeout (configurable)
       session.otpTimeout = setTimeout(() => {
         sessions.delete(customerPhone);
         sendMessage(customerPhone, '⏱️ OTP expired. Please start over by typing the restaurant name.');
@@ -815,7 +928,6 @@ app.post('/webhook', async (req, res) => {
           return sum + (item.menuItem.price * item.quantity);
         }, 0);
 
-        // Check minimum order
         if (subtotal < session.minOrder) {
           await sendMessage(
             customerPhone,
@@ -852,7 +964,6 @@ app.post('/webhook', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      // Parse order
       const newItems = parseOrderInput(messageText, session.menuItems);
       if (newItems.length > 0) {
         session.cart.push(...newItems);
@@ -883,7 +994,6 @@ app.post('/webhook', async (req, res) => {
         session.customerName = lines[0];
         session.deliveryAddress = lines.slice(1).join(', ');
 
-        // Payment selection
         session.state = STATES.PAYMENT_METHOD;
         sessions.set(customerPhone, session);
 
@@ -917,11 +1027,9 @@ app.post('/webhook', async (req, res) => {
       // Online Payment
       if (messageText === '1' && FEATURES.PAYMENT) {
         try {
-          // Create temporary order
           const tempOrderId = await createTemporaryOrder(session);
           session.tempOrderId = tempOrderId;
 
-          // Generate payment link
           const paymentData = await createPaymentLink({
             amount: session.total,
             customerPhone: session.verifiedPhone,
@@ -936,7 +1044,6 @@ app.post('/webhook', async (req, res) => {
             session.paymentLink = paymentData.short_url;
             sessions.set(customerPhone, session);
 
-            // Set payment timeout (configurable)
             const paymentTimeout = setTimeout(async () => {
               const currentSession = sessions.get(customerPhone);
               if (currentSession && currentSession.state === STATES.AWAITING_PAYMENT) {
@@ -985,7 +1092,6 @@ app.post('/webhook', async (req, res) => {
         session.paymentMethod = 'cod';
         sessions.set(customerPhone, session);
 
-        // Set confirmation timeout (configurable)
         session.confirmationTimeout = setTimeout(async () => {
           const currentSession = sessions.get(customerPhone);
           if (currentSession && currentSession.state === STATES.AWAITING_CONFIRMATION) {
@@ -1031,25 +1137,18 @@ app.post('/webhook', async (req, res) => {
           const paymentStatus = await verifyPayment(session.paymentId);
 
           if (paymentStatus === 'paid') {
-            // Clear timeout
             const timeout = pendingPayments.get(customerPhone);
             if (timeout) clearTimeout(timeout);
             pendingPayments.delete(customerPhone);
 
-            // Update order
             await updateOrderAfterPayment(session.tempOrderId, session.paymentId, 'PAID');
 
-            // Update session
             session.paymentMethod = 'online';
             const orderId = session.tempOrderId;
 
-            // Update reliability
             updateReliability(customerPhone, 'confirmed');
-
-            // Notify owner
             await notifyOwner(session, orderId, 'order');
 
-            // Clear session
             sessions.delete(customerPhone);
 
             await sendMessage(
@@ -1116,8 +1215,6 @@ app.post('/webhook', async (req, res) => {
         try {
           const orderId = await saveOrder(session);
           updateReliability(customerPhone, 'confirmed');
-
-          // Notify owner
           await notifyOwner(session, orderId, 'order');
 
           sessions.delete(customerPhone);
@@ -1262,8 +1359,6 @@ app.post('/webhook', async (req, res) => {
 
       try {
         const bookingId = await saveBooking(session);
-
-        // Notify owner
         await notifyOwner(session, bookingId, 'booking');
 
         sessions.delete(customerPhone);
@@ -1291,7 +1386,6 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // Unknown state
     await sendMessage(
       customerPhone,
       `❌ Something went wrong. Please type the restaurant name to start over.`
@@ -1314,8 +1408,7 @@ app.post('/payment/webhook', async (req, res) => {
 
     console.log('📨 Payment webhook received:', webhookBody.event);
 
-    // Verify webhook signature
-    const isValid = await handlePaymentWebhook(webhookBody, signature);
+    const isValid = verifyWebhookSignature(webhookBody, signature);
 
     if (!isValid) {
       console.error('❌ Invalid webhook signature');
@@ -1330,7 +1423,6 @@ app.post('/payment/webhook', async (req, res) => {
       return res.status(400).send('No payment entity');
     }
 
-    // Find session by payment ID
     let sessionPhone = null;
     for (const [phone, session] of sessions.entries()) {
       if (session.paymentId === paymentEntity.id) {
@@ -1346,27 +1438,19 @@ app.post('/payment/webhook', async (req, res) => {
 
     const session = sessions.get(sessionPhone);
 
-    // Handle payment success
     if (event === 'payment.captured' || event === 'payment_link.paid') {
-      // Clear timeout
       const timeout = pendingPayments.get(sessionPhone);
       if (timeout) clearTimeout(timeout);
       pendingPayments.delete(sessionPhone);
 
-      // Update order
       await updateOrderAfterPayment(session.tempOrderId, paymentEntity.id, 'PAID');
 
-      // Update session
       session.paymentMethod = 'online';
       const orderId = session.tempOrderId;
 
-      // Update reliability
       updateReliability(sessionPhone, 'confirmed');
-
-      // Notify owner
       await notifyOwner(session, orderId, 'order');
 
-      // Notify customer
       await sendMessage(
         sessionPhone,
         `✅ *Payment Successful!*\n\n` +
@@ -1378,11 +1462,9 @@ app.post('/payment/webhook', async (req, res) => {
         `Thank you for ordering from ${session.restaurantName}! 🙏`
       );
 
-      // Clear session
       sessions.delete(sessionPhone);
     }
 
-    // Handle payment failure
     if (event === 'payment.failed') {
       await sendMessage(
         sessionPhone,
@@ -1457,7 +1539,6 @@ app.get('/payment/callback', (req, res) => {
 // ADMIN & UTILITY ENDPOINTS
 // ============================================
 
-// Health check
 app.get('/health', async (req, res) => {
   try {
     await pool.query('SELECT 1');
@@ -1465,8 +1546,10 @@ app.get('/health', async (req, res) => {
       status: 'OK',
       timestamp: new Date().toISOString(),
       database: 'Connected',
+      restaurants: restaurantCache.length,
       paymentEnabled: FEATURES.PAYMENT,
-      razorpayConfigured: !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET)
+      razorpayConfigured: !!(process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET),
+      googleSheets: FEATURES.GOOGLE_SHEETS ? 'Configured' : 'Disabled'
     });
   } catch (error) {
     res.status(500).json({
@@ -1477,7 +1560,6 @@ app.get('/health', async (req, res) => {
   }
 });
 
-// List all restaurants
 app.get('/restaurants', async (req, res) => {
   try {
     await loadRestaurants();
@@ -1490,7 +1572,6 @@ app.get('/restaurants', async (req, res) => {
   }
 });
 
-// Reload cache
 app.post('/reload-cache', async (req, res) => {
   try {
     lastCacheUpdate = 0;
@@ -1504,19 +1585,16 @@ app.post('/reload-cache', async (req, res) => {
   }
 });
 
-// Check sheets status
 app.get('/sheets-status', (req, res) => {
   res.json(getSheetsStatus());
 });
 
-// Check customer reliability
 app.get('/customer-reliability/:phone', (req, res) => {
   const phone = req.params.phone.replace(/\D/g, '');
   const reliability = getCustomerReliability(`+91${phone}`);
   res.json(reliability);
 });
 
-// Test session
 app.get('/test-session/:phone', (req, res) => {
   const phone = req.params.phone.replace(/\D/g, '');
   const fullPhone = phone.startsWith('91') ? `+${phone}` : `+91${phone}`;
@@ -1530,10 +1608,10 @@ app.get('/test-session/:phone', (req, res) => {
   });
 });
 
-// Test owner notification
 app.post('/test-owner-notify', async (req, res) => {
   try {
     const testSession = {
+      restaurantId: 1,
       restaurantName: 'ZAM ZAM',
       phone: '+919876543210',
       customerName: 'Test Customer',
@@ -1555,7 +1633,6 @@ app.post('/test-owner-notify', async (req, res) => {
   }
 });
 
-// Clear all sessions (admin only)
 app.post('/admin/clear-sessions', (req, res) => {
   const apiKey = req.headers['x-api-key'];
   if (apiKey !== process.env.ADMIN_API_KEY) {
@@ -1579,7 +1656,6 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-// Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('👋 SIGTERM received, closing gracefully...');
   await pool.end();

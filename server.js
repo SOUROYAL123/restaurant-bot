@@ -103,12 +103,7 @@ const S = {
   BOOKING_CONFIRM:  'BOOKING_CONFIRM'
 };
 
-const TRIGGERS = {
-  'Zam Zam Restaurant': ['ZAMZAM','ZAM ZAM','ZAM-ZAM'],
-  'Spice Garden':        ['SPICEGARDEN','SPICE GARDEN','SPICE-GARDEN'],
-  'Curry House':         ['CURRYHOUSE','CURRY HOUSE','CURRY-HOUSE'],
-  'Biryani Express':     ['BIRYANIEXPRESS','BIRYANI EXPRESS','BIRYANI-EXPRESS']
-};
+// Triggers are loaded dynamically from qr_keyword column in restaurants table
 
 // ════════════════════════════════════════════
 // HELPERS
@@ -233,8 +228,20 @@ async function saveOrder(session) {
 
 async function notifyOwner(session, orderId) {
   try {
-    const { rows } = await pool.query('SELECT phone FROM restaurants WHERE id=$1', [session.restaurantId]);
-    if (!rows[0]?.phone) return;
+    const { rows } = await pool.query(
+      'SELECT whatsapp_number, notify_on_order FROM restaurants WHERE id=$1',
+      [session.restaurantId]
+    );
+    if (!rows[0]) return;
+    if (rows[0].notify_on_order === false) {
+      console.log(`⏭️  Owner notification skipped — notify_on_order is off for restaurant ${session.restaurantId}`);
+      return;
+    }
+    const ownerWA = rows[0].whatsapp_number;
+    if (!ownerWA) {
+      console.log(`⚠️  No whatsapp_number for restaurant ${session.restaurantId}`);
+      return;
+    }
     const payLabel = session.paymentMethod === 'online' ? '💳 ONLINE PAID' : '💵 CASH ON DELIVERY';
     let m = `🔔 *NEW ORDER #${orderId}*\n\n🏪 ${session.restaurantName}\n📱 Customer: ${session.phone}\n📍 Address: ${session.deliveryAddress}\n\n🛒 *Items:*\n`;
     session.cart.forEach(i => { m += `• ${i.quantity}× ${i.name} — ₹${i.price * i.quantity}\n`; });
@@ -242,7 +249,8 @@ async function notifyOwner(session, orderId) {
     if (session.specialInstructions && session.specialInstructions.toLowerCase() !== 'no')
       m += `\n📝 Instructions: ${session.specialInstructions}`;
     m += `\n⏰ ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`;
-    await sendMessage(rows[0].phone, m);
+    await sendMessage(ownerWA, m);
+    console.log(`✅ Owner notified at ${ownerWA}`);
   } catch (e) { console.error('❌ notifyOwner:', e.message); }
 }
 
@@ -324,30 +332,37 @@ app.post('/webhook', async (req, res) => {
 
     await loadRestaurants();
 
-    // ─── TRIGGER ─────────────────────────────
-    const trigger = Object.entries(TRIGGERS).find(([, kw]) => kw.some(k => upper.includes(k)));
-    if (trigger) {
-      const [name] = trigger;
-      const restaurant = restaurantCache.find(r => r.name === name);
-      if (restaurant) {
-        const old = sessions.get(phone);
-        if (old?.confirmTimeout) clearTimeout(old.confirmTimeout);
-        sessions.set(phone, {
-          phone, state: S.SELECT_SERVICE,
-          restaurantId: restaurant.id, restaurantName: restaurant.name,
-          deliveryFee: restaurant.delivery_fee || 30,
-          minOrder: restaurant.min_order || 0,
-          createdAt: Date.now()
-        });
-        await sendMessage(phone,
-          `🎉 Welcome to ${restaurant.name}!\n\n` +
-          `What would you like to do?\n\n` +
-          `1️⃣ Order Delivery\n` +
-          `2️⃣ Book a Table\n\n` +
-          `Reply with 1 or 2`
-        );
-        return res.status(200).send('OK');
-      }
+    // ─── TRIGGER (dynamic from qr_keyword) ──
+    const restaurant = restaurantCache.find(r =>
+      r.qr_keyword && upper.includes(r.qr_keyword.toUpperCase())
+    );
+    if (restaurant) {
+      const old = sessions.get(phone);
+      if (old?.confirmTimeout) clearTimeout(old.confirmTimeout);
+
+      const canDeliver = restaurant.delivery_available !== false;
+      const canBook    = restaurant.table_booking_available !== false;
+
+      sessions.set(phone, {
+        phone, state: S.SELECT_SERVICE,
+        restaurantId: restaurant.id, restaurantName: restaurant.name,
+        deliveryFee:  restaurant.delivery_fee || 30,
+        minOrder:     restaurant.min_delivery_amount || 0,
+        canDeliver, canBook,
+        createdAt: Date.now()
+      });
+
+      // Build options dynamically
+      let options = '', idx = 0;
+      if (canDeliver) { idx++; options += `${idx}️⃣ Order Delivery\n`; }
+      if (canBook)    { idx++; options += `${idx}️⃣ Book a Table\n`; }
+
+      await sendMessage(phone,
+        `🎉 Welcome to ${restaurant.name}!\n\n` +
+        `What would you like to do?\n\n` +
+        options + `\nReply with ${idx === 1 ? '1' : '1 or 2'}`
+      );
+      return res.status(200).send('OK');
     }
 
     // ─── No session ──────────────────────────
@@ -366,20 +381,32 @@ app.post('/webhook', async (req, res) => {
     // ═══════════════════════════════════════════
 
     if (session.state === S.SELECT_SERVICE) {
-      if (text === '1') {
+      // Map user input to action based on what's available
+      let action = null;
+      if (session.canDeliver && session.canBook) {
+        if (text === '1') action = 'delivery';
+        if (text === '2') action = 'booking';
+      } else if (session.canDeliver) {
+        if (text === '1') action = 'delivery';
+      } else if (session.canBook) {
+        if (text === '1') action = 'booking';
+      }
+
+      if (action === 'delivery') {
         session.state = S.BROWSE_MENU; session.serviceType = 'delivery'; session.cart = [];
         session.menuItems = await getMenuItems(session.restaurantId);
         sessions.set(phone, session);
         await sendMessage(phone, formatMenu(session.menuItems, session.restaurantName));
         return res.status(200).send('OK');
       }
-      if (text === '2') {
+      if (action === 'booking') {
         session.state = S.BOOKING_DATE; session.serviceType = 'booking';
         sessions.set(phone, session);
         await sendMessage(phone, `📅 When would you like to book?\n\nType:\n• TODAY or TOMORROW\n• DD/MM/YYYY`);
         return res.status(200).send('OK');
       }
-      await sendMessage(phone, '❌ Invalid. Reply 1 or 2');
+      const max = (session.canDeliver && session.canBook) ? '1 or 2' : '1';
+      await sendMessage(phone, `❌ Invalid. Reply ${max}`);
       return res.status(200).send('OK');
     }
 

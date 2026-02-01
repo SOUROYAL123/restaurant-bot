@@ -37,19 +37,29 @@ if (!TEST_MODE) {
 }
 
 // ─── Database Pool ───────────────────────────
+// Neon serverless kills idle connections — pool must tolerate that:
+//   min: 0          → don't fight Neon by holding idle connections open
+//   idleTimeoutMillis: 5000 → release before Neon does (~5 s)
+//   max: 10         → enough concurrency, not too many for serverless
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl:              { rejectUnauthorized: false, require: true },
   connectionTimeoutMillis: 10000,
-  max: 50, min: 10,
-  idleTimeoutMillis: 30000,
-  allowExitOnIdle: false,
+  max: 10,
+  min: 0,
+  idleTimeoutMillis: 5000,
   statement_timeout: 30000
 });
 
 let dbConnected = false;
 pool.on('connect', () => { dbConnected = true; });
-pool.on('error',   (e)  => { console.error('❌ Pool error:', e.message); dbConnected = false; });
+// Neon will terminate idle connections — this is normal, not fatal.
+// Log it but do NOT let it crash the process.
+pool.on('error', (e) => {
+  console.warn('⚠️  Pool idle connection terminated (expected with Neon):', e.message);
+  // dbConnected stays true — the pool will create new connections on next query.
+  // Only mark false if we can't get a connection at all (handled in connectDatabase).
+});
 
 async function connectDatabase(retries = 5) {
   console.log('\n🔌 Connecting to database...');
@@ -325,7 +335,12 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`\n📱 [${phone}] → "${text}"`);
 
-    if (!dbConnected) {
+    // Quick liveness check — pool reconnects automatically after Neon idle-kills
+    try {
+      await pool.query('SELECT 1');
+      dbConnected = true;
+    } catch (e) {
+      console.error('❌ DB ping failed:', e.message);
       await sendMessage(phone, '⚠️ System temporarily unavailable. Try again shortly.');
       return res.status(503).send('DB down');
     }

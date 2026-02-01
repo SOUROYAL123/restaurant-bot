@@ -136,14 +136,16 @@ async function loadRestaurants(force = false) {
   if (!force && restaurantCache.length && (Date.now() - lastCacheUpdate) < CACHE_TTL)
     return restaurantCache;
   try {
-    const { rows } = await pool.query(
-      `SELECT id, name, phone, address, delivery_fee, min_order, active
-       FROM restaurants WHERE active = true ORDER BY name`
-    );
-    restaurantCache = rows;
+    const { rows } = await pool.query(`SELECT * FROM restaurants ORDER BY name`);
+    const hasActive = rows.length > 0 && 'active' in rows[0];
+    restaurantCache = hasActive ? rows.filter(r => r.active) : rows;
     lastCacheUpdate = Date.now();
-    console.log(`📋 Cached ${rows.length} restaurants`);
-    return rows;
+    if (rows.length > 0) {
+      console.log(`📋 Cached ${restaurantCache.length} restaurants | columns: ${Object.keys(rows[0]).join(', ')}`);
+    } else {
+      console.log('⚠️  restaurants table is empty');
+    }
+    return restaurantCache;
   } catch (e) {
     console.error('❌ loadRestaurants:', e.message);
     return restaurantCache;
@@ -153,12 +155,16 @@ async function loadRestaurants(force = false) {
 async function getMenuItems(restaurantId) {
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, description, price, category, available, is_vegetarian
-       FROM menu_items WHERE restaurant_id = $1 AND available = true
-       ORDER BY category, name`,
+      `SELECT * FROM menu_items WHERE restaurant_id = $1 ORDER BY category, name`,
       [restaurantId]
     );
-    return rows;
+    // Filter available in JS in case column name differs
+    const hasAvailable = rows.length > 0 && 'available' in rows[0];
+    const filtered = hasAvailable ? rows.filter(r => r.available) : rows;
+    if (filtered.length > 0) {
+      console.log(`📋 Loaded ${filtered.length} menu items for restaurant ${restaurantId} | columns: ${Object.keys(filtered[0]).join(', ')}`);
+    }
+    return filtered;
   } catch (e) {
     console.error('❌ getMenuItems:', e.message);
     return [];
@@ -598,6 +604,32 @@ app.get('/health', async (req, res) => {
 app.get('/restaurants', async (req, res) => {
   await loadRestaurants(true);
   res.json({ count: restaurantCache.length, restaurants: restaurantCache });
+});
+
+// ─── Debug: dump actual DB schema ─────────────
+app.get('/debug/schema', async (req, res) => {
+  try {
+    const tables = ['restaurants', 'menu_items', 'orders', 'order_items'];
+    const result = {};
+    for (const table of tables) {
+      const { rows } = await pool.query(
+        `SELECT column_name, data_type, is_nullable
+         FROM information_schema.columns
+         WHERE table_name = $1
+         ORDER BY ordinal_position`,
+        [table]
+      );
+      result[table] = rows;
+    }
+    // Also dump raw restaurant rows
+    const { rows: rRows } = await pool.query('SELECT * FROM restaurants LIMIT 5');
+    result._sample_restaurants = rRows;
+    const { rows: mRows } = await pool.query('SELECT * FROM menu_items LIMIT 5');
+    result._sample_menu_items = mRows;
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/menu/:restaurantId', async (req, res) => {

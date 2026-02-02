@@ -258,17 +258,26 @@ async function createPaymentLink(session) {
     return { id, short_url: `https://pay.razorpay.com/i/${id}` };
   }
   try {
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      console.error('❌ Razorpay credentials missing in environment');
+      return null;
+    }
     const Razorpay = require('razorpay');
     const rp = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
-    return await rp.paymentLink.create({
-      amount: session.total * 100, currency: 'INR',
+    const link = await rp.paymentLink.create({
+      amount: Number(session.total) * 100, currency: 'INR',
       description: `Order from ${session.restaurantName}`,
       customer: { contact: session.phone },
       notify: { sms: true, whatsapp: true },
       callback_url: `${process.env.BASE_URL || 'https://restaurant.legacylens.co.in'}/payment/callback`,
       callback_method: 'get'
     });
-  } catch (e) { console.error('❌ createPaymentLink:', e.message); return null; }
+    console.log(`✅ Payment link created: ${link.short_url}`);
+    return link;
+  } catch (e) { 
+    console.error('❌ createPaymentLink error:', e.message); 
+    return null; 
+  }
 }
 
 async function verifyPayment(paymentId, phone) {
@@ -448,7 +457,7 @@ app.post('/webhook', async (req, res) => {
           return res.status(200).send('OK'); 
         }
         session.subtotal = sub; 
-        session.total = sub + session.deliveryFee; 
+        session.total = Number(sub) + Number(session.deliveryFee); 
         session.state = S.ADD_ADDRESS;
         sessions.set(phone, session);
         await sendMessage(phone, `${formatCart(session.cart, session.deliveryFee)}\n\n📍 Please enter your delivery address:`);

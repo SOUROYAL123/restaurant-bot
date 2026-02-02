@@ -396,8 +396,8 @@ app.post('/webhook', async (req, res) => {
     if (!session) {
       const isGreeting = ['hi','hello','hey','start','menu','help'].some(w => text.toLowerCase().includes(w));
       await sendMessage(phone, isGreeting
-        ? `👋 *Welcome!*\n\nType a restaurant name:\n\n🍗 ZAMZAM\n🌶️ SPICEGARDEN\n🍛 CURRYHOUSE\n🍚 BIRYANIEXPRESS`
-        : `👋 Type a restaurant name to start ordering!`
+        ? `👋 *Welcome!*\n\nScan the QR code to start ordering!`
+        : `👋 Scan the QR code to start ordering!`
       );
       return res.status(200).send('OK');
     }

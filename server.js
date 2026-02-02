@@ -188,7 +188,7 @@ function formatCart(cart, deliveryFee = 0) {
     const t = item.price * item.quantity; sub += t;
     m += `${i + 1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price} = ₹${t}\n\n`;
   });
- m += `Subtotal: ₹${sub}\nDelivery Fee: ₹${deliveryFee}\n*Total: ₹${Number(sub) + Number(deliveryFee)}*`;
+  m += `Subtotal: ₹${sub}\nDelivery Fee: ₹${deliveryFee}\n*Total: ₹${Number(sub) + Number(deliveryFee)}*`;
   return m;
 }
 
@@ -211,8 +211,8 @@ async function saveOrder(session) {
     const orderId = rows[0].id;
     for (const item of session.cart) {
       await client.query(
-        'INSERT INTO order_items (order_id, menu_item_id, quantity, price) VALUES ($1,$2,$3,$4)',
-        [orderId, item.id, item.quantity, item.price]
+        'INSERT INTO order_items (order_id, menu_item_id, quantity, price, subtotal) VALUES ($1,$2,$3,$4,$5)',
+        [orderId, item.id, item.quantity, item.price, item.price * item.quantity]
       );
     }
     await client.query('COMMIT');

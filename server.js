@@ -188,7 +188,7 @@ function formatCart(cart, deliveryFee = 0) {
     const t = item.price * item.quantity; sub += t;
     m += `${i + 1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price} = ₹${t}\n\n`;
   });
-  m += `Subtotal: ₹${sub}\nDelivery Fee: ₹${deliveryFee}\n*Total: ₹${sub + deliveryFee}*`;
+ m += `Subtotal: ₹${sub}\nDelivery Fee: ₹${deliveryFee}\n*Total: ₹${Number(sub) + Number(deliveryFee)}*`;
   return m;
 }
 

@@ -1,42 +1,23 @@
 {
   "name": "restaurant-whatsapp-bot-complete",
   "version": "6.0.0",
-  "description": "Complete WhatsApp bot for restaurants with multi-payment gateway support (Razorpay, PhonePe, Paytm, COD)",
+  "description": "Complete WhatsApp bot for restaurants with multi-payment gateway support",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
     "setup-db": "psql $DATABASE_URL -f database/schema-complete.sql",
-    "test": "node test-db.js",
-    "diagnose": "node diagnose.js",
-    "fix-schema": "node fix-schema.js"
+    "test": "node test-db.js"
   },
   "keywords": [
     "whatsapp",
     "restaurant",
     "bot",
     "twilio",
-    "delivery",
-    "booking",
-    "payment",
-    "multi-payment",
-    "razorpay",
-    "phonepe",
-    "paytm",
-    "cod",
-    "loyalty",
-    "google-sheets",
-    "whatsapp-business-api",
-    "food-ordering",
-    "table-booking",
-    "payment-gateway"
+    "payment"
   ],
   "author": "Sourav Roy - Legacylens Automation",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/SOUROYAL123/restaurant-whatsapp-bot.git"
-  },
   "dependencies": {
     "axios": "^1.6.2",
     "bcryptjs": "^2.4.3",
@@ -58,7 +39,6 @@
     "nodemon": "^3.0.2"
   },
   "engines": {
-    "node": ">=18.0.0",
-    "npm": ">=8.0.0"
+    "node": ">=18.0.0"
   }
 }

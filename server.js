@@ -1,7 +1,7 @@
 // ============================================
 // RESTAURANT WHATSAPP BOT v8.0 - COMPLETE
 // Multi-Restaurant | COD | Real-time Menu Management
-// Instant Supply Updates via WhatsApp/API
+// Instant Menu Updates via WhatsApp/Web/API
 // ============================================
 
 require('dotenv').config();
@@ -22,7 +22,7 @@ const TEST_MODE = process.env.TEST_MODE === 'true';
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.set('trust proxy', true);
-app.use(express.static('public')); // Serve static files
+app.use(express.static('public'));
 
 // ═══════════════════════════════════════════════════════
 // TWILIO SETUP
@@ -85,7 +85,6 @@ async function connectDatabase(retries = 5) {
 // ═══════════════════════════════════════════════════════
 const sessions = new Map();
 const testMessages = new Map();
-const ownerSessions = new Map(); // Track owner command sessions
 
 // Session cleanup (30 min timeout)
 setInterval(() => {
@@ -102,7 +101,7 @@ setInterval(() => {
 // RESTAURANT CACHE
 // ═══════════════════════════════════════════════════════
 let restaurantCache = [];
-let menuCache = new Map(); // Cache menu items by restaurant
+let menuCache = new Map();
 let lastCacheUpdate = 0;
 const CACHE_TTL = 300000; // 5 minutes
 
@@ -118,9 +117,7 @@ const S = {
   BOOKING_DATE: 'BOOKING_DATE',
   BOOKING_TIME: 'BOOKING_TIME',
   BOOKING_GUESTS: 'BOOKING_GUESTS',
-  BOOKING_CONFIRM: 'BOOKING_CONFIRM',
-  // Owner states
-  OWNER_MENU_MANAGEMENT: 'OWNER_MENU_MANAGEMENT'
+  BOOKING_CONFIRM: 'BOOKING_CONFIRM'
 };
 
 // ═══════════════════════════════════════════════════════
@@ -155,7 +152,7 @@ async function loadRestaurants(force = false) {
   try {
     const { rows } = await pool.query(`SELECT * FROM restaurants ORDER BY name`);
     const hasActive = rows.length > 0 && 'active' in rows[0];
-    restaurantCache = hasActive ? rows.filter(r => r.active) : rows;
+    restaurantCache = hasActive ? rows.filter(r => r.active !== false) : rows;
     lastCacheUpdate = Date.now();
     if (rows.length > 0) {
       console.log(`📋 Cached ${restaurantCache.length} restaurants`);
@@ -168,7 +165,6 @@ async function loadRestaurants(force = false) {
 }
 
 async function getMenuItems(restaurantId, forceRefresh = false) {
-  // Check cache first
   if (!forceRefresh && menuCache.has(restaurantId)) {
     const cached = menuCache.get(restaurantId);
     if (Date.now() - cached.timestamp < CACHE_TTL) {
@@ -178,15 +174,16 @@ async function getMenuItems(restaurantId, forceRefresh = false) {
 
   try {
     const { rows } = await pool.query(
-      `SELECT * FROM menu_items 
+      `SELECT id, name, description, price, category, is_vegetarian, 
+              COALESCE(available, is_available, true) as available
+       FROM menu_items 
        WHERE restaurant_id = $1 
        ORDER BY category, name`,
       [restaurantId]
     );
     
     // Filter only available items
-    const hasAvailable = rows.length > 0 && 'available' in rows[0];
-    const filtered = hasAvailable ? rows.filter(r => r.available !== false) : rows;
+    const filtered = rows.filter(r => r.available !== false);
     
     // Cache the results
     menuCache.set(restaurantId, {
@@ -386,10 +383,11 @@ async function processOwnerCommand(phone, text, ownerInfo) {
     const upper = text.toUpperCase().trim();
     const restaurantId = ownerInfo.restaurantId;
 
-    // Command: MENU or STATUS - Show all items with availability
+    // Command: MENU or STATUS
     if (upper === 'MENU' || upper === 'STATUS') {
       const items = await pool.query(
-        `SELECT id, name, category, price, available
+        `SELECT id, name, category, price, 
+                COALESCE(available, is_available, true) as available
          FROM menu_items
          WHERE restaurant_id = $1
          ORDER BY category, name`,
@@ -431,75 +429,70 @@ async function processOwnerCommand(phone, text, ownerInfo) {
       return msg;
     }
 
-    // Command: OUT [item_id] or UNAVAILABLE [item_id]
+    // Command: OUT [item_id]
     const outMatch = upper.match(/^(OUT|UNAVAILABLE)\s+(\d+)$/);
     if (outMatch) {
       const itemId = parseInt(outMatch[2]);
 
       const result = await pool.query(
         `UPDATE menu_items 
-         SET available = false, updated_at = NOW()
+         SET available = false, is_available = false
          WHERE id = $1 AND restaurant_id = $2
          RETURNING name`,
         [itemId, restaurantId]
       );
 
       if (result.rows.length > 0) {
-        // Clear menu cache for this restaurant
         menuCache.delete(restaurantId);
-        
-        return `❌ *${result.rows[0].name}* marked as OUT OF STOCK\n\nCustomers will no longer see this item in the menu.`;
+        return `❌ *${result.rows[0].name}* marked as OUT OF STOCK\n\nCustomers will no longer see this item.`;
       }
-      return `❌ Item #${itemId} not found in your menu`;
+      return `❌ Item #${itemId} not found`;
     }
 
-    // Command: IN [item_id] or AVAILABLE [item_id]
+    // Command: IN [item_id]
     const inMatch = upper.match(/^(IN|AVAILABLE)\s+(\d+)$/);
     if (inMatch) {
       const itemId = parseInt(inMatch[2]);
 
       const result = await pool.query(
         `UPDATE menu_items 
-         SET available = true, updated_at = NOW()
+         SET available = true, is_available = true
          WHERE id = $1 AND restaurant_id = $2
          RETURNING name`,
         [itemId, restaurantId]
       );
 
       if (result.rows.length > 0) {
-        // Clear menu cache for this restaurant
         menuCache.delete(restaurantId);
-        
         return `✅ *${result.rows[0].name}* marked as AVAILABLE\n\nCustomers can now order this item.`;
       }
-      return `❌ Item #${itemId} not found in your menu`;
+      return `❌ Item #${itemId} not found`;
     }
 
-    // Command: STOCK [item_id] - Toggle availability
+    // Command: STOCK [item_id]
     const stockMatch = upper.match(/^STOCK\s+(\d+)$/);
     if (stockMatch) {
       const itemId = parseInt(stockMatch[1]);
 
       const result = await pool.query(
         `UPDATE menu_items 
-         SET available = NOT COALESCE(available, true), updated_at = NOW()
+         SET available = NOT COALESCE(available, true),
+             is_available = NOT COALESCE(is_available, true)
          WHERE id = $1 AND restaurant_id = $2
-         RETURNING name, available`,
+         RETURNING name, COALESCE(available, is_available, true) as available`,
         [itemId, restaurantId]
       );
 
       if (result.rows.length > 0) {
-        // Clear menu cache for this restaurant
         menuCache.delete(restaurantId);
-        
         const item = result.rows[0];
         const status = item.available ? '✅ AVAILABLE' : '❌ OUT OF STOCK';
         return `${item.available ? '✅' : '❌'} *${item.name}* toggled to ${status}`;
       }
-      return `❌ Item #${itemId} not found in your menu`;
+      return `❌ Item #${itemId} not found`;
     }
 
-    // Command: HELP - Show owner commands
+    // Command: HELP
     if (upper === 'HELP' || upper === 'COMMANDS') {
       return (
         `🔧 *OWNER COMMANDS*\n\n` +
@@ -507,24 +500,22 @@ async function processOwnerCommand(phone, text, ownerInfo) {
         `  MENU or STATUS\n\n` +
         `❌ *Mark Unavailable:*\n` +
         `  OUT [id]\n` +
-        `  UNAVAILABLE [id]\n` +
         `  Example: OUT 15\n\n` +
         `✅ *Mark Available:*\n` +
         `  IN [id]\n` +
-        `  AVAILABLE [id]\n` +
         `  Example: IN 15\n\n` +
         `🔄 *Toggle Status:*\n` +
         `  STOCK [id]\n` +
         `  Example: STOCK 15\n\n` +
-        `💡 Changes take effect immediately!`
+        `💡 Changes are instant!`
       );
     }
 
-    return null; // Not an owner command
+    return null;
 
   } catch (error) {
     console.error('Owner command error:', error);
-    return '❌ Error processing command. Please try again.';
+    return '❌ Error processing command';
   }
 }
 
@@ -532,29 +523,29 @@ async function processOwnerCommand(phone, text, ownerInfo) {
 // MENU MANAGEMENT API ENDPOINTS
 // ═══════════════════════════════════════════════════════
 
-// Toggle item availability
 app.post('/api/menu/toggle/:itemId', async (req, res) => {
   try {
     const { itemId } = req.params;
     const { restaurantId, ownerKey } = req.body;
 
-    // Verify owner authorization
+    console.log(`🔄 Toggle: Item ${itemId}, Restaurant ${restaurantId}`);
+
     const restaurant = await pool.query(
       'SELECT owner_api_key, name FROM restaurants WHERE id = $1',
       [restaurantId]
     );
 
     if (!restaurant.rows[0] || restaurant.rows[0].owner_api_key !== ownerKey) {
+      console.log('❌ Auth failed');
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // Toggle availability
     const result = await pool.query(
       `UPDATE menu_items 
        SET available = NOT COALESCE(available, true),
-           updated_at = NOW()
+           is_available = NOT COALESCE(is_available, true)
        WHERE id = $1 AND restaurant_id = $2
-       RETURNING id, name, available`,
+       RETURNING id, name, COALESCE(available, is_available, true) as available`,
       [itemId, restaurantId]
     );
 
@@ -563,28 +554,24 @@ app.post('/api/menu/toggle/:itemId', async (req, res) => {
     }
 
     const item = result.rows[0];
-    
-    // Clear cache
     menuCache.delete(restaurantId);
     
-    console.log(`✅ ${restaurant.rows[0].name}: ${item.name} - ${item.available ? 'AVAILABLE' : 'OUT OF STOCK'}`);
+    console.log(`✅ ${item.name}: ${item.available ? 'AVAILABLE' : 'OUT'}`);
 
     res.json({
       success: true,
       itemId: item.id,
       itemName: item.name,
       available: item.available,
-      status: item.available ? 'Available' : 'Out of Stock',
-      restaurantName: restaurant.rows[0].name
+      status: item.available ? 'Available' : 'Out of Stock'
     });
 
   } catch (error) {
-    console.error('Toggle error:', error);
+    console.error('❌ Toggle error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get menu status
 app.get('/api/menu/status/:restaurantId', async (req, res) => {
   try {
     const { restaurantId } = req.params;
@@ -599,7 +586,8 @@ app.get('/api/menu/status/:restaurantId', async (req, res) => {
     }
 
     const items = await pool.query(
-      `SELECT id, name, category, price, available, is_vegetarian
+      `SELECT id, name, category, price, is_vegetarian,
+              COALESCE(available, is_available, true) as available
        FROM menu_items
        WHERE restaurant_id = $1
        ORDER BY category, name`,
@@ -624,12 +612,10 @@ app.get('/api/menu/status/:restaurantId', async (req, res) => {
   }
 });
 
-// Bulk update items
 app.post('/api/menu/bulk-update', async (req, res) => {
   try {
     const { restaurantId, ownerKey, itemIds, available } = req.body;
 
-    // Verify owner
     const restaurant = await pool.query(
       'SELECT owner_api_key, name FROM restaurants WHERE id = $1',
       [restaurantId]
@@ -639,16 +625,14 @@ app.post('/api/menu/bulk-update', async (req, res) => {
       return res.status(401).json({ error: 'Unauthorized' });
     }
 
-    // Update items
     const result = await pool.query(
       `UPDATE menu_items 
-       SET available = $1, updated_at = NOW()
+       SET available = $1, is_available = $1
        WHERE id = ANY($2) AND restaurant_id = $3
        RETURNING id, name`,
       [available, itemIds, restaurantId]
     );
 
-    // Clear cache
     menuCache.delete(restaurantId);
 
     console.log(`✅ ${result.rows.length} items updated for ${restaurant.rows[0].name}`);
@@ -656,8 +640,7 @@ app.post('/api/menu/bulk-update', async (req, res) => {
     res.json({
       success: true,
       updated: result.rows.length,
-      items: result.rows,
-      restaurantName: restaurant.rows[0].name
+      items: result.rows
     });
 
   } catch (error) {
@@ -680,7 +663,6 @@ app.post('/webhook', async (req, res) => {
 
     console.log(`\n📱 [${phone}] → "${text}"`);
 
-    // Database health check
     try {
       await pool.query('SELECT 1');
       dbConnected = true;
@@ -692,9 +674,7 @@ app.post('/webhook', async (req, res) => {
 
     await loadRestaurants();
 
-    // ═══════════════════════════════════════════════════════
-    // PRIORITY 1: Check if user is restaurant owner
-    // ═══════════════════════════════════════════════════════
+    // Check if user is restaurant owner
     const ownerInfo = await isRestaurantOwner(phone);
     
     if (ownerInfo.isOwner) {
@@ -707,9 +687,7 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // ═══════════════════════════════════════════════════════
-    // PRIORITY 2: Check for restaurant keyword (NEW ORDER)
-    // ═══════════════════════════════════════════════════════
+    // Check for restaurant keyword
     const restaurant = restaurantCache.find(r =>
       r.qr_keyword && upper.includes(r.qr_keyword.toUpperCase())
     );
@@ -745,9 +723,6 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // ═══════════════════════════════════════════════════════
-    // Handle existing session
-    // ═══════════════════════════════════════════════════════
     let session = sessions.get(phone);
 
     if (!session) {
@@ -759,10 +734,7 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // ═══════════════════════════════════════════════════════
     // STATE MACHINE
-    // ═══════════════════════════════════════════════════════
-
     if (session.state === S.SELECT_SERVICE) {
       let action = null;
       if (session.canDeliver && session.canBook) {
@@ -938,7 +910,7 @@ app.get('/health', async (req, res) => {
       version: '8.0-MENU-MANAGEMENT',
       features: {
         payment: 'Cash on Delivery Only',
-        menuUpdates: 'Real-time via WhatsApp/API',
+        menuUpdates: 'Real-time via WhatsApp/API/Web',
         googleSheets: process.env.GOOGLE_APPS_SCRIPT_URL ? 'Enabled' : 'Not configured'
       }
     });
@@ -985,14 +957,12 @@ app.post('/reload-cache', async (req, res) => {
   });
 });
 
-// Test endpoints
 app.get('/test/messages/:phone', (req, res) => {
   const msgs = testMessages.get(req.params.phone) || [];
   testMessages.delete(req.params.phone);
   res.json({ messages: msgs });
 });
 
-// Serve menu updater web interface
 app.get('/menu-updater', (req, res) => {
   res.sendFile(path.join(__dirname, 'menu-updater.html'));
 });
@@ -1024,42 +994,39 @@ async function startServer() {
 ║  Database:          ${String(dbConnected ? '✅ Connected' : '❌ Disconnected').padEnd(33)}║
 ║  Restaurants:       ${String(restaurantCache.length).padEnd(33)}║
 ╠═══════════════════════════════════════════════════════╣
-║  🆕 NEW FEATURES                                      ║
-║     ✅ Instant menu availability updates             ║
-║     ✅ Owner commands via WhatsApp                   ║
-║     ✅ Web-based menu manager                        ║
-║     ✅ API for external integrations                 ║
+║  🆕 MENU MANAGEMENT FEATURES                          ║
+║     ✅ Instant availability updates                   ║
+║     ✅ Owner commands via WhatsApp                    ║
+║     ✅ Web-based menu manager                         ║
+║     ✅ REST API for integrations                      ║
 ╠═══════════════════════════════════════════════════════╣
-║  📱 OWNER COMMANDS (WhatsApp)                        ║
-║     MENU or STATUS  - View all items                 ║
-║     OUT [id]        - Mark item unavailable          ║
-║     IN [id]         - Mark item available            ║
-║     STOCK [id]      - Toggle availability            ║
-║     HELP            - Show commands                  ║
+║  📱 OWNER WHATSAPP COMMANDS                           ║
+║     MENU or STATUS  - View all items                  ║
+║     OUT [id]        - Mark unavailable                ║
+║     IN [id]         - Mark available                  ║
+║     STOCK [id]      - Toggle status                   ║
+║     HELP            - Show commands                   ║
 ╠═══════════════════════════════════════════════════════╣
-║  🌐 WEB INTERFACE                                    ║
-║     http://localhost:${PORT}/menu-updater            ║
+║  🌐 WEB INTERFACE                                     ║
+║     http://localhost:${PORT}/menu-updater             ║
 ╠═══════════════════════════════════════════════════════╣
-║  🔌 API ENDPOINTS                                    ║
-║     POST /api/menu/toggle/:id                        ║
-║     GET  /api/menu/status/:restaurantId              ║
-║     POST /api/menu/bulk-update                       ║
+║  🔌 API ENDPOINTS                                     ║
+║     POST /api/menu/toggle/:id                         ║
+║     GET  /api/menu/status/:restaurantId               ║
+║     POST /api/menu/bulk-update                        ║
 ╠═══════════════════════════════════════════════════════╣
-║  💵 PAYMENT METHOD                                   ║
-║     Cash on Delivery (COD) ONLY                      ║
+║  💵 PAYMENT: Cash on Delivery Only                    ║
+║  📊 Google Sheets: ${String(process.env.GOOGLE_APPS_SCRIPT_URL ? '✅ Enabled' : '⚠️  Not configured').padEnd(30)}║
 ╠═══════════════════════════════════════════════════════╣
-║  📊 Google Sheets:                                   ║
-║     ${String(process.env.GOOGLE_APPS_SCRIPT_URL ? '✅ Enabled' : '⚠️  Not configured').padEnd(49)}║
-╠═══════════════════════════════════════════════════════╣
-║  ⚡ Ready for production deployment!                 ║
+║  ⚡ Ready for production!                             ║
 ╚═══════════════════════════════════════════════════════╝
       `);
       
-      console.log('\n📋 Quick Start Guide:');
-      console.log('   1. Customers scan QR → Start ordering');
-      console.log('   2. Owners text commands → Update menu');
-      console.log('   3. Web interface → http://localhost:' + PORT + '/menu-updater');
-      console.log('   4. Health check → http://localhost:' + PORT + '/health\n');
+      console.log('📋 Quick Start:');
+      console.log('   1. Customers: Scan QR → Start ordering');
+      console.log('   2. Owners: Text commands → Update menu');
+      console.log('   3. Web: http://localhost:' + PORT + '/menu-updater');
+      console.log('   4. Health: http://localhost:' + PORT + '/health\n');
     });
   } catch (e) {
     console.error('❌ Startup failed:', e);

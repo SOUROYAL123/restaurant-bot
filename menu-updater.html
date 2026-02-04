@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Restaurant Menu Manager</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 { font-size: 28px; margin-bottom: 5px; }
+        .header p { opacity: 0.9; font-size: 14px; }
+        .content { padding: 30px; }
+        .login-form {
+            max-width: 400px;
+            margin: 0 auto;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+        input, select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        button:hover {
+            transform: translateY(-2px);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        .menu-grid {
+            display: grid;
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .menu-item {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: all 0.3s;
+        }
+        .menu-item:hover {
+            background: #e9ecef;
+            transform: translateX(5px);
+        }
+        .menu-item.unavailable {
+            opacity: 0.6;
+            background: #ffe6e6;
+        }
+        .item-info h3 {
+            font-size: 16px;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .item-info p {
+            font-size: 13px;
+            color: #666;
+        }
+        .toggle-btn {
+            padding: 8px 20px;
+            border: none;
+            border-radius: 20px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .toggle-btn.available {
+            background: #28a745;
+            color: white;
+        }
+        .toggle-btn.unavailable {
+            background: #dc3545;
+            color: white;
+        }
+        .stats {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .stat-card {
+            flex: 1;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 12px;
+            text-align: center;
+        }
+        .stat-card h2 {
+            font-size: 32px;
+            margin-bottom: 5px;
+        }
+        .stat-card p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+        .hidden { display: none; }
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #28a745;
+            color: white;
+            padding: 15px 25px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+            z-index: 1000;
+            animation: slideIn 0.3s;
+        }
+        @keyframes slideIn {
+            from { transform: translateX(400px); }
+            to { transform: translateX(0); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🍽️ Restaurant Menu Manager</h1>
+            <p>Real-time availability updates</p>
+        </div>
+        
+        <div class="content">
+            <!-- Login Form -->
+            <div id="loginForm" class="login-form">
+                <div class="form-group">
+                    <label>Restaurant ID</label>
+                    <input type="number" id="restaurantId" placeholder="Enter restaurant ID">
+                </div>
+                <div class="form-group">
+                    <label>Owner API Key</label>
+                    <input type="password" id="ownerKey" placeholder="Enter your API key">
+                </div>
+                <button onclick="login()">Login</button>
+            </div>
+
+            <!-- Menu Manager (hidden initially) -->
+            <div id="menuManager" class="hidden">
+                <div class="stats">
+                    <div class="stat-card">
+                        <h2 id="availableCount">0</h2>
+                        <p>Available Items</p>
+                    </div>
+                    <div class="stat-card">
+                        <h2 id="unavailableCount">0</h2>
+                        <p>Out of Stock</p>
+                    </div>
+                </div>
+                
+                <div id="menuGrid" class="menu-grid"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let restaurantId, ownerKey;
+        const API_URL = window.location.origin;
+
+        async function login() {
+            restaurantId = document.getElementById('restaurantId').value;
+            ownerKey = document.getElementById('ownerKey').value;
+
+            if (!restaurantId || !ownerKey) {
+                alert('Please fill all fields');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/menu/api/menu/status/${restaurantId}`);
+                const data = await response.json();
+
+                if (data.success) {
+                    document.getElementById('loginForm').classList.add('hidden');
+                    document.getElementById('menuManager').classList.remove('hidden');
+                    loadMenu(data);
+                } else {
+                    alert('Invalid credentials');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        function loadMenu(data) {
+            const available = data.items.filter(i => i.available).length;
+            const unavailable = data.items.filter(i => !i.available).length;
+
+            document.getElementById('availableCount').textContent = available;
+            document.getElementById('unavailableCount').textContent = unavailable;
+
+            const grid = document.getElementById('menuGrid');
+            grid.innerHTML = '';
+
+            data.items.forEach(item => {
+                const div = document.createElement('div');
+                div.className = `menu-item ${item.available ? '' : 'unavailable'}`;
+                div.innerHTML = `
+                    <div class="item-info">
+                        <h3>${item.name}</h3>
+                        <p>${item.category} • ₹${item.price}</p>
+                    </div>
+                    <button class="toggle-btn ${item.available ? 'available' : 'unavailable'}"
+                            onclick="toggleItem(${item.id}, ${item.available})">
+                        ${item.available ? 'Available' : 'Out of Stock'}
+                    </button>
+                `;
+                grid.appendChild(div);
+            });
+        }
+
+        async function toggleItem(itemId, currentStatus) {
+            try {
+                const response = await fetch(`${API_URL}/menu/api/menu/toggle/${itemId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ restaurantId, ownerKey })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showNotification(`✅ ${data.itemName} - ${data.status}`);
+                    // Reload menu
+                    const statusResponse = await fetch(`${API_URL}/menu/api/menu/status/${restaurantId}`);
+                    const statusData = await statusResponse.json();
+                    loadMenu(statusData);
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        function showNotification(message) {
+            const notif = document.createElement('div');
+            notif.className = 'notification';
+            notif.textContent = message;
+            document.body.appendChild(notif);
+            setTimeout(() => notif.remove(), 3000);
+        }
+    </script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 // ============================================
-// RESTAURANT WHATSAPP BOT v6.0 - MULTI-PAYMENT
-// Multi-Restaurant | Multi-Payment Gateway | Google Sheets
-// Razorpay | PhonePe | Paytm | COD
+// RESTAURANT WHATSAPP BOT v7.0 - COD ONLY
+// Multi-Restaurant | Cash on Delivery Only
+// Simplified for Fast Deployment
 // ============================================
 
 require('dotenv').config();
@@ -9,8 +9,6 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const twilio = require('twilio');
 const { Pool } = require('pg');
-const crypto = require('crypto');
-const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -75,7 +73,6 @@ async function connectDatabase(retries = 5) {
 
 // ─── In-Memory Stores ────────────────────────
 const sessions        = new Map();
-const pendingPayments = new Map();
 const testMessages    = new Map();
 
 setInterval(() => {
@@ -98,332 +95,12 @@ const S = {
   BROWSE_MENU:      'BROWSE_MENU',
   ADD_ADDRESS:      'ADD_ADDRESS',
   ADD_INSTRUCTIONS: 'ADD_INSTRUCTIONS',
-  CHOOSE_PAYMENT:   'CHOOSE_PAYMENT',
-  AWAITING_PAYMENT: 'AWAITING_PAYMENT',
   CONFIRM_ORDER:    'CONFIRM_ORDER',
   BOOKING_DATE:     'BOOKING_DATE',
   BOOKING_TIME:     'BOOKING_TIME',
   BOOKING_GUESTS:   'BOOKING_GUESTS',
   BOOKING_CONFIRM:  'BOOKING_CONFIRM'
 };
-
-// ════════════════════════════════════════════
-// PAYMENT GATEWAY INTEGRATIONS
-// ════════════════════════════════════════════
-
-// ─── RAZORPAY ────────────────────────────────
-async function createRazorpayPayment(orderData) {
-  try {
-    const Razorpay = require('razorpay');
-    const razorpay = new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET
-    });
-
-    const options = {
-      amount: Math.round(orderData.amount * 100),
-      currency: 'INR',
-      accept_partial: false,
-      description: `Order from ${orderData.restaurantName}`,
-      customer: {
-        contact: orderData.phone,
-        name: orderData.customerName || 'Customer'
-      },
-      notify: { sms: true, whatsapp: true },
-      reminder_enable: true,
-      callback_url: `${process.env.BASE_URL}/payment/razorpay/callback`,
-      callback_method: 'get'
-    };
-
-    const paymentLink = await razorpay.paymentLink.create(options);
-    console.log(`✅ Razorpay payment created: ${paymentLink.short_url}`);
-
-    return {
-      success: true,
-      gateway: 'razorpay',
-      paymentId: paymentLink.id,
-      paymentUrl: paymentLink.short_url,
-      orderId: paymentLink.order_id || paymentLink.id
-    };
-  } catch (error) {
-    console.error('❌ Razorpay Error:', error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-async function verifyRazorpayPayment(paymentId) {
-  try {
-    const Razorpay = require('razorpay');
-    const razorpay = new Razorpay({
-      key_id: process.env.RAZORPAY_KEY_ID,
-      key_secret: process.env.RAZORPAY_KEY_SECRET
-    });
-    
-    const paymentLink = await razorpay.paymentLink.fetch(paymentId);
-    return {
-      success: true,
-      verified: paymentLink.status === 'paid'
-    };
-  } catch (error) {
-    console.error('❌ Razorpay Verify Error:', error.message);
-    return { success: false, verified: false };
-  }
-}
-
-// ─── PHONEPE ─────────────────────────────────
-async function createPhonePePayment(orderData) {
-  try {
-    const merchantId = process.env.PHONEPE_MERCHANT_ID;
-    const saltKey = process.env.PHONEPE_SALT_KEY;
-    const saltIndex = process.env.PHONEPE_SALT_INDEX || '1';
-    const mode = process.env.PHONEPE_MODE || 'UAT';
-    
-    if (!merchantId || !saltKey) {
-      return { success: false, error: 'PhonePe credentials not configured' };
-    }
-    
-    const baseUrl = mode === 'PRODUCTION' 
-      ? 'https://api.phonepe.com/apis/hermes'
-      : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
-
-    const merchantTransactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    const payload = {
-      merchantId: merchantId,
-      merchantTransactionId: merchantTransactionId,
-      merchantUserId: orderData.phone.replace(/\D/g, '').substr(-10),
-      amount: Math.round(orderData.amount * 100),
-      redirectUrl: `${process.env.BASE_URL}/payment/phonepe/callback`,
-      redirectMode: 'GET',
-      callbackUrl: `${process.env.BASE_URL}/payment/phonepe/webhook`,
-      mobileNumber: orderData.phone.replace(/\D/g, '').substr(-10),
-      paymentInstrument: { type: 'PAY_PAGE' }
-    };
-
-    const base64Payload = Buffer.from(JSON.stringify(payload)).toString('base64');
-    const checksumString = base64Payload + '/pg/v1/pay' + saltKey;
-    const checksum = crypto.createHash('sha256').update(checksumString).digest('hex') + '###' + saltIndex;
-
-    const response = await axios.post(
-      `${baseUrl}/pg/v1/pay`,
-      { request: base64Payload },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-VERIFY': checksum
-        }
-      }
-    );
-
-    if (response.data.success) {
-      console.log(`✅ PhonePe payment created: ${merchantTransactionId}`);
-      return {
-        success: true,
-        gateway: 'phonepe',
-        paymentId: merchantTransactionId,
-        paymentUrl: response.data.data.instrumentResponse.redirectInfo.url,
-        orderId: merchantTransactionId
-      };
-    } else {
-      return { success: false, error: response.data.message };
-    }
-  } catch (error) {
-    console.error('❌ PhonePe Error:', error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-async function verifyPhonePePayment(merchantTransactionId) {
-  try {
-    const merchantId = process.env.PHONEPE_MERCHANT_ID;
-    const saltKey = process.env.PHONEPE_SALT_KEY;
-    const saltIndex = process.env.PHONEPE_SALT_INDEX || '1';
-    const mode = process.env.PHONEPE_MODE || 'UAT';
-    
-    const baseUrl = mode === 'PRODUCTION'
-      ? 'https://api.phonepe.com/apis/hermes'
-      : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
-
-    const checksumString = `/pg/v1/status/${merchantId}/${merchantTransactionId}` + saltKey;
-    const checksum = crypto.createHash('sha256').update(checksumString).digest('hex') + '###' + saltIndex;
-
-    const response = await axios.get(
-      `${baseUrl}/pg/v1/status/${merchantId}/${merchantTransactionId}`,
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-VERIFY': checksum,
-          'X-MERCHANT-ID': merchantId
-        }
-      }
-    );
-
-    return {
-      success: true,
-      verified: response.data.success && response.data.code === 'PAYMENT_SUCCESS'
-    };
-  } catch (error) {
-    console.error('❌ PhonePe Verify Error:', error.message);
-    return { success: false, verified: false };
-  }
-}
-
-// ─── PAYTM ───────────────────────────────────
-async function createPaytmPayment(orderData) {
-  try {
-    const PaytmChecksum = require('paytmchecksum');
-    const merchantId = process.env.PAYTM_MERCHANT_ID;
-    const merchantKey = process.env.PAYTM_MERCHANT_KEY;
-    const website = process.env.PAYTM_WEBSITE || 'WEBSTAGING';
-    
-    if (!merchantId || !merchantKey) {
-      return { success: false, error: 'Paytm credentials not configured' };
-    }
-    
-    const orderId = `ORDER_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-    const paytmParams = {
-      body: {
-        requestType: 'Payment',
-        mid: merchantId,
-        websiteName: website,
-        orderId: orderId,
-        callbackUrl: `${process.env.BASE_URL}/payment/paytm/callback`,
-        txnAmount: {
-          value: orderData.amount.toFixed(2),
-          currency: 'INR'
-        },
-        userInfo: {
-          custId: orderData.phone.replace(/\D/g, '').substr(-10)
-        }
-      }
-    };
-
-    const checksum = await PaytmChecksum.generateSignature(
-      JSON.stringify(paytmParams.body),
-      merchantKey
-    );
-
-    paytmParams.head = { signature: checksum };
-
-    const baseUrl = website === 'WEBSTAGING'
-      ? 'https://securegw-stage.paytm.in'
-      : 'https://securegw.paytm.in';
-
-    const response = await axios.post(
-      `${baseUrl}/theia/api/v1/initiateTransaction?mid=${merchantId}&orderId=${orderId}`,
-      paytmParams,
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-
-    if (response.data.body.resultInfo.resultStatus === 'S') {
-      const txnToken = response.data.body.txnToken;
-      const paymentUrl = `${baseUrl}/theia/api/v1/showPaymentPage?mid=${merchantId}&orderId=${orderId}`;
-      
-      console.log(`✅ Paytm payment created: ${orderId}`);
-      return {
-        success: true,
-        gateway: 'paytm',
-        paymentId: orderId,
-        paymentUrl: paymentUrl,
-        txnToken: txnToken,
-        orderId: orderId
-      };
-    } else {
-      return { success: false, error: response.data.body.resultInfo.resultMsg };
-    }
-  } catch (error) {
-    console.error('❌ Paytm Error:', error.message);
-    return { success: false, error: error.message };
-  }
-}
-
-async function verifyPaytmPayment(orderId) {
-  try {
-    const PaytmChecksum = require('paytmchecksum');
-    const merchantId = process.env.PAYTM_MERCHANT_ID;
-    const merchantKey = process.env.PAYTM_MERCHANT_KEY;
-    const website = process.env.PAYTM_WEBSITE || 'WEBSTAGING';
-
-    const paytmParams = {
-      body: {
-        mid: merchantId,
-        orderId: orderId
-      }
-    };
-
-    const checksum = await PaytmChecksum.generateSignature(
-      JSON.stringify(paytmParams.body),
-      merchantKey
-    );
-
-    paytmParams.head = { signature: checksum };
-
-    const baseUrl = website === 'WEBSTAGING'
-      ? 'https://securegw-stage.paytm.in'
-      : 'https://securegw.paytm.in';
-
-    const response = await axios.post(
-      `${baseUrl}/v3/order/status`,
-      paytmParams,
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-
-    return {
-      success: true,
-      verified: response.data.body.resultInfo.resultStatus === 'TXN_SUCCESS'
-    };
-  } catch (error) {
-    console.error('❌ Paytm Verify Error:', error.message);
-    return { success: false, verified: false };
-  }
-}
-
-// ─── UNIFIED PAYMENT FUNCTIONS ───────────────
-async function createPayment(gateway, orderData) {
-  console.log(`💳 Creating ${gateway} payment for ₹${orderData.amount}`);
-  
-  if (TEST_MODE) {
-    return {
-      success: true,
-      gateway: gateway,
-      paymentId: `test_${gateway}_${Date.now()}`,
-      paymentUrl: `https://test-payment.com/${gateway}`,
-      orderId: `test_order_${Date.now()}`
-    };
-  }
-  
-  switch (gateway) {
-    case 'razorpay':
-      return await createRazorpayPayment(orderData);
-    case 'phonepe':
-      return await createPhonePePayment(orderData);
-    case 'paytm':
-      return await createPaytmPayment(orderData);
-    default:
-      return { success: false, error: 'Invalid payment gateway' };
-  }
-}
-
-async function verifyPayment(gateway, paymentId) {
-  console.log(`🔍 Verifying ${gateway} payment: ${paymentId}`);
-  
-  if (TEST_MODE) {
-    const s = Array.from(sessions.values()).find(sess => sess.paymentId === paymentId);
-    return { success: true, verified: s?.testPaymentPaid === true };
-  }
-  
-  switch (gateway) {
-    case 'razorpay':
-      return await verifyRazorpayPayment(paymentId);
-    case 'phonepe':
-      return await verifyPhonePePayment(paymentId);
-    case 'paytm':
-      return await verifyPaytmPayment(paymentId);
-    default:
-      return { success: false, verified: false };
-  }
-}
 
 // ════════════════════════════════════════════
 // HELPERS
@@ -519,17 +196,11 @@ async function saveOrder(session) {
     const { rows } = await client.query(
       `INSERT INTO orders (
          restaurant_id, customer_phone, delivery_address, special_instructions,
-         total_amount, status, payment_status, payment_method, payment_gateway,
-         gateway_transaction_id, gateway_order_id, created_at, confirmed_at
-       ) VALUES ($1,$2,$3,$4,$5,'CONFIRMED',$6,$7,$8,$9,$10,NOW(),NOW()) RETURNING id`,
+         total_amount, status, payment_status, payment_method, created_at, confirmed_at
+       ) VALUES ($1,$2,$3,$4,$5,'CONFIRMED','COD','cod',NOW(),NOW()) RETURNING id`,
       [
         session.restaurantId, session.phone, session.deliveryAddress,
-        session.specialInstructions || '', session.total,
-        session.paymentMethod === 'online' ? 'PAID' : 'COD',
-        session.paymentMethod,
-        session.paymentGateway || 'cod',
-        session.paymentId || null,
-        session.gatewayOrderId || null
+        session.specialInstructions || '', session.total
       ]
     );
     const orderId = rows[0].id;
@@ -542,7 +213,7 @@ async function saveOrder(session) {
     }
     
     await client.query('COMMIT');
-    console.log(`✅ Order #${orderId} saved (${session.paymentGateway})`);
+    console.log(`✅ Order #${orderId} saved (COD)`);
     return orderId;
   } catch (e) {
     await client.query('ROLLBACK');
@@ -563,17 +234,9 @@ async function notifyOwner(session, orderId) {
     const ownerWA = rows[0].whatsapp_number;
     if (!ownerWA) return;
     
-    const gatewayName = session.paymentGateway === 'razorpay' ? 'Razorpay' :
-                       session.paymentGateway === 'phonepe' ? 'PhonePe' :
-                       session.paymentGateway === 'paytm' ? 'Paytm' : 'COD';
-    
-    const payLabel = session.paymentMethod === 'online' 
-      ? `💳 ONLINE PAID (${gatewayName})` 
-      : '💵 CASH ON DELIVERY';
-    
     let m = `🔔 *NEW ORDER #${orderId}*\n\n🏪 ${session.restaurantName}\n📱 Customer: ${session.phone}\n📍 Address: ${session.deliveryAddress}\n\n🛒 *Items:*\n`;
     session.cart.forEach(i => { m += `• ${i.quantity}× ${i.name} — ₹${i.price * i.quantity}\n`; });
-    m += `\n💰 *Total: ₹${session.total}*\n${payLabel}`;
+    m += `\n💰 *Total: ₹${session.total}*\n💵 CASH ON DELIVERY`;
     if (session.specialInstructions && session.specialInstructions.toLowerCase() !== 'no')
       m += `\n📝 Instructions: ${session.specialInstructions}`;
     m += `\n⏰ ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`;
@@ -606,9 +269,8 @@ async function logOrderToGoogleSheets(session, orderId) {
       subtotal: session.subtotal,
       deliveryFee: session.deliveryFee,
       total: session.total,
-      paymentMethod: session.paymentMethod,
-      paymentGateway: session.paymentGateway || 'cod',
-      paymentStatus: session.paymentMethod === 'online' ? 'PAID' : 'COD',
+      paymentMethod: 'cod',
+      paymentStatus: 'COD',
       deliveryAddress: session.deliveryAddress,
       specialInstructions: session.specialInstructions || 'None'
     };
@@ -632,14 +294,6 @@ function buildOrderConfirmation(session, orderId) {
   const cart = session.cart.map((item, i) =>
     `${i+1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price} = ₹${item.price * item.quantity}`
   ).join('\n\n');
-  
-  const gatewayName = session.paymentGateway === 'razorpay' ? 'Razorpay' :
-                     session.paymentGateway === 'phonepe' ? 'PhonePe' :
-                     session.paymentGateway === 'paytm' ? 'Paytm' : 'Cash';
-  
-  const pay = session.paymentMethod === 'online'
-    ? `💳 Payment: Online (${gatewayName} - PAID)`
-    : '💵 Payment: Cash on Delivery';
     
   return (
     `🎉 *Order Confirmed!*\n\n` +
@@ -648,10 +302,10 @@ function buildOrderConfirmation(session, orderId) {
     `🛒 Your Cart:\n${cart}\n\n` +
     `Subtotal: ₹${session.subtotal}\n` +
     `Delivery Fee: ₹${session.deliveryFee}\n` +
-    `Total: ₹${session.total}\n\n` +
+    `*Total: ₹${session.total}*\n\n` +
     `📍 Delivery Address:\n${session.deliveryAddress}\n\n` +
-    `${pay}\n` +
-    `💰 Total: ₹${session.total}\n\n` +
+    `💵 *Payment: CASH ON DELIVERY*\n` +
+    `💰 Please keep ₹${session.total} ready in cash\n\n` +
     `⏱️ Estimated Delivery: 45 minutes\n\n` +
     `The restaurant has been notified and is preparing your food.\n\n` +
     `Thank you for your order! 🍽️\n\n` +
@@ -694,11 +348,6 @@ app.post('/webhook', async (req, res) => {
     if (restaurant) {
       const old = sessions.get(phone);
       if (old?.confirmTimeout) clearTimeout(old.confirmTimeout);
-      const paymentTimeout = pendingPayments.get(phone);
-      if (paymentTimeout) {
-        clearTimeout(paymentTimeout);
-        pendingPayments.delete(phone);
-      }
 
       const canDeliver = restaurant.delivery_available !== false;
       const canBook    = restaurant.table_booking_available !== false;
@@ -832,173 +481,36 @@ app.post('/webhook', async (req, res) => {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // ADD_INSTRUCTIONS → CHOOSE_PAYMENT (Show 4 payment options)
+    // ADD_INSTRUCTIONS → CONFIRM_ORDER (Skip payment selection)
     // ═══════════════════════════════════════════════════════════
     if (session.state === S.ADD_INSTRUCTIONS) {
       session.specialInstructions = text;
-      session.state = S.CHOOSE_PAYMENT;
+      session.state = S.CONFIRM_ORDER;
+      session.confirmTimeout = setTimeout(async () => {
+        if (sessions.get(phone)?.state === S.CONFIRM_ORDER) {
+          sessions.delete(phone);
+          await sendMessage(phone, '⏱️ Confirmation timeout. Start over.');
+        }
+      }, 600000);
       sessions.set(phone, session);
 
-      const lines = session.cart.map(i => `  ${i.quantity}× ${i.name} — ₹${i.price * i.quantity}`).join('\n');
+      const lines = session.cart.map(i => `${i.quantity}× ${i.name} — ₹${i.price * i.quantity}`).join('\n');
 
       await sendMessage(phone,
-        `💳 *Choose Payment Method*\n\n` +
-        `🛒 *Your Order:*\n${lines}\n\n` +
-        `Subtotal: ₹${session.subtotal}\n` +
-        `Delivery Fee: ₹${session.deliveryFee}\n` +
-        `💰 *Total: ₹${session.total}*\n\n` +
+        `📋 *CONFIRM YOUR ORDER*\n\n` +
+        `🏪 ${session.restaurantName}\n\n` +
+        `*Your Order:*\n${lines}\n\n` +
+        `💰 Total: ₹${session.total}\n` +
         `📍 Delivery: ${session.deliveryAddress}\n\n` +
-        `Select payment method:\n\n` +
-        `1️⃣ Razorpay\n` +
-        `    💳 Cards, UPI, Wallets, NetBanking\n\n` +
-        `2️⃣ PhonePe\n` +
-        `    📱 PhonePe UPI & Wallet\n\n` +
-        `3️⃣ Paytm\n` +
-        `    💳 Paytm Wallet & UPI\n\n` +
-        `4️⃣ Cash on Delivery (COD)\n` +
-        `    💵 Pay when food arrives\n\n` +
-        `Reply with *1*, *2*, *3*, or *4*`
+        `💵 *PAYMENT: CASH ON DELIVERY*\n\n` +
+        `⚠️ *IMPORTANT:*\n` +
+        `✅ Pay ₹${session.total} in CASH\n` +
+        `✅ Have exact change ready\n` +
+        `✅ Be available at address\n\n` +
+        `Type *CONFIRM* to place order\n` +
+        `Type *CANCEL* to cancel\n\n` +
+        `⏱️ You have 10 minutes`
       );
-      return res.status(200).send('OK');
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // CHOOSE_PAYMENT State Handler - MULTI-GATEWAY
-    // ═══════════════════════════════════════════════════════════
-    if (session.state === S.CHOOSE_PAYMENT) {
-      // ─── Options 1, 2, 3: Online Payment Gateways ──────────────────────
-      if (text === '1' || text === '2' || text === '3') {
-        let gateway = null;
-        if (text === '1') gateway = 'razorpay';
-        if (text === '2') gateway = 'phonepe';
-        if (text === '3') gateway = 'paytm';
-
-        session.paymentMethod = 'online';
-        session.paymentGateway = gateway;
-        session.state = S.AWAITING_PAYMENT;
-        sessions.set(phone, session);
-
-        const orderData = {
-          amount: session.total,
-          restaurantName: session.restaurantName,
-          phone: session.phone,
-          customerName: session.customerName || 'Customer'
-        };
-
-        const paymentResult = await createPayment(gateway, orderData);
-
-        if (!paymentResult.success) {
-          session.state = S.CHOOSE_PAYMENT;
-          sessions.set(phone, session);
-          await sendMessage(phone, 
-            `❌ ${gateway} payment unavailable.\n\n` +
-            `Try:\n1️⃣ Razorpay\n2️⃣ PhonePe\n3️⃣ Paytm\n4️⃣ Cash on Delivery`
-          );
-          return res.status(200).send('OK');
-        }
-
-        session.paymentId = paymentResult.paymentId;
-        session.paymentLink = paymentResult.paymentUrl;
-        session.gatewayOrderId = paymentResult.orderId;
-        sessions.set(phone, session);
-
-        pendingPayments.set(phone, setTimeout(async () => {
-          if (sessions.get(phone)?.state === S.AWAITING_PAYMENT) {
-            sessions.delete(phone);
-            await sendMessage(phone, '⏱️ Payment timeout. Type restaurant name to start over.');
-          }
-        }, 900000));
-
-        const gatewayName = gateway === 'razorpay' ? 'Razorpay' :
-                           gateway === 'phonepe' ? 'PhonePe' : 'Paytm';
-
-        await sendMessage(phone,
-          `💳 *${gatewayName} Payment*\n\n` +
-          `Amount: ₹${session.total}\n\n` +
-          `Click to pay securely:\n${paymentResult.paymentUrl}\n\n` +
-          `After payment:\n` +
-          `• Type *CHECK* to verify\n` +
-          `• Type *CANCEL* to cancel\n\n` +
-          `⏱️ Link expires in 15 minutes`
-        );
-        return res.status(200).send('OK');
-      }
-
-      // ─── Option 4: Cash on Delivery ────────────────────
-      if (text === '4') {
-        session.paymentMethod = 'cod';
-        session.paymentGateway = 'cod';
-        session.state = S.CONFIRM_ORDER;
-        session.confirmTimeout = setTimeout(async () => {
-          if (sessions.get(phone)?.state === S.CONFIRM_ORDER) {
-            sessions.delete(phone);
-            await sendMessage(phone, '⏱️ Confirmation timeout. Start over.');
-          }
-        }, 600000);
-        sessions.set(phone, session);
-
-        const lines = session.cart.map(i => `${i.quantity}× ${i.name} — ₹${i.price * i.quantity}`).join('\n');
-
-        await sendMessage(phone,
-          `📋 *CONFIRM YOUR ORDER*\n\n` +
-          `🏪 ${session.restaurantName}\n\n` +
-          `*Your Order:*\n${lines}\n\n` +
-          `💰 Total: ₹${session.total}\n` +
-          `📍 Delivery: ${session.deliveryAddress}\n\n` +
-          `💵 *PAYMENT: CASH ON DELIVERY*\n\n` +
-          `⚠️ *IMPORTANT:*\n` +
-          `✅ Pay ₹${session.total} in CASH\n` +
-          `✅ Have exact change ready\n` +
-          `✅ Be available at address\n\n` +
-          `Type *CONFIRM* to place order\n` +
-          `Type *CANCEL* to cancel\n\n` +
-          `⏱️ You have 10 minutes`
-        );
-        return res.status(200).send('OK');
-      }
-
-      await sendMessage(phone, `❌ Invalid choice.\n\nReply *1*, *2*, *3*, or *4*`);
-      return res.status(200).send('OK');
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // AWAITING_PAYMENT - Multi-Gateway Verification
-    // ═══════════════════════════════════════════════════════════
-    if (session.state === S.AWAITING_PAYMENT) {
-      if (upper === 'CHECK') {
-        const result = await verifyPayment(session.paymentGateway, session.paymentId);
-
-        if (result.success && result.verified) {
-          const t = pendingPayments.get(phone);
-          if (t) clearTimeout(t);
-          pendingPayments.delete(phone);
-
-          const orderId = await saveOrder(session);
-          await notifyOwner(session, orderId);
-          await logOrderToGoogleSheets(session, orderId);
-          sessions.delete(phone);
-          await sendMessage(phone, buildOrderConfirmation(session, orderId));
-          return res.status(200).send('OK');
-        }
-
-        await sendMessage(phone, 
-          `⏳ Payment not received yet.\n\n` +
-          `Complete payment via the link, then type *CHECK* again.\n` +
-          `Or type *CANCEL* to cancel.`
-        );
-        return res.status(200).send('OK');
-      }
-
-      if (upper === 'CANCEL') {
-        const t = pendingPayments.get(phone);
-        if (t) clearTimeout(t);
-        pendingPayments.delete(phone);
-        sessions.delete(phone);
-        await sendMessage(phone, '❌ Order cancelled. Type restaurant name to start over.');
-        return res.status(200).send('OK');
-      }
-
-      await sendMessage(phone, 'Type *CHECK* to verify payment or *CANCEL* to cancel.');
       return res.status(200).send('OK');
     }
 
@@ -1035,153 +547,6 @@ app.post('/webhook', async (req, res) => {
 });
 
 // ════════════════════════════════════════════
-// PAYMENT WEBHOOKS & CALLBACKS
-// ════════════════════════════════════════════
-
-// ─── Razorpay Webhook ────────────────────────
-app.post('/payment/razorpay/webhook', async (req, res) => {
-  try {
-    const event  = req.body.event;
-    const entity = req.body.payload?.payment_link?.entity || req.body.payload?.payment?.entity;
-    if (!entity) return res.status(400).send('No entity');
-
-    let phone = null;
-    for (const [p, s] of sessions) {
-      if (s.paymentId === entity.id) {
-        phone = p;
-        break;
-      }
-    }
-    if (!phone) return res.status(200).send('OK');
-
-    if (event === 'payment.captured' || event === 'payment_link.paid') {
-      const session = sessions.get(phone);
-      const t = pendingPayments.get(phone);
-      if (t) clearTimeout(t);
-      pendingPayments.delete(phone);
-      
-      const orderId = await saveOrder(session);
-      await notifyOwner(session, orderId);
-      await logOrderToGoogleSheets(session, orderId);
-      await sendMessage(phone, buildOrderConfirmation(session, orderId));
-      sessions.delete(phone);
-    }
-    res.status(200).send('OK');
-  } catch (e) {
-    console.error('❌ Razorpay webhook:', e.message);
-    res.status(500).send('Error');
-  }
-});
-
-app.get('/payment/razorpay/callback', (req, res) => {
-  res.send(`<!DOCTYPE html><html><head><title>Payment Success</title>
-<style>body{font-family:Arial;text-align:center;padding:60px;background:#f0faf0}.ck{font-size:80px}h1{color:#2e7d32}p{color:#555;font-size:18px}</style></head>
-<body><div class="ck">✅</div><h1>Payment Successful!</h1>
-<p>Return to WhatsApp and type <b>CHECK</b> to confirm your order.</p></body></html>`);
-});
-
-// ─── PhonePe Webhook ─────────────────────────
-app.post('/payment/phonepe/webhook', async (req, res) => {
-  try {
-    const response = req.body.response;
-    if (!response) return res.status(400).send('No response');
-
-    const decodedResponse = Buffer.from(response, 'base64').toString('utf-8');
-    const data = JSON.parse(decodedResponse);
-
-    if (data.success && data.code === 'PAYMENT_SUCCESS') {
-      const merchantTransactionId = data.data.merchantTransactionId;
-      
-      let phone = null;
-      for (const [p, s] of sessions) {
-        if (s.paymentId === merchantTransactionId) {
-          phone = p;
-          break;
-        }
-      }
-      
-      if (phone) {
-        const session = sessions.get(phone);
-        const t = pendingPayments.get(phone);
-        if (t) clearTimeout(t);
-        pendingPayments.delete(phone);
-        
-        const orderId = await saveOrder(session);
-        await notifyOwner(session, orderId);
-        await logOrderToGoogleSheets(session, orderId);
-        await sendMessage(phone, buildOrderConfirmation(session, orderId));
-        sessions.delete(phone);
-      }
-    }
-    res.status(200).send('OK');
-  } catch (e) {
-    console.error('❌ PhonePe webhook:', e.message);
-    res.status(500).send('Error');
-  }
-});
-
-app.get('/payment/phonepe/callback', (req, res) => {
-  res.send(`<!DOCTYPE html><html><head><title>Payment Success</title>
-<style>body{font-family:Arial;text-align:center;padding:60px;background:#f0faf0}.ck{font-size:80px}h1{color:#2e7d32}p{color:#555;font-size:18px}</style></head>
-<body><div class="ck">✅</div><h1>Payment Successful!</h1>
-<p>Return to WhatsApp and type <b>CHECK</b> to confirm your order.</p></body></html>`);
-});
-
-// ─── Paytm Webhook ───────────────────────────
-app.post('/payment/paytm/callback', async (req, res) => {
-  try {
-    const PaytmChecksum = require('paytmchecksum');
-    const paytmParams = {};
-    
-    for (let key in req.body) {
-      if (key !== 'CHECKSUMHASH') {
-        paytmParams[key] = req.body[key];
-      }
-    }
-
-    const checksumHash = req.body.CHECKSUMHASH;
-    const isValidChecksum = PaytmChecksum.verifySignature(
-      paytmParams,
-      process.env.PAYTM_MERCHANT_KEY,
-      checksumHash
-    );
-
-    if (isValidChecksum && req.body.STATUS === 'TXN_SUCCESS') {
-      const orderId = req.body.ORDERID;
-      
-      let phone = null;
-      for (const [p, s] of sessions) {
-        if (s.paymentId === orderId) {
-          phone = p;
-          break;
-        }
-      }
-      
-      if (phone) {
-        const session = sessions.get(phone);
-        const t = pendingPayments.get(phone);
-        if (t) clearTimeout(t);
-        pendingPayments.delete(phone);
-        
-        const dbOrderId = await saveOrder(session);
-        await notifyOwner(session, dbOrderId);
-        await logOrderToGoogleSheets(session, dbOrderId);
-        await sendMessage(phone, buildOrderConfirmation(session, dbOrderId));
-        sessions.delete(phone);
-      }
-    }
-    
-    res.send(`<!DOCTYPE html><html><head><title>Payment Success</title>
-<style>body{font-family:Arial;text-align:center;padding:60px;background:#f0faf0}.ck{font-size:80px}h1{color:#2e7d32}p{color:#555;font-size:18px}</style></head>
-<body><div class="ck">✅</div><h1>Payment Successful!</h1>
-<p>Return to WhatsApp and type <b>CHECK</b> to confirm your order.</p></body></html>`);
-  } catch (e) {
-    console.error('❌ Paytm callback:', e.message);
-    res.status(500).send('Error');
-  }
-});
-
-// ════════════════════════════════════════════
 // API ENDPOINTS
 // ════════════════════════════════════════════
 
@@ -1194,12 +559,8 @@ app.get('/health', async (req, res) => {
       sessions: sessions.size,
       restaurants: restaurantCache.length,
       testMode: TEST_MODE,
-      version: '6.0-MULTI-PAYMENT',
-      paymentGateways: {
-        razorpay: process.env.RAZORPAY_KEY_ID ? 'Configured' : 'Not set',
-        phonepe: process.env.PHONEPE_MERCHANT_ID ? 'Configured' : 'Not set',
-        paytm: process.env.PAYTM_MERCHANT_ID ? 'Configured' : 'Not set'
-      },
+      version: '7.0-COD-ONLY',
+      paymentMethod: 'Cash on Delivery Only',
       googleSheets: process.env.GOOGLE_APPS_SCRIPT_URL ? 'Enabled' : 'Not configured'
     });
   } catch {
@@ -1223,8 +584,7 @@ app.get('/test-session/:phone', (req, res) => {
     found:true,
     state:s.state,
     restaurantName:s.restaurantName,
-    cartSize: s.cart?.length||0,
-    paymentGateway: s.paymentGateway
+    cartSize: s.cart?.length||0
   } : { found:false });
 });
 
@@ -1250,17 +610,6 @@ app.get('/test/messages/:phone', (req, res) => {
   res.json({ messages: msgs });
 });
 
-app.post('/test/simulate-payment/:phone', (req, res) => {
-  const s = sessions.get(req.params.phone);
-  if (s && s.state === S.AWAITING_PAYMENT) {
-    s.testPaymentPaid = true;
-    sessions.set(req.params.phone, s);
-    res.json({ success: true, paymentId: s.paymentId, gateway: s.paymentGateway });
-  } else {
-    res.json({ success: false, reason: 'No pending payment session' });
-  }
-});
-
 // ─── Handlers ────────────────────────────────
 process.on('uncaughtException', e  => console.error('❌ Uncaught:', e));
 process.on('unhandledRejection', e => console.error('❌ Unhandled:', e));
@@ -1275,28 +624,25 @@ async function startServer() {
     app.listen(PORT, () => {
       console.log(`
 ╔═══════════════════════════════════════════════╗
-║   🍽️  RESTAURANT WHATSAPP BOT v6.0           ║
-║   ✅ Multi-Payment Gateway Integration       ║
+║   🍽️  RESTAURANT WHATSAPP BOT v7.0           ║
+║   💵 Cash on Delivery Only                   ║
 ╠═══════════════════════════════════════════════╣
 ║  Port:           ${String(PORT).padEnd(28)}║
 ║  Test Mode:      ${String(TEST_MODE ? '🧪 ON' : '🚀 OFF').padEnd(28)}║
 ║  Database:       ${String(dbConnected ? '✅ Connected' : '❌ Disconnected').padEnd(28)}║
 ║  Restaurants:    ${String(restaurantCache.length).padEnd(28)}║
 ╠═══════════════════════════════════════════════╣
-║  💳 PAYMENT GATEWAYS                          ║
-║  1️⃣ Razorpay:    ${String(process.env.RAZORPAY_KEY_ID ? '✅ Configured' : '⚠️  Not set').padEnd(28)}║
-║  2️⃣ PhonePe:     ${String(process.env.PHONEPE_MERCHANT_ID ? '✅ Configured' : '⚠️  Not set').padEnd(28)}║
-║  3️⃣ Paytm:       ${String(process.env.PAYTM_MERCHANT_ID ? '✅ Configured' : '⚠️  Not set').padEnd(28)}║
-║  4️⃣ COD:         ✅ Always available          ║
+║  💵 PAYMENT METHOD                            ║
+║     Cash on Delivery (COD) ONLY              ║
+║     ✅ Simplified for fast deployment        ║
 ╠═══════════════════════════════════════════════╣
 ║  📊 Google Sheets:                            ║
 ║     ${String(process.env.GOOGLE_APPS_SCRIPT_URL ? '✅ Enabled' : '⚠️  Not configured').padEnd(42)}║
 ╠═══════════════════════════════════════════════╣
 ║  🔄 Flow: Trigger → Menu → Address →         ║
-║          Instructions → PAYMENT CHOICE →      ║
-║          [1: Razorpay] [2: PhonePe]          ║
-║          [3: Paytm] [4: COD] →               ║
-║          Payment/Confirmation → Order Saved   ║
+║          Instructions → Confirm → Order Saved ║
+║                                               ║
+║  ⚡ Ready for production deployment!         ║
 ╚═══════════════════════════════════════════════╝
       `);
     });

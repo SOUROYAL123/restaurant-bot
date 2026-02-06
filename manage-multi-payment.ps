@@ -1,0 +1,285 @@
+# manage-multi-payment.ps1
+# Manage payment methods for each restaurant individually
+
+param(
+    [string]$Action = "menu",
+    [int]$RestaurantId = 0,
+    [decimal]$Fee = 0
+)
+
+# Database connection (update these)
+$DB_HOST = "your-neon-host.neon.tech"
+$DB_NAME = "neondb"
+$DB_USER = "your-user"
+$DB_PASSWORD = "your-password"
+
+function Show-Menu {
+    Write-Host ""
+    Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Cyan
+    Write-Host "║   MULTI-PAYMENT METHOD MANAGER             ║" -ForegroundColor Cyan
+    Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Commands:" -ForegroundColor Yellow
+    Write-Host "  .\manage-multi-payment.ps1 -Action view" -ForegroundColor White
+    Write-Host "  .\manage-multi-payment.ps1 -Action enable-qr -RestaurantId 1"
+    Write-Host "  .\manage-multi-payment.ps1 -Action enable-phonepe -RestaurantId 1"
+    Write-Host "  .\manage-multi-payment.ps1 -Action enable-gpay -RestaurantId 1"
+    Write-Host "  .\manage-multi-payment.ps1 -Action enable-paytm -RestaurantId 1"
+    Write-Host "  .\manage-multi-payment.ps1 -Action enable-upi -RestaurantId 1"
+    Write-Host "  .\manage-multi-payment.ps1 -Action enable-cod -RestaurantId 1"
+    Write-Host "  .\manage-multi-payment.ps1 -Action disable-all -RestaurantId 1"
+    Write-Host "  .\manage-multi-payment.ps1 -Action set-fee -RestaurantId 1 -Fee 500"
+    Write-Host ""
+}
+
+function Execute-SQL {
+    param([string]$Query)
+    
+    $env:PGPASSWORD = $DB_PASSWORD
+    $result = psql -h $DB_HOST -U $DB_USER -d $DB_NAME -c $Query -t
+    return $result
+}
+
+function Get-PaymentSettings {
+    Write-Host "📊 Restaurant Payment Method Settings:" -ForegroundColor Cyan
+    Write-Host ""
+    
+    $query = @"
+SELECT 
+  id,
+  name,
+  booking_fee_amount,
+  CASE WHEN payment_qr_enabled THEN '✅' ELSE '❌' END as QR,
+  CASE WHEN payment_phonepe_enabled THEN '✅' ELSE '❌' END as PhonePe,
+  CASE WHEN payment_gpay_enabled THEN '✅' ELSE '❌' END as GPay,
+  CASE WHEN payment_paytm_enabled THEN '✅' ELSE '❌' END as Paytm,
+  CASE WHEN payment_upi_enabled THEN '✅' ELSE '❌' END as UPI,
+  CASE WHEN payment_cod_enabled THEN '✅' ELSE '❌' END as COD
+FROM restaurants
+WHERE booking_payment_required = true
+ORDER BY id;
+"@
+    
+    Execute-SQL $query
+}
+
+function Enable-QRCode {
+    param([int]$RestId, [string]$QrUrl, [string]$Description)
+    
+    Write-Host "📱 Enabling QR Code for Restaurant #$RestId..." -ForegroundColor Green
+    
+    $query = @"
+UPDATE restaurants 
+SET 
+  payment_qr_enabled = true,
+  qr_code_url = '$QrUrl',
+  qr_code_description = '$Description'
+WHERE id = $RestId;
+"@
+    
+    Execute-SQL $query
+    Write-Host "✅ QR Code enabled" -ForegroundColor Green
+}
+
+function Enable-PhonePe {
+    param([int]$RestId, [string]$Number, [string]$Name)
+    
+    Write-Host "📱 Enabling PhonePe for Restaurant #$RestId..." -ForegroundColor Green
+    
+    $query = @"
+UPDATE restaurants 
+SET 
+  payment_phonepe_enabled = true,
+  phonepe_number = '$Number',
+  phonepe_name = '$Name'
+WHERE id = $RestId;
+"@
+    
+    Execute-SQL $query
+    Write-Host "✅ PhonePe enabled: $Number@ybl" -ForegroundColor Green
+}
+
+function Enable-GPay {
+    param([int]$RestId, [string]$Number, [string]$Name)
+    
+    Write-Host "📱 Enabling Google Pay for Restaurant #$RestId..." -ForegroundColor Green
+    
+    $query = @"
+UPDATE restaurants 
+SET 
+  payment_gpay_enabled = true,
+  gpay_number = '$Number',
+  gpay_name = '$Name'
+WHERE id = $RestId;
+"@
+    
+    Execute-SQL $query
+    Write-Host "✅ Google Pay enabled: $Number@okaxis" -ForegroundColor Green
+}
+
+function Enable-Paytm {
+    param([int]$RestId, [string]$Number, [string]$Name)
+    
+    Write-Host "📱 Enabling Paytm for Restaurant #$RestId..." -ForegroundColor Green
+    
+    $query = @"
+UPDATE restaurants 
+SET 
+  payment_paytm_enabled = true,
+  paytm_number = '$Number',
+  paytm_name = '$Name'
+WHERE id = $RestId;
+"@
+    
+    Execute-SQL $query
+    Write-Host "✅ Paytm enabled: $Number@paytm" -ForegroundColor Green
+}
+
+function Enable-UPI {
+    param([int]$RestId, [string]$UpiId, [string]$Name)
+    
+    Write-Host "📱 Enabling Generic UPI for Restaurant #$RestId..." -ForegroundColor Green
+    
+    $query = @"
+UPDATE restaurants 
+SET 
+  payment_upi_enabled = true,
+  upi_id = '$UpiId',
+  upi_name = '$Name'
+WHERE id = $RestId;
+"@
+    
+    Execute-SQL $query
+    Write-Host "✅ UPI enabled: $UpiId" -ForegroundColor Green
+}
+
+function Enable-COD {
+    param([int]$RestId, [string]$Description)
+    
+    Write-Host "📱 Enabling COD for Restaurant #$RestId..." -ForegroundColor Green
+    
+    $query = @"
+UPDATE restaurants 
+SET 
+  payment_cod_enabled = true,
+  cod_description = '$Description'
+WHERE id = $RestId;
+"@
+    
+    Execute-SQL $query
+    Write-Host "✅ COD enabled" -ForegroundColor Green
+}
+
+function Disable-All {
+    param([int]$RestId)
+    
+    Write-Host "❌ Disabling all payment methods for Restaurant #$RestId..." -ForegroundColor Yellow
+    
+    $query = @"
+UPDATE restaurants 
+SET 
+  payment_qr_enabled = false,
+  payment_phonepe_enabled = false,
+  payment_gpay_enabled = false,
+  payment_paytm_enabled = false,
+  payment_upi_enabled = false,
+  payment_cod_enabled = false
+WHERE id = $RestId;
+"@
+    
+    Execute-SQL $query
+    Write-Host "✅ All payment methods disabled" -ForegroundColor Green
+}
+
+function Set-BookingFee {
+    param([int]$RestId, [decimal]$Amount)
+    
+    Write-Host "💰 Setting booking fee to ₹$Amount for Restaurant #$RestId..." -ForegroundColor Cyan
+    
+    $query = @"
+UPDATE restaurants 
+SET 
+  booking_payment_required = true,
+  booking_fee_amount = $Amount
+WHERE id = $RestId;
+"@
+    
+    Execute-SQL $query
+    Write-Host "✅ Booking fee set to ₹$Amount" -ForegroundColor Green
+}
+
+# Main execution
+switch ($Action.ToLower()) {
+    "menu" { Show-Menu }
+    "view" { Get-PaymentSettings }
+    "set-fee" {
+        if ($RestaurantId -gt 0 -and $Fee -gt 0) {
+            Set-BookingFee -RestId $RestaurantId -Amount $Fee
+        } else {
+            Write-Host "❌ Usage: -Action set-fee -RestaurantId 1 -Fee 500" -ForegroundColor Red
+        }
+    }
+    "enable-qr" {
+        if ($RestaurantId -gt 0) {
+            $url = Read-Host "Enter QR Code URL"
+            $desc = Read-Host "Enter Description (optional)"
+            Enable-QRCode -RestId $RestaurantId -QrUrl $url -Description $desc
+        } else {
+            Write-Host "❌ Please specify -RestaurantId" -ForegroundColor Red
+        }
+    }
+    "enable-phonepe" {
+        if ($RestaurantId -gt 0) {
+            $number = Read-Host "Enter PhonePe Number (10 digits)"
+            $name = Read-Host "Enter Name"
+            Enable-PhonePe -RestId $RestaurantId -Number $number -Name $name
+        } else {
+            Write-Host "❌ Please specify -RestaurantId" -ForegroundColor Red
+        }
+    }
+    "enable-gpay" {
+        if ($RestaurantId -gt 0) {
+            $number = Read-Host "Enter Google Pay Number (10 digits)"
+            $name = Read-Host "Enter Name"
+            Enable-GPay -RestId $RestaurantId -Number $number -Name $name
+        } else {
+            Write-Host "❌ Please specify -RestaurantId" -ForegroundColor Red
+        }
+    }
+    "enable-paytm" {
+        if ($RestaurantId -gt 0) {
+            $number = Read-Host "Enter Paytm Number (10 digits)"
+            $name = Read-Host "Enter Name"
+            Enable-Paytm -RestId $RestaurantId -Number $number -Name $name
+        } else {
+            Write-Host "❌ Please specify -RestaurantId" -ForegroundColor Red
+        }
+    }
+    "enable-upi" {
+        if ($RestaurantId -gt 0) {
+            $upiid = Read-Host "Enter UPI ID (e.g., merchant@paytm)"
+            $name = Read-Host "Enter Name"
+            Enable-UPI -RestId $RestaurantId -UpiId $upiid -Name $name
+        } else {
+            Write-Host "❌ Please specify -RestaurantId" -ForegroundColor Red
+        }
+    }
+    "enable-cod" {
+        if ($RestaurantId -gt 0) {
+            $desc = Read-Host "Enter COD Description (e.g., 'Pay at restaurant counter')"
+            Enable-COD -RestId $RestaurantId -Description $desc
+        } else {
+            Write-Host "❌ Please specify -RestaurantId" -ForegroundColor Red
+        }
+    }
+    "disable-all" {
+        if ($RestaurantId -gt 0) {
+            Disable-All -RestId $RestaurantId
+        } else {
+            Write-Host "❌ Please specify -RestaurantId" -ForegroundColor Red
+        }
+    }
+    default { Show-Menu }
+}
+
+Write-Host ""

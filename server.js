@@ -1029,7 +1029,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // ADD_INSTRUCTIONS → CHOOSE_PAYMENT (Show 4 payment options)
+    // ADD_INSTRUCTIONS → CHOOSE_PAYMENT (Show UPI Direct Payment Options)
     // ═══════════════════════════════════════════════════════════
     if (session.state === S.ADD_INSTRUCTIONS) {
       session.specialInstructions = text;
@@ -1046,83 +1046,88 @@ app.post('/webhook', async (req, res) => {
         `💰 *Total: ₹${session.total}*\n\n` +
         `📍 Delivery: ${session.deliveryAddress}\n\n` +
         `Select payment method:\n\n` +
-        `1️⃣ Razorpay\n` +
-        `    💳 Cards, UPI, Wallets, NetBanking\n\n` +
-        `2️⃣ PhonePe\n` +
-        `    📱 PhonePe UPI & Wallet\n\n` +
-        `3️⃣ Paytm\n` +
-        `    💳 Paytm Wallet & UPI\n\n` +
-        `4️⃣ Cash on Delivery (COD)\n` +
-        `    💵 Pay when food arrives\n\n` +
-        `Reply with *1*, *2*, *3*, or *4*`
+        `*📱 Pay via UPI (Click & Pay):*\n` +
+        `1️⃣ PhonePe - Direct UPI link 🔗\n` +
+        `2️⃣ Google Pay - Direct UPI link 🔗\n` +
+        `3️⃣ Paytm - Direct UPI link 🔗\n` +
+        `4️⃣ Any UPI App - Direct UPI link 🔗\n\n` +
+        `*💵 Cash Payment:*\n` +
+        `5️⃣ Cash on Delivery (COD)\n\n` +
+        `Reply with *1*, *2*, *3*, *4*, or *5*`
       );
       return res.status(200).send('OK');
     }
 
     // ═══════════════════════════════════════════════════════════
-    // CHOOSE_PAYMENT State Handler - MULTI-GATEWAY
+    // CHOOSE_PAYMENT State Handler - UPI DIRECT PAYMENTS
     // ═══════════════════════════════════════════════════════════
     if (session.state === S.CHOOSE_PAYMENT) {
-      // ─── Options 1, 2, 3: Online Payment Gateways ──────────────────────
-      if (text === '1' || text === '2' || text === '3') {
-        let gateway = null;
-        if (text === '1') gateway = 'razorpay';
-        if (text === '2') gateway = 'phonepe';
-        if (text === '3') gateway = 'paytm';
-
-        session.paymentMethod = 'online';
-        session.paymentGateway = gateway;
-        session.state = S.AWAITING_PAYMENT;
-        sessions.set(phone, session);
-
-        const orderData = {
-          amount: session.total,
-          restaurantName: session.restaurantName,
-          phone: session.phone,
-          customerName: session.customerName || 'Customer'
-        };
-
-        const paymentResult = await createPayment(gateway, orderData);
-
-        if (!paymentResult.success) {
-          session.state = S.CHOOSE_PAYMENT;
-          sessions.set(phone, session);
-          await sendMessage(phone, 
-            `❌ ${gateway} payment unavailable.\n\n` +
-            `Try:\n1️⃣ Razorpay\n2️⃣ PhonePe\n3️⃣ Paytm\n4️⃣ Cash on Delivery`
-          );
-          return res.status(200).send('OK');
+      // ─── Options 1-4: UPI Direct Payment Links ──────────────────────
+      if (text === '1' || text === '2' || text === '3' || text === '4') {
+        let method = null;
+        let upiSuffix = '';
+        
+        if (text === '1') { 
+          method = 'phonepe'; 
+          upiSuffix = '@ybl';
+        }
+        if (text === '2') { 
+          method = 'gpay'; 
+          upiSuffix = '@okaxis';
+        }
+        if (text === '3') { 
+          method = 'paytm'; 
+          upiSuffix = '@paytm';
+        }
+        if (text === '4') { 
+          method = 'upi'; 
+          upiSuffix = '@ybl';
         }
 
-        session.paymentId = paymentResult.paymentId;
-        session.paymentLink = paymentResult.paymentUrl;
-        session.gatewayOrderId = paymentResult.orderId;
+        session.paymentMethod = 'upi_direct';
+        session.paymentGateway = method;
+        session.state = S.AWAITING_PAYMENT;
+        
+        // Generate temporary order ID for payment link
+        const tempOrderId = `OD${Date.now().toString().slice(-8)}`;
+        session.tempOrderId = tempOrderId;
         sessions.set(phone, session);
 
+        const upiNumber = '7980407413'; // Your UPI number
+        const upiId = `${upiNumber}${upiSuffix}`;
+        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempOrderId}?amount=${session.total}&upiId=${upiId}&name=${encodeURIComponent(session.restaurantName)}&method=${method}`;
+        
+        const methodName = method === 'phonepe' ? 'PhonePe' 
+                         : method === 'gpay' ? 'Google Pay'
+                         : method === 'paytm' ? 'Paytm'
+                         : 'UPI App';
+
+        await sendMessage(phone,
+          `📱 *${methodName} Payment*\n\n` +
+          `Amount: ₹${session.total}\n` +
+          `UPI ID: ${upiId}\n` +
+          `Name: ${session.restaurantName}\n\n` +
+          `🔗 *Click to Pay:*\n` +
+          `${paymentUrl}\n\n` +
+          `After payment:\n` +
+          `• Type *PAID* to enter transaction ID\n` +
+          `• Type *CANCEL* to cancel order\n\n` +
+          `⏱️ Link valid for 15 minutes`
+        );
+        
+        // Set payment timeout
         pendingPayments.set(phone, setTimeout(async () => {
           if (sessions.get(phone)?.state === S.AWAITING_PAYMENT) {
             sessions.delete(phone);
             await sendMessage(phone, '⏱️ Payment timeout. Type restaurant name to start over.');
           }
         }, 900000));
-
-        const gatewayName = gateway === 'razorpay' ? 'Razorpay' :
-                           gateway === 'phonepe' ? 'PhonePe' : 'Paytm';
-
-        await sendMessage(phone,
-          `💳 *${gatewayName} Payment*\n\n` +
-          `Amount: ₹${session.total}\n\n` +
-          `Click to pay securely:\n${paymentResult.paymentUrl}\n\n` +
-          `After payment:\n` +
-          `• Type *CHECK* to verify\n` +
-          `• Type *CANCEL* to cancel\n\n` +
-          `⏱️ Link expires in 15 minutes`
-        );
+        
         return res.status(200).send('OK');
       }
 
-      // ─── Option 4: Cash on Delivery ────────────────────
-      if (text === '4') {
+      // ─── Option 5: Cash on Delivery ────────────────────
+      if (text === '5') {
         session.paymentMethod = 'cod';
         session.paymentGateway = 'cod';
         session.state = S.CONFIRM_ORDER;
@@ -1154,34 +1159,63 @@ app.post('/webhook', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      await sendMessage(phone, `❌ Invalid choice.\n\nReply *1*, *2*, *3*, or *4*`);
+      await sendMessage(phone, `❌ Invalid choice.\n\nReply *1*, *2*, *3*, *4*, or *5*`);
       return res.status(200).send('OK');
     }
 
     // ═══════════════════════════════════════════════════════════
-    // AWAITING_PAYMENT - Multi-Gateway Verification
+    // AWAITING_PAYMENT - UPI Direct Payment Verification
     // ═══════════════════════════════════════════════════════════
     if (session.state === S.AWAITING_PAYMENT) {
-      if (upper === 'CHECK') {
-        const result = await verifyPayment(session.paymentGateway, session.paymentId);
-
-        if (result.success && result.verified) {
+      if (upper === 'PAID') {
+        session.state = S.CONFIRM_ORDER;
+        session.awaitingTransactionId = true;
+        sessions.set(phone, session);
+        
+        await sendMessage(phone,
+          `✅ Great! Please enter your *Transaction ID*\n\n` +
+          `(Usually 10-12 digit number from payment app)\n\n` +
+          `Example: 435623789012`
+        );
+        return res.status(200).send('OK');
+      }
+      
+      // If awaiting transaction ID
+      if (session.awaitingTransactionId) {
+        const txnId = text.trim();
+        if (txnId.length >= 10 && /^[0-9A-Za-z]+$/.test(txnId)) {
+          session.paymentTransactionId = txnId;
+          session.paymentMethod = 'upi_direct';
+          session.state = S.CONFIRM_ORDER;
+          delete session.awaitingTransactionId;
+          
           const t = pendingPayments.get(phone);
           if (t) clearTimeout(t);
           pendingPayments.delete(phone);
-
-          const orderId = await saveOrder(session);
-          await notifyOwner(session, orderId);
-          await logOrderToGoogleSheets(session, orderId);
-          sessions.delete(phone);
-          await sendMessage(phone, buildOrderConfirmation(session, orderId));
+          
+          sessions.set(phone, session);
+          
+          const lines = session.cart.map(i => `${i.quantity}× ${i.name} — ₹${i.price * i.quantity}`).join('\n');
+          
+          await sendMessage(phone,
+            `✅ Transaction ID recorded: ${txnId}\n\n` +
+            `📋 *CONFIRM YOUR ORDER*\n\n` +
+            `🏪 ${session.restaurantName}\n\n` +
+            `*Your Order:*\n${lines}\n\n` +
+            `💰 Total: ₹${session.total}\n` +
+            `📍 Delivery: ${session.deliveryAddress}\n\n` +
+            `💳 Payment: UPI PAID\n` +
+            `Transaction: ${txnId}\n\n` +
+            `Type *CONFIRM* to place order\n` +
+            `Type *CANCEL* to cancel`
+          );
           return res.status(200).send('OK');
         }
-
-        await sendMessage(phone, 
-          `⏳ Payment not received yet.\n\n` +
-          `Complete payment via the link, then type *CHECK* again.\n` +
-          `Or type *CANCEL* to cancel.`
+        
+        await sendMessage(phone,
+          `❌ Invalid transaction ID format\n\n` +
+          `Please enter a valid Transaction ID (10+ characters)\n` +
+          `Example: 435623789012`
         );
         return res.status(200).send('OK');
       }
@@ -1195,7 +1229,7 @@ app.post('/webhook', async (req, res) => {
         return res.status(200).send('OK');
       }
 
-      await sendMessage(phone, 'Type *CHECK* to verify payment or *CANCEL* to cancel.');
+      await sendMessage(phone, 'Type *PAID* after making payment or *CANCEL* to cancel.');
       return res.status(200).send('OK');
     }
 

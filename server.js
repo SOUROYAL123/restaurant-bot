@@ -1025,6 +1025,256 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).send('OK');
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // BOOKING FLOW - TABLE BOOKING STATES
+    // ═══════════════════════════════════════════════════════════
+    
+    // ─── BOOKING_DATE State ─────────────────
+    if (session.state === S.BOOKING_DATE) {
+      let bookingDate = null;
+      
+      if (upper === 'TODAY') {
+        bookingDate = new Date();
+      } else if (upper === 'TOMORROW') {
+        bookingDate = new Date();
+        bookingDate.setDate(bookingDate.getDate() + 1);
+      } else {
+        // Try parsing DD/MM/YYYY or D/M/YYYY
+        const dateMatch = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+        if (dateMatch) {
+          const day = parseInt(dateMatch[1]);
+          const month = parseInt(dateMatch[2]) - 1; // JS months are 0-indexed
+          const year = parseInt(dateMatch[3]);
+          bookingDate = new Date(year, month, day);
+          
+          // Validate date
+          if (isNaN(bookingDate.getTime()) || 
+              bookingDate.getDate() !== day || 
+              bookingDate.getMonth() !== month) {
+            await sendMessage(phone, '❌ Invalid date. Please use DD/MM/YYYY format (e.g., 10/02/2026)');
+            return res.status(200).send('OK');
+          }
+        } else {
+          await sendMessage(phone, '❌ Invalid format.\n\nType:\n• TODAY or TOMORROW\n• DD/MM/YYYY (e.g., 10/02/2026)');
+          return res.status(200).send('OK');
+        }
+      }
+      
+      // Check if date is in the past
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (bookingDate < today) {
+        await sendMessage(phone, '❌ Cannot book for past dates. Please select a current or future date.');
+        return res.status(200).send('OK');
+      }
+      
+      // Check if date is too far in future (e.g., max 30 days)
+      const maxDate = new Date();
+      maxDate.setDate(maxDate.getDate() + 30);
+      if (bookingDate > maxDate) {
+        await sendMessage(phone, '❌ Bookings can only be made up to 30 days in advance.');
+        return res.status(200).send('OK');
+      }
+      
+      session.bookingDate = bookingDate.toISOString().split('T')[0]; // Store as YYYY-MM-DD
+      session.state = S.BOOKING_TIME;
+      sessions.set(phone, session);
+      
+      const dateStr = bookingDate.toLocaleDateString('en-IN', { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      });
+      
+      await sendMessage(phone,
+        `✅ Booking for: ${dateStr}\n\n` +
+        `⏰ What time?\n\n` +
+        `Type time in 24-hour format:\n` +
+        `• 1800 (for 6:00 PM)\n` +
+        `• 1930 (for 7:30 PM)\n` +
+        `• 2015 (for 8:15 PM)\n\n` +
+        `Or type: LUNCH or DINNER`
+      );
+      return res.status(200).send('OK');
+    }
+    
+    // ─── BOOKING_TIME State ─────────────────
+    if (session.state === S.BOOKING_TIME) {
+      let bookingTime = null;
+      
+      if (upper === 'LUNCH') {
+        bookingTime = '13:00';
+      } else if (upper === 'DINNER') {
+        bookingTime = '20:00';
+      } else {
+        // Parse 24-hour format (e.g., 1830, 1945)
+        const timeMatch = text.match(/^(\d{2})(\d{2})$/);
+        if (timeMatch) {
+          const hours = parseInt(timeMatch[1]);
+          const minutes = parseInt(timeMatch[2]);
+          
+          if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+            await sendMessage(phone, '❌ Invalid time. Hours: 00-23, Minutes: 00-59\n\nExample: 1830 for 6:30 PM');
+            return res.status(200).send('OK');
+          }
+          
+          // Check restaurant operating hours (example: 11:00 - 23:00)
+          if (hours < 11 || hours >= 23) {
+            await sendMessage(phone, '⚠️ Restaurant is open 11:00 AM - 11:00 PM\n\nPlease select a time within operating hours.');
+            return res.status(200).send('OK');
+          }
+          
+          bookingTime = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+        } else {
+          await sendMessage(phone, '❌ Invalid format.\n\nType:\n• 1830 (for 6:30 PM)\n• LUNCH or DINNER');
+          return res.status(200).send('OK');
+        }
+      }
+      
+      session.bookingTime = bookingTime;
+      session.state = S.BOOKING_GUESTS;
+      sessions.set(phone, session);
+      
+      // Convert to 12-hour format for display
+      const [h, m] = bookingTime.split(':').map(Number);
+      const period = h >= 12 ? 'PM' : 'AM';
+      const displayHour = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+      const timeStr = `${displayHour}:${String(m).padStart(2, '0')} ${period}`;
+      
+      await sendMessage(phone,
+        `✅ Time: ${timeStr}\n\n` +
+        `👥 How many guests?\n\n` +
+        `Type a number (1-20)`
+      );
+      return res.status(200).send('OK');
+    }
+    
+    // ─── BOOKING_GUESTS State ───────────────
+    if (session.state === S.BOOKING_GUESTS) {
+      const guests = parseInt(text);
+      
+      if (isNaN(guests) || guests < 1 || guests > 20) {
+        await sendMessage(phone, '❌ Please enter a number between 1 and 20');
+        return res.status(200).send('OK');
+      }
+      
+      session.numberOfGuests = guests;
+      session.state = S.BOOKING_CONFIRM;
+      sessions.set(phone, session);
+      
+      // Format date and time for confirmation
+      const bookingDate = new Date(session.bookingDate);
+      const dateStr = bookingDate.toLocaleDateString('en-IN', { 
+        weekday: 'long', 
+        year: 'numeric', 
+        month: 'long', 
+        day: 'numeric' 
+      });
+      
+      const [h, m] = session.bookingTime.split(':').map(Number);
+      const period = h >= 12 ? 'PM' : 'AM';
+      const displayHour = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+      const timeStr = `${displayHour}:${String(m).padStart(2, '0')} ${period}`;
+      
+      await sendMessage(phone,
+        `📋 *CONFIRM YOUR BOOKING*\n\n` +
+        `🏪 Restaurant: ${session.restaurantName}\n` +
+        `📅 Date: ${dateStr}\n` +
+        `⏰ Time: ${timeStr}\n` +
+        `👥 Guests: ${guests}\n\n` +
+        `Type *CONFIRM* to complete booking\n` +
+        `Type *CANCEL* to cancel`
+      );
+      return res.status(200).send('OK');
+    }
+    
+    // ─── BOOKING_CONFIRM State ──────────────
+    if (session.state === S.BOOKING_CONFIRM) {
+      if (upper === 'CONFIRM') {
+        try {
+          // Save booking to database
+          const result = await pool.query(
+            `INSERT INTO table_bookings 
+             (restaurant_id, customer_phone, booking_date, booking_time, number_of_guests, status, created_at)
+             VALUES ($1, $2, $3, $4, $5, 'CONFIRMED', NOW())
+             RETURNING id`,
+            [session.restaurantId, session.phone, session.bookingDate, session.bookingTime, session.numberOfGuests]
+          );
+          
+          const bookingId = result.rows[0].id;
+          
+          // Format confirmation message
+          const bookingDate = new Date(session.bookingDate);
+          const dateStr = bookingDate.toLocaleDateString('en-IN', { 
+            weekday: 'long', 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
+          });
+          
+          const [h, m] = session.bookingTime.split(':').map(Number);
+          const period = h >= 12 ? 'PM' : 'AM';
+          const displayHour = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+          const timeStr = `${displayHour}:${String(m).padStart(2, '0')} ${period}`;
+          
+          // Notify restaurant owner
+          try {
+            const { rows } = await pool.query(
+              'SELECT whatsapp_number FROM restaurants WHERE id = $1',
+              [session.restaurantId]
+            );
+            
+            if (rows[0]?.whatsapp_number) {
+              await sendMessage(rows[0].whatsapp_number,
+                `🔔 *NEW TABLE BOOKING #${bookingId}*\n\n` +
+                `🏪 ${session.restaurantName}\n` +
+                `📱 Customer: ${session.phone}\n` +
+                `📅 Date: ${dateStr}\n` +
+                `⏰ Time: ${timeStr}\n` +
+                `👥 Guests: ${session.numberOfGuests}\n\n` +
+                `⏰ ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`
+              );
+              console.log(`✅ Owner notified of booking #${bookingId}`);
+            }
+          } catch (e) {
+            console.error('❌ Failed to notify owner:', e.message);
+          }
+          
+          // Send confirmation to customer
+          await sendMessage(phone,
+            `🎉 *Booking Confirmed!*\n\n` +
+            `Booking ID: #${bookingId}\n` +
+            `Restaurant: ${session.restaurantName}\n\n` +
+            `📅 Date: ${dateStr}\n` +
+            `⏰ Time: ${timeStr}\n` +
+            `👥 Guests: ${session.numberOfGuests}\n\n` +
+            `✅ Your table is reserved!\n\n` +
+            `Please arrive on time. If you need to cancel or modify, contact the restaurant directly.\n\n` +
+            `Thank you! 🍽️`
+          );
+          
+          console.log(`✅ Booking #${bookingId} confirmed for ${session.phone}`);
+          sessions.delete(phone);
+          return res.status(200).send('OK');
+          
+        } catch (e) {
+          console.error('❌ Booking save failed:', e.message);
+          await sendMessage(phone, '❌ Failed to save booking. Please try again or contact the restaurant.');
+          return res.status(200).send('OK');
+        }
+      }
+      
+      if (upper === 'CANCEL') {
+        sessions.delete(phone);
+        await sendMessage(phone, '❌ Booking cancelled. Type restaurant name to start over.');
+        return res.status(200).send('OK');
+      }
+      
+      await sendMessage(phone, 'Type *CONFIRM* to complete booking or *CANCEL* to cancel');
+      return res.status(200).send('OK');
+    }
+
     await sendMessage(phone, '❌ Something went wrong. Type restaurant name to restart.');
     return res.status(200).send('OK');
 
@@ -1277,6 +1527,7 @@ async function startServer() {
 ╔═══════════════════════════════════════════════╗
 ║   🍽️  RESTAURANT WHATSAPP BOT v6.0           ║
 ║   ✅ Multi-Payment Gateway Integration       ║
+║   ✅ Table Booking System                    ║
 ╠═══════════════════════════════════════════════╣
 ║  Port:           ${String(PORT).padEnd(28)}║
 ║  Test Mode:      ${String(TEST_MODE ? '🧪 ON' : '🚀 OFF').padEnd(28)}║
@@ -1289,14 +1540,14 @@ async function startServer() {
 ║  3️⃣ Paytm:       ${String(process.env.PAYTM_MERCHANT_ID ? '✅ Configured' : '⚠️  Not set').padEnd(28)}║
 ║  4️⃣ COD:         ✅ Always available          ║
 ╠═══════════════════════════════════════════════╣
+║  📅 TABLE BOOKING                             ║
+║     ✅ Date Selection (TODAY/TOMORROW/Date)   ║
+║     ✅ Time Selection (24hr/LUNCH/DINNER)     ║
+║     ✅ Guest Count (1-20)                     ║
+║     ✅ Owner Notifications                    ║
+╠═══════════════════════════════════════════════╣
 ║  📊 Google Sheets:                            ║
 ║     ${String(process.env.GOOGLE_APPS_SCRIPT_URL ? '✅ Enabled' : '⚠️  Not configured').padEnd(42)}║
-╠═══════════════════════════════════════════════╣
-║  🔄 Flow: Trigger → Menu → Address →         ║
-║          Instructions → PAYMENT CHOICE →      ║
-║          [1: Razorpay] [2: PhonePe]          ║
-║          [3: Paytm] [4: COD] →               ║
-║          Payment/Confirmation → Order Saved   ║
 ╚═══════════════════════════════════════════════╝
       `);
     });

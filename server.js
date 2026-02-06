@@ -101,9 +101,12 @@ const S = {
   CHOOSE_PAYMENT:   'CHOOSE_PAYMENT',
   AWAITING_PAYMENT: 'AWAITING_PAYMENT',
   CONFIRM_ORDER:    'CONFIRM_ORDER',
+  BOOKING_NAME:     'BOOKING_NAME',
   BOOKING_DATE:     'BOOKING_DATE',
   BOOKING_TIME:     'BOOKING_TIME',
   BOOKING_GUESTS:   'BOOKING_GUESTS',
+  BOOKING_PAYMENT:  'BOOKING_PAYMENT',
+  BOOKING_VERIFY_PAYMENT: 'BOOKING_VERIFY_PAYMENT',
   BOOKING_CONFIRM:  'BOOKING_CONFIRM'
 };
 
@@ -764,10 +767,10 @@ app.post('/webhook', async (req, res) => {
       }
       
       if (action === 'booking') {
-        session.state = S.BOOKING_DATE; 
+        session.state = S.BOOKING_NAME; 
         session.serviceType = 'booking';
         sessions.set(phone, session);
-        await sendMessage(phone, `📅 When would you like to book?\n\nType:\n• TODAY or TOMORROW\n• DD/MM/YYYY`);
+        await sendMessage(phone, `📝 What's your name?\n\nPlease enter your full name for the booking.`);
         return res.status(200).send('OK');
       }
       
@@ -1029,6 +1032,27 @@ app.post('/webhook', async (req, res) => {
     // BOOKING FLOW - TABLE BOOKING STATES
     // ═══════════════════════════════════════════════════════════
     
+    // ─── BOOKING_NAME State ─────────────────
+    if (session.state === S.BOOKING_NAME) {
+      const customerName = text.trim();
+      
+      if (customerName.length < 2 || customerName.length > 50) {
+        await sendMessage(phone, '❌ Please enter a valid name (2-50 characters)');
+        return res.status(200).send('OK');
+      }
+      
+      session.customerName = customerName;
+      session.state = S.BOOKING_DATE;
+      sessions.set(phone, session);
+      
+      await sendMessage(phone, 
+        `✅ Thank you, ${customerName}!\n\n` +
+        `📅 When would you like to book?\n\n` +
+        `Type:\n• TODAY or TOMORROW\n• DD/MM/YYYY (e.g., 10/02/2026)`
+      );
+      return res.status(200).send('OK');
+    }
+    
     // ─── BOOKING_DATE State ─────────────────
     if (session.state === S.BOOKING_DATE) {
       let bookingDate = null;
@@ -1160,31 +1184,218 @@ app.post('/webhook', async (req, res) => {
       }
       
       session.numberOfGuests = guests;
-      session.state = S.BOOKING_CONFIRM;
-      sessions.set(phone, session);
       
-      // Format date and time for confirmation
-      const bookingDate = new Date(session.bookingDate);
-      const dateStr = bookingDate.toLocaleDateString('en-IN', { 
-        weekday: 'long', 
-        year: 'numeric', 
-        month: 'long', 
-        day: 'numeric' 
-      });
+      // Check if restaurant requires booking payment
+      const { rows } = await pool.query(
+        `SELECT booking_payment_required, booking_fee_amount, upi_id, upi_name 
+         FROM restaurants WHERE id = $1`,
+        [session.restaurantId]
+      );
       
-      const [h, m] = session.bookingTime.split(':').map(Number);
-      const period = h >= 12 ? 'PM' : 'AM';
-      const displayHour = h === 0 ? 12 : (h > 12 ? h - 12 : h);
-      const timeStr = `${displayHour}:${String(m).padStart(2, '0')} ${period}`;
+      const restaurant = rows[0];
+      
+      if (restaurant?.booking_payment_required && restaurant.booking_fee_amount > 0) {
+        // Payment is required - transition to payment state
+        session.bookingFeeAmount = restaurant.booking_fee_amount;
+        session.upiId = restaurant.upi_id;
+        session.upiName = restaurant.upi_name;
+        session.state = S.BOOKING_PAYMENT;
+        sessions.set(phone, session);
+        
+        // Generate UPI payment link
+        const upiLink = `upi://pay?pa=${restaurant.upi_id}&pn=${encodeURIComponent(restaurant.upi_name)}&am=${restaurant.booking_fee_amount}&cu=INR&tn=${encodeURIComponent(`Booking fee - ${session.restaurantName}`)}`;
+        
+        await sendMessage(phone,
+          `✅ ${guests} guests\n\n` +
+          `💳 *BOOKING FEE REQUIRED*\n\n` +
+          `Amount: ₹${restaurant.booking_fee_amount}\n` +
+          `This is a refundable booking fee.\n\n` +
+          `📱 *Pay via UPI:*\n` +
+          `UPI ID: ${restaurant.upi_id}\n` +
+          `Name: ${restaurant.upi_name}\n\n` +
+          `💡 *Payment Options:*\n` +
+          `1. Click this UPI link:\n${upiLink}\n\n` +
+          `2. Or scan QR code (if provided)\n\n` +
+          `3. Or pay manually to UPI ID above\n\n` +
+          `After payment, type:\n` +
+          `*PAID* - to verify payment\n` +
+          `*SKIP* - to proceed without payment (if allowed)`
+        );
+        return res.status(200).send('OK');
+      } else {
+        // No payment required - go directly to confirmation
+        session.state = S.BOOKING_CONFIRM;
+        sessions.set(phone, session);
+        
+        // Format date and time for confirmation
+        const bookingDate = new Date(session.bookingDate);
+        const dateStr = bookingDate.toLocaleDateString('en-IN', { 
+          weekday: 'long', 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        });
+        
+        const [h, m] = session.bookingTime.split(':').map(Number);
+        const period = h >= 12 ? 'PM' : 'AM';
+        const displayHour = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+        const timeStr = `${displayHour}:${String(m).padStart(2, '0')} ${period}`;
+        
+        await sendMessage(phone,
+          `📋 *CONFIRM YOUR BOOKING*\n\n` +
+          `🏪 Restaurant: ${session.restaurantName}\n` +
+          `👤 Name: ${session.customerName}\n` +
+          `📅 Date: ${dateStr}\n` +
+          `⏰ Time: ${timeStr}\n` +
+          `👥 Guests: ${guests}\n\n` +
+          `💵 Payment: No booking fee required\n\n` +
+          `Type *CONFIRM* to complete booking\n` +
+          `Type *CANCEL* to cancel`
+        );
+        return res.status(200).send('OK');
+      }
+    }
+    
+    // ─── BOOKING_PAYMENT State ──────────────
+    if (session.state === S.BOOKING_PAYMENT) {
+      if (upper === 'PAID') {
+        session.state = S.BOOKING_VERIFY_PAYMENT;
+        sessions.set(phone, session);
+        
+        await sendMessage(phone,
+          `✅ Payment confirmation received!\n\n` +
+          `Please enter your UPI Transaction ID\n` +
+          `(12-digit number starting with the payment timestamp)\n\n` +
+          `Example: 435623789012\n\n` +
+          `Or type *SKIP* if you paid via cash/other method`
+        );
+        return res.status(200).send('OK');
+      }
+      
+      if (upper === 'SKIP') {
+        // Allow skip only if restaurant permits
+        session.bookingFeePaid = false;
+        session.paymentMethod = 'pending';
+        session.state = S.BOOKING_CONFIRM;
+        sessions.set(phone, session);
+        
+        const bookingDate = new Date(session.bookingDate);
+        const dateStr = bookingDate.toLocaleDateString('en-IN', { 
+          weekday: 'long', 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        });
+        
+        const [h, m] = session.bookingTime.split(':').map(Number);
+        const period = h >= 12 ? 'PM' : 'AM';
+        const displayHour = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+        const timeStr = `${displayHour}:${String(m).padStart(2, '0')} ${period}`;
+        
+        await sendMessage(phone,
+          `⚠️ *Proceeding without payment confirmation*\n\n` +
+          `📋 *CONFIRM YOUR BOOKING*\n\n` +
+          `🏪 Restaurant: ${session.restaurantName}\n` +
+          `👤 Name: ${session.customerName}\n` +
+          `📅 Date: ${dateStr}\n` +
+          `⏰ Time: ${timeStr}\n` +
+          `👥 Guests: ${session.numberOfGuests}\n\n` +
+          `💵 Payment: ₹${session.bookingFeeAmount} - Pay at restaurant\n\n` +
+          `Type *CONFIRM* to complete booking\n` +
+          `Type *CANCEL* to cancel`
+        );
+        return res.status(200).send('OK');
+      }
       
       await sendMessage(phone,
-        `📋 *CONFIRM YOUR BOOKING*\n\n` +
-        `🏪 Restaurant: ${session.restaurantName}\n` +
-        `📅 Date: ${dateStr}\n` +
-        `⏰ Time: ${timeStr}\n` +
-        `👥 Guests: ${guests}\n\n` +
-        `Type *CONFIRM* to complete booking\n` +
-        `Type *CANCEL* to cancel`
+        `Please type:\n` +
+        `*PAID* - after making payment\n` +
+        `*SKIP* - to proceed without payment confirmation\n\n` +
+        `UPI ID: ${session.upiId}\n` +
+        `Amount: ₹${session.bookingFeeAmount}`
+      );
+      return res.status(200).send('OK');
+    }
+    
+    // ─── BOOKING_VERIFY_PAYMENT State ───────
+    if (session.state === S.BOOKING_VERIFY_PAYMENT) {
+      if (upper === 'SKIP') {
+        session.bookingFeePaid = true;
+        session.paymentMethod = 'upi';
+        session.paymentTransactionId = 'manual_verification_pending';
+        session.state = S.BOOKING_CONFIRM;
+        sessions.set(phone, session);
+        
+        const bookingDate = new Date(session.bookingDate);
+        const dateStr = bookingDate.toLocaleDateString('en-IN', { 
+          weekday: 'long', 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        });
+        
+        const [h, m] = session.bookingTime.split(':').map(Number);
+        const period = h >= 12 ? 'PM' : 'AM';
+        const displayHour = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+        const timeStr = `${displayHour}:${String(m).padStart(2, '0')} ${period}`;
+        
+        await sendMessage(phone,
+          `📋 *CONFIRM YOUR BOOKING*\n\n` +
+          `🏪 Restaurant: ${session.restaurantName}\n` +
+          `👤 Name: ${session.customerName}\n` +
+          `📅 Date: ${dateStr}\n` +
+          `⏰ Time: ${timeStr}\n` +
+          `👥 Guests: ${session.numberOfGuests}\n\n` +
+          `💳 Payment: ₹${session.bookingFeeAmount} - Manual verification\n\n` +
+          `Type *CONFIRM* to complete booking\n` +
+          `Type *CANCEL* to cancel`
+        );
+        return res.status(200).send('OK');
+      }
+      
+      // Validate transaction ID format
+      const txnId = text.trim();
+      if (txnId.length >= 10 && /^[0-9]+$/.test(txnId)) {
+        session.bookingFeePaid = true;
+        session.paymentMethod = 'upi';
+        session.paymentTransactionId = txnId;
+        session.state = S.BOOKING_CONFIRM;
+        sessions.set(phone, session);
+        
+        const bookingDate = new Date(session.bookingDate);
+        const dateStr = bookingDate.toLocaleDateString('en-IN', { 
+          weekday: 'long', 
+          year: 'numeric', 
+          month: 'long', 
+          day: 'numeric' 
+        });
+        
+        const [h, m] = session.bookingTime.split(':').map(Number);
+        const period = h >= 12 ? 'PM' : 'AM';
+        const displayHour = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+        const timeStr = `${displayHour}:${String(m).padStart(2, '0')} ${period}`;
+        
+        await sendMessage(phone,
+          `✅ Transaction ID recorded: ${txnId}\n\n` +
+          `📋 *CONFIRM YOUR BOOKING*\n\n` +
+          `🏪 Restaurant: ${session.restaurantName}\n` +
+          `👤 Name: ${session.customerName}\n` +
+          `📅 Date: ${dateStr}\n` +
+          `⏰ Time: ${timeStr}\n` +
+          `👥 Guests: ${session.numberOfGuests}\n\n` +
+          `💳 Payment: ₹${session.bookingFeeAmount} PAID (UPI)\n` +
+          `Transaction ID: ${txnId}\n\n` +
+          `Type *CONFIRM* to complete booking\n` +
+          `Type *CANCEL* to cancel`
+        );
+        return res.status(200).send('OK');
+      }
+      
+      await sendMessage(phone,
+        `❌ Invalid transaction ID format\n\n` +
+        `Please enter a valid UPI Transaction ID (10-12 digits)\n` +
+        `Example: 435623789012\n\n` +
+        `Or type *SKIP* to proceed without transaction ID`
       );
       return res.status(200).send('OK');
     }
@@ -1193,13 +1404,25 @@ app.post('/webhook', async (req, res) => {
     if (session.state === S.BOOKING_CONFIRM) {
       if (upper === 'CONFIRM') {
         try {
-          // Save booking to database
+          // Save booking to database with payment information
           const result = await pool.query(
             `INSERT INTO table_bookings 
-             (restaurant_id, customer_phone, booking_date, booking_time, number_of_guests, status, created_at)
-             VALUES ($1, $2, $3, $4, $5, 'CONFIRMED', NOW())
+             (restaurant_id, customer_phone, customer_name, booking_date, booking_time, 
+              number_of_guests, booking_fee_paid, payment_method, payment_transaction_id, 
+              status, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'CONFIRMED', NOW())
              RETURNING id`,
-            [session.restaurantId, session.phone, session.bookingDate, session.bookingTime, session.numberOfGuests]
+            [
+              session.restaurantId, 
+              session.phone, 
+              session.customerName, 
+              session.bookingDate, 
+              session.bookingTime, 
+              session.numberOfGuests,
+              session.bookingFeePaid || false,
+              session.paymentMethod || null,
+              session.paymentTransactionId || null
+            ]
           );
           
           const bookingId = result.rows[0].id;
@@ -1218,6 +1441,19 @@ app.post('/webhook', async (req, res) => {
           const displayHour = h === 0 ? 12 : (h > 12 ? h - 12 : h);
           const timeStr = `${displayHour}:${String(m).padStart(2, '0')} ${period}`;
           
+          // Prepare payment status message
+          let paymentStatusMsg = '';
+          if (session.bookingFeeAmount && session.bookingFeeAmount > 0) {
+            if (session.bookingFeePaid) {
+              paymentStatusMsg = `\n💳 Booking Fee: ₹${session.bookingFeeAmount} - PAID\n`;
+              if (session.paymentTransactionId && session.paymentTransactionId !== 'manual_verification_pending') {
+                paymentStatusMsg += `Transaction ID: ${session.paymentTransactionId}\n`;
+              }
+            } else {
+              paymentStatusMsg = `\n💵 Booking Fee: ₹${session.bookingFeeAmount} - Pay at restaurant\n`;
+            }
+          }
+          
           // Notify restaurant owner
           try {
             const { rows } = await pool.query(
@@ -1226,13 +1462,29 @@ app.post('/webhook', async (req, res) => {
             );
             
             if (rows[0]?.whatsapp_number) {
+              let ownerPaymentMsg = '';
+              if (session.bookingFeeAmount && session.bookingFeeAmount > 0) {
+                if (session.bookingFeePaid) {
+                  ownerPaymentMsg = `💳 Booking Fee: ₹${session.bookingFeeAmount} - PAID\n`;
+                  if (session.paymentTransactionId && session.paymentTransactionId !== 'manual_verification_pending') {
+                    ownerPaymentMsg += `   Transaction: ${session.paymentTransactionId}\n`;
+                  } else {
+                    ownerPaymentMsg += `   ⚠️ Manual verification required\n`;
+                  }
+                } else {
+                  ownerPaymentMsg = `💵 Booking Fee: ₹${session.bookingFeeAmount} - PENDING\n`;
+                }
+              }
+              
               await sendMessage(rows[0].whatsapp_number,
                 `🔔 *NEW TABLE BOOKING #${bookingId}*\n\n` +
                 `🏪 ${session.restaurantName}\n` +
-                `📱 Customer: ${session.phone}\n` +
+                `👤 Name: ${session.customerName}\n` +
+                `📱 Phone: ${session.phone}\n` +
                 `📅 Date: ${dateStr}\n` +
                 `⏰ Time: ${timeStr}\n` +
-                `👥 Guests: ${session.numberOfGuests}\n\n` +
+                `👥 Guests: ${session.numberOfGuests}\n` +
+                ownerPaymentMsg + `\n` +
                 `⏰ ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`
               );
               console.log(`✅ Owner notified of booking #${bookingId}`);
@@ -1245,16 +1497,18 @@ app.post('/webhook', async (req, res) => {
           await sendMessage(phone,
             `🎉 *Booking Confirmed!*\n\n` +
             `Booking ID: #${bookingId}\n` +
+            `Name: ${session.customerName}\n` +
             `Restaurant: ${session.restaurantName}\n\n` +
             `📅 Date: ${dateStr}\n` +
             `⏰ Time: ${timeStr}\n` +
-            `👥 Guests: ${session.numberOfGuests}\n\n` +
+            `👥 Guests: ${session.numberOfGuests}` +
+            paymentStatusMsg + `\n` +
             `✅ Your table is reserved!\n\n` +
             `Please arrive on time. If you need to cancel or modify, contact the restaurant directly.\n\n` +
             `Thank you! 🍽️`
           );
           
-          console.log(`✅ Booking #${bookingId} confirmed for ${session.phone}`);
+          console.log(`✅ Booking #${bookingId} confirmed for ${session.phone} (Payment: ${session.bookingFeePaid ? 'PAID' : 'PENDING'})`);
           sessions.delete(phone);
           return res.status(200).send('OK');
           
@@ -1491,6 +1745,147 @@ app.post('/reload-cache', (req, res) => {
     reloaded:true,
     count: restaurantCache.length
   }));
+});
+
+// ═══════════════════════════════════════════════════════════
+// BOOKING PAYMENT ADMIN ENDPOINTS
+// ═══════════════════════════════════════════════════════════
+
+// Toggle booking payment for a restaurant
+app.post('/admin/booking-payment/toggle', async (req, res) => {
+  if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
+    return res.status(401).json({ error: 'Unauthorized' });
+  
+  try {
+    const { restaurantId, enabled } = req.body;
+    
+    await pool.query(
+      'UPDATE restaurants SET booking_payment_required = $1 WHERE id = $2',
+      [enabled, restaurantId]
+    );
+    
+    await loadRestaurants(true);
+    
+    res.json({
+      success: true,
+      restaurantId,
+      bookingPaymentEnabled: enabled,
+      message: `Booking payment ${enabled ? 'enabled' : 'disabled'} for restaurant #${restaurantId}`
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update booking fee amount
+app.post('/admin/booking-payment/set-fee', async (req, res) => {
+  if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
+    return res.status(401).json({ error: 'Unauthorized' });
+  
+  try {
+    const { restaurantId, feeAmount } = req.body;
+    
+    await pool.query(
+      'UPDATE restaurants SET booking_fee_amount = $1 WHERE id = $2',
+      [feeAmount, restaurantId]
+    );
+    
+    await loadRestaurants(true);
+    
+    res.json({
+      success: true,
+      restaurantId,
+      bookingFeeAmount: feeAmount,
+      message: `Booking fee set to ₹${feeAmount} for restaurant #${restaurantId}`
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update UPI details
+app.post('/admin/booking-payment/set-upi', async (req, res) => {
+  if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
+    return res.status(401).json({ error: 'Unauthorized' });
+  
+  try {
+    const { restaurantId, upiId, upiName } = req.body;
+    
+    await pool.query(
+      'UPDATE restaurants SET upi_id = $1, upi_name = $2 WHERE id = $3',
+      [upiId, upiName, restaurantId]
+    );
+    
+    await loadRestaurants(true);
+    
+    res.json({
+      success: true,
+      restaurantId,
+      upiId,
+      upiName,
+      message: `UPI details updated for restaurant #${restaurantId}`
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get booking payment settings for all restaurants
+app.get('/admin/booking-payment/settings', async (req, res) => {
+  if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
+    return res.status(401).json({ error: 'Unauthorized' });
+  
+  try {
+    const { rows } = await pool.query(
+      `SELECT 
+        id, 
+        name, 
+        booking_payment_required, 
+        booking_fee_amount, 
+        upi_id, 
+        upi_name
+      FROM restaurants
+      ORDER BY id`
+    );
+    
+    res.json({
+      success: true,
+      restaurants: rows
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get booking payment statistics
+app.get('/admin/booking-payment/stats', async (req, res) => {
+  if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
+    return res.status(401).json({ error: 'Unauthorized' });
+  
+  try {
+    const { rows } = await pool.query(
+      `SELECT 
+        r.id as restaurant_id,
+        r.name as restaurant_name,
+        r.booking_fee_amount,
+        COUNT(b.id) as total_bookings,
+        SUM(CASE WHEN b.booking_fee_paid THEN 1 ELSE 0 END) as paid_bookings,
+        SUM(CASE WHEN NOT b.booking_fee_paid THEN 1 ELSE 0 END) as unpaid_bookings,
+        SUM(CASE WHEN b.booking_fee_paid THEN r.booking_fee_amount ELSE 0 END) as total_collected
+      FROM restaurants r
+      LEFT JOIN table_bookings b ON r.id = b.restaurant_id
+      WHERE r.booking_payment_required = true
+      GROUP BY r.id, r.name, r.booking_fee_amount
+      ORDER BY r.id`
+    );
+    
+    res.json({
+      success: true,
+      statistics: rows
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ─── Test Endpoints ──────────────────────────

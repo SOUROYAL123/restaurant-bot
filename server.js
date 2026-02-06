@@ -437,13 +437,22 @@ app.get('/pay/:restaurantId/:bookingId', (req, res) => {
   const { restaurantId, bookingId } = req.params;
   const { amount, upiId, name, method } = req.query;
   
-  const upiLink = method === 'phonepe' 
-    ? `phonepe://pay?pa=${upiId}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR&tn=Booking-${bookingId}`
-    : method === 'gpay'
-    ? `gpay://upi/pay?pa=${upiId}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR&tn=Booking-${bookingId}`
-    : method === 'paytm'
-    ? `paytmmp://pay?pa=${upiId}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR&tn=Booking-${bookingId}`
-    : `upi://pay?pa=${upiId}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR&tn=Booking-${bookingId}`;
+  // Generate UPI Intent URLs that work from browsers
+  const upiParams = `pa=${upiId}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR&tn=Payment-${bookingId}`;
+  
+  // App package names for Android intent
+  const packages = {
+    phonepe: 'com.phonepe.app',
+    gpay: 'com.google.android.apps.nbu.paisa.user',
+    paytm: 'net.one97.paytm'
+  };
+  
+  // Android Intent URL (works in all browsers on Android)
+  const packageName = packages[method] || packages.phonepe;
+  const androidIntentUrl = `intent://pay?${upiParams}#Intent;scheme=upi;package=${packageName};end`;
+  
+  // Generic UPI URL (works on iOS and as fallback)
+  const genericUpiUrl = `upi://pay?${upiParams}`;
   
   const methodName = method === 'phonepe' ? 'PhonePe' 
                    : method === 'gpay' ? 'Google Pay'
@@ -515,6 +524,11 @@ app.get('/pay/:restaurantId/:bookingId', (req, res) => {
     }
     .btn:hover { transform: translateY(-2px); }
     .btn:active { transform: scale(0.98); }
+    .btn.secondary {
+      background: #6c757d;
+      font-size: 16px;
+      padding: 12px;
+    }
     .manual {
       margin-top: 20px;
       padding-top: 20px;
@@ -558,6 +572,14 @@ app.get('/pay/:restaurantId/:bookingId', (req, res) => {
     @keyframes spin {
       to { transform: rotate(360deg); }
     }
+    .status {
+      margin: 15px 0;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .status.success { background: #d4edda; color: #155724; }
+    .status.warning { background: #fff3cd; color: #856404; }
   </style>
 </head>
 <body>
@@ -567,14 +589,20 @@ app.get('/pay/:restaurantId/:bookingId', (req, res) => {
     <div class="amount">₹${amount}</div>
     
     <div class="details">
-      <p><strong>Booking ID:</strong> ${bookingId}</p>
+      <p><strong>Order/Booking ID:</strong> ${bookingId}</p>
       <p><strong>UPI ID:</strong> ${upiId}</p>
       <p><strong>Method:</strong> ${methodName}</p>
     </div>
     
-    <a href="${upiLink}" class="btn" id="payBtn">
+    <div id="status"></div>
+    
+    <button class="btn" id="payBtn" onclick="openPaymentApp()">
       🚀 Pay with ${methodName}
-    </a>
+    </button>
+    
+    <button class="btn secondary" onclick="openAnyUPI()">
+      📱 Open Any UPI App
+    </button>
     
     <div class="manual">
       <p style="color: #666; margin-bottom: 10px; font-size: 14px;">
@@ -587,13 +615,50 @@ app.get('/pay/:restaurantId/:bookingId', (req, res) => {
     <div class="instructions">
       <p><strong>📱 Steps to complete payment:</strong></p>
       <p>1. Click "Pay with ${methodName}" button above</p>
-      <p>2. Complete payment in the app</p>
+      <p>2. Complete payment of ₹${amount} in the app</p>
       <p>3. Return to WhatsApp</p>
       <p>4. Type <strong>PAID</strong> to enter transaction ID</p>
     </div>
   </div>
   
   <script>
+    const androidIntentUrl = '${androidIntentUrl}';
+    const genericUpiUrl = '${genericUpiUrl}';
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+    
+    function showStatus(message, type = 'warning') {
+      const status = document.getElementById('status');
+      status.className = 'status ' + type;
+      status.textContent = message;
+      status.style.display = 'block';
+    }
+    
+    function openPaymentApp() {
+      showStatus('Opening ${methodName}...', 'success');
+      
+      if (isAndroid) {
+        // Use Android Intent URL
+        window.location.href = androidIntentUrl;
+      } else {
+        // Use generic UPI for iOS and desktop
+        window.location.href = genericUpiUrl;
+      }
+      
+      setTimeout(() => {
+        showStatus('If app didn\\'t open, use "Open Any UPI App" or copy UPI ID manually', 'warning');
+      }, 3000);
+    }
+    
+    function openAnyUPI() {
+      showStatus('Opening UPI apps...', 'success');
+      window.location.href = genericUpiUrl;
+      
+      setTimeout(() => {
+        showStatus('If no app opened, copy UPI ID manually and paste in any UPI app', 'warning');
+      }, 3000);
+    }
+    
     function copyUPI() {
       const upiText = document.getElementById('upiId').textContent;
       navigator.clipboard.writeText(upiText).then(() => {
@@ -605,15 +670,16 @@ app.get('/pay/:restaurantId/:bookingId', (req, res) => {
           btn.innerHTML = originalText;
           btn.style.background = '';
         }, 2000);
+        showStatus('UPI ID copied! Paste in any UPI app to pay', 'success');
       }).catch(() => {
-        alert('UPI ID: ' + upiText);
+        alert('UPI ID: ' + upiText + '\\n\\nAmount: ₹${amount}');
       });
     }
     
-    // Auto-redirect after 1.5 seconds
+    // Auto-open payment app after 2 seconds
     setTimeout(() => {
-      document.getElementById('payBtn').click();
-    }, 1500);
+      openPaymentApp();
+    }, 2000);
   </script>
 </body>
 </html>

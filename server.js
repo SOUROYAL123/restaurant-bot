@@ -1,5 +1,5 @@
 // ============================================
-// RESTAURANT WHATSAPP BOT v6.0 - MULTI-PAYMENT
+// RESTAURANT WHATSAPP BOT v6.1 - CLICKABLE PAYMENT LINKS
 // Multi-Restaurant | Multi-Payment Gateway | Google Sheets
 // Razorpay | PhonePe | Paytm | COD
 // ============================================
@@ -428,6 +428,199 @@ async function verifyPayment(gateway, paymentId) {
       return { success: false, verified: false };
   }
 }
+
+// ════════════════════════════════════════════
+// UPI PAYMENT REDIRECT PAGE (CLICKABLE LINKS)
+// ════════════════════════════════════════════
+
+app.get('/pay/:restaurantId/:bookingId', (req, res) => {
+  const { restaurantId, bookingId } = req.params;
+  const { amount, upiId, name, method } = req.query;
+  
+  const upiLink = method === 'phonepe' 
+    ? `phonepe://pay?pa=${upiId}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR&tn=Booking-${bookingId}`
+    : method === 'gpay'
+    ? `gpay://upi/pay?pa=${upiId}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR&tn=Booking-${bookingId}`
+    : method === 'paytm'
+    ? `paytmmp://pay?pa=${upiId}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR&tn=Booking-${bookingId}`
+    : `upi://pay?pa=${upiId}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR&tn=Booking-${bookingId}`;
+  
+  const methodName = method === 'phonepe' ? 'PhonePe' 
+                   : method === 'gpay' ? 'Google Pay'
+                   : method === 'paytm' ? 'Paytm'
+                   : 'UPI App';
+  
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment - ${name}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .container {
+      background: white;
+      border-radius: 20px;
+      padding: 40px 30px;
+      max-width: 400px;
+      width: 100%;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      text-align: center;
+    }
+    .icon { font-size: 60px; margin-bottom: 20px; }
+    h1 { color: #333; font-size: 24px; margin-bottom: 10px; }
+    .amount { 
+      font-size: 42px; 
+      font-weight: bold; 
+      color: #667eea; 
+      margin: 20px 0;
+    }
+    .details {
+      background: #f5f5f5;
+      padding: 15px;
+      border-radius: 10px;
+      margin: 20px 0;
+      text-align: left;
+    }
+    .details p {
+      margin: 8px 0;
+      color: #666;
+      font-size: 14px;
+    }
+    .details strong { color: #333; }
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 15px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      text-decoration: none;
+      border-radius: 10px;
+      font-size: 18px;
+      font-weight: 600;
+      margin: 10px 0;
+      border: none;
+      cursor: pointer;
+      transition: transform 0.2s;
+    }
+    .btn:hover { transform: translateY(-2px); }
+    .btn:active { transform: scale(0.98); }
+    .manual {
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid #ddd;
+    }
+    .upi-id {
+      background: #f9f9f9;
+      padding: 12px;
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 16px;
+      margin: 10px 0;
+      word-break: break-all;
+      color: #333;
+      font-weight: 600;
+    }
+    .copy-btn {
+      background: #28a745;
+      font-size: 14px;
+      padding: 10px 20px;
+    }
+    .instructions {
+      color: #666;
+      font-size: 13px;
+      margin-top: 20px;
+      padding: 15px;
+      background: #fff3cd;
+      border-radius: 8px;
+      text-align: left;
+    }
+    .instructions strong { color: #856404; }
+    .loading {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(255,255,255,.3);
+      border-radius: 50%;
+      border-top-color: white;
+      animation: spin 1s ease-in-out infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">💳</div>
+    <h1>${name}</h1>
+    <div class="amount">₹${amount}</div>
+    
+    <div class="details">
+      <p><strong>Booking ID:</strong> ${bookingId}</p>
+      <p><strong>UPI ID:</strong> ${upiId}</p>
+      <p><strong>Method:</strong> ${methodName}</p>
+    </div>
+    
+    <a href="${upiLink}" class="btn" id="payBtn">
+      🚀 Pay with ${methodName}
+    </a>
+    
+    <div class="manual">
+      <p style="color: #666; margin-bottom: 10px; font-size: 14px;">
+        <strong>Or copy UPI ID manually:</strong>
+      </p>
+      <div class="upi-id" id="upiId">${upiId}</div>
+      <button class="btn copy-btn" onclick="copyUPI()">📋 Copy UPI ID</button>
+    </div>
+    
+    <div class="instructions">
+      <p><strong>📱 Steps to complete payment:</strong></p>
+      <p>1. Click "Pay with ${methodName}" button above</p>
+      <p>2. Complete payment in the app</p>
+      <p>3. Return to WhatsApp</p>
+      <p>4. Type <strong>PAID</strong> to enter transaction ID</p>
+    </div>
+  </div>
+  
+  <script>
+    function copyUPI() {
+      const upiText = document.getElementById('upiId').textContent;
+      navigator.clipboard.writeText(upiText).then(() => {
+        const btn = event.target;
+        const originalText = btn.innerHTML;
+        btn.innerHTML = '✅ Copied!';
+        btn.style.background = '#28a745';
+        setTimeout(() => {
+          btn.innerHTML = originalText;
+          btn.style.background = '';
+        }, 2000);
+      }).catch(() => {
+        alert('UPI ID: ' + upiText);
+      });
+    }
+    
+    // Auto-redirect after 1.5 seconds
+    setTimeout(() => {
+      document.getElementById('payBtn').click();
+    }, 1500);
+  </script>
+</body>
+</html>
+  `;
+  
+  res.send(html);
+});
 
 // ════════════════════════════════════════════
 // HELPERS
@@ -1334,7 +1527,7 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).send('OK');
     }
     
-    // ─── BOOKING_SELECT_PAYMENT_METHOD State ───
+    // ─── BOOKING_SELECT_PAYMENT_METHOD State (UPDATED WITH CLICKABLE LINKS) ───
     if (session.state === S.BOOKING_SELECT_PAYMENT_METHOD) {
       const choice = text.trim();
       const selectedMethod = session.paymentOptionMap?.[choice];
@@ -1346,12 +1539,77 @@ app.post('/webhook', async (req, res) => {
       
       session.selectedPaymentMethod = selectedMethod;
       session.state = S.BOOKING_PAYMENT;
+      
+      // Generate temporary booking ID for payment link
+      const tempBookingId = `BK${Date.now().toString().slice(-8)}`;
+      session.tempBookingId = tempBookingId;
       sessions.set(phone, session);
       
       const amount = session.bookingFeeAmount;
       
       // Generate payment instructions based on selected method
-      if (selectedMethod === 'qr') {
+      if (selectedMethod === 'phonepe') {
+        const pp = session.paymentDetails.phonepe;
+        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${pp.number}@ybl&name=${encodeURIComponent(pp.name)}&method=phonepe`;
+        
+        await sendMessage(phone,
+          `📱 *PhonePe Payment*\n\n` +
+          `Amount: ₹${amount}\n` +
+          `UPI ID: ${pp.number}@ybl\n` +
+          `Name: ${pp.name}\n\n` +
+          `🔗 *Click to Pay:*\n` +
+          `${paymentUrl}\n\n` +
+          `After payment, type:\n` +
+          `*PAID* - to enter transaction ID`
+        );
+        
+      } else if (selectedMethod === 'gpay') {
+        const gp = session.paymentDetails.gpay;
+        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${gp.number}@okaxis&name=${encodeURIComponent(gp.name)}&method=gpay`;
+        
+        await sendMessage(phone,
+          `📱 *Google Pay Payment*\n\n` +
+          `Amount: ₹${amount}\n` +
+          `UPI ID: ${gp.number}@okaxis\n` +
+          `Name: ${gp.name}\n\n` +
+          `🔗 *Click to Pay:*\n` +
+          `${paymentUrl}\n\n` +
+          `After payment, type:\n` +
+          `*PAID* - to enter transaction ID`
+        );
+        
+      } else if (selectedMethod === 'paytm') {
+        const pt = session.paymentDetails.paytm;
+        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${pt.number}@paytm&name=${encodeURIComponent(pt.name)}&method=paytm`;
+        
+        await sendMessage(phone,
+          `📱 *Paytm Payment*\n\n` +
+          `Amount: ₹${amount}\n` +
+          `UPI ID: ${pt.number}@paytm\n` +
+          `Name: ${pt.name}\n\n` +
+          `🔗 *Click to Pay:*\n` +
+          `${paymentUrl}\n\n` +
+          `After payment, type:\n` +
+          `*PAID* - to enter transaction ID`
+        );
+        
+      } else if (selectedMethod === 'upi') {
+        const upi = session.paymentDetails.upi;
+        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${upi.id}&name=${encodeURIComponent(upi.name)}&method=upi`;
+        
+        await sendMessage(phone,
+          `📱 *UPI Payment*\n\n` +
+          `Amount: ₹${amount}\n` +
+          `UPI ID: ${upi.id}\n` +
+          `Name: ${upi.name}\n\n` +
+          `🔗 *Click to Pay:*\n` +
+          `${paymentUrl}\n\n` +
+          `Or copy UPI ID: ${upi.id}\n\n` +
+          `After payment, type:\n` +
+          `*PAID* - to enter transaction ID`
+        );
+        
+      } else if (selectedMethod === 'qr') {
         const qr = session.paymentDetails.qr;
         await sendMessage(phone,
           `📱 *QR Code Payment*\n\n` +
@@ -1361,76 +1619,6 @@ app.post('/webhook', async (req, res) => {
           `After payment, type:\n` +
           `*PAID* - to enter transaction ID\n` +
           `*SKIP* - to pay at restaurant`
-        );
-        
-      } else if (selectedMethod === 'phonepe') {
-        const pp = session.paymentDetails.phonepe;
-        const phonepeLink = `phonepe://pay?pa=${pp.number}@ybl&pn=${encodeURIComponent(pp.name)}&am=${amount}&cu=INR&tn=Booking`;
-        const upiLink = `upi://pay?pa=${pp.number}@ybl&pn=${encodeURIComponent(pp.name)}&am=${amount}&cu=INR&tn=Booking`;
-        
-        await sendMessage(phone,
-          `📱 *PhonePe Payment*\n\n` +
-          `Amount: ₹${amount}\n` +
-          `UPI ID: ${pp.number}@ybl\n` +
-          `Name: ${pp.name}\n\n` +
-          `*Option 1: Click to open PhonePe*\n` +
-          `${phonepeLink}\n\n` +
-          `*Option 2: Universal UPI link*\n` +
-          `${upiLink}\n\n` +
-          `After payment, type:\n` +
-          `*PAID* - to enter transaction ID`
-        );
-        
-      } else if (selectedMethod === 'gpay') {
-        const gp = session.paymentDetails.gpay;
-        const gpayLink = `gpay://upi/pay?pa=${gp.number}@okaxis&pn=${encodeURIComponent(gp.name)}&am=${amount}&cu=INR&tn=Booking`;
-        const upiLink = `upi://pay?pa=${gp.number}@okaxis&pn=${encodeURIComponent(gp.name)}&am=${amount}&cu=INR&tn=Booking`;
-        
-        await sendMessage(phone,
-          `📱 *Google Pay Payment*\n\n` +
-          `Amount: ₹${amount}\n` +
-          `UPI ID: ${gp.number}@okaxis\n` +
-          `Name: ${gp.name}\n\n` +
-          `*Option 1: Click to open Google Pay*\n` +
-          `${gpayLink}\n\n` +
-          `*Option 2: Universal UPI link*\n` +
-          `${upiLink}\n\n` +
-          `After payment, type:\n` +
-          `*PAID* - to enter transaction ID`
-        );
-        
-      } else if (selectedMethod === 'paytm') {
-        const pt = session.paymentDetails.paytm;
-        const paytmLink = `paytmmp://pay?pa=${pt.number}@paytm&pn=${encodeURIComponent(pt.name)}&am=${amount}&cu=INR&tn=Booking`;
-        const upiLink = `upi://pay?pa=${pt.number}@paytm&pn=${encodeURIComponent(pt.name)}&am=${amount}&cu=INR&tn=Booking`;
-        
-        await sendMessage(phone,
-          `📱 *Paytm Payment*\n\n` +
-          `Amount: ₹${amount}\n` +
-          `UPI ID: ${pt.number}@paytm\n` +
-          `Name: ${pt.name}\n\n` +
-          `*Option 1: Click to open Paytm*\n` +
-          `${paytmLink}\n\n` +
-          `*Option 2: Universal UPI link*\n` +
-          `${upiLink}\n\n` +
-          `After payment, type:\n` +
-          `*PAID* - to enter transaction ID`
-        );
-        
-      } else if (selectedMethod === 'upi') {
-        const upi = session.paymentDetails.upi;
-        const upiLink = `upi://pay?pa=${upi.id}&pn=${encodeURIComponent(upi.name)}&am=${amount}&cu=INR&tn=Booking`;
-        
-        await sendMessage(phone,
-          `📱 *UPI Payment*\n\n` +
-          `Amount: ₹${amount}\n` +
-          `UPI ID: ${upi.id}\n` +
-          `Name: ${upi.name}\n\n` +
-          `*Universal UPI Link (any app):*\n` +
-          `${upiLink}\n\n` +
-          `Or pay manually using above UPI ID in any UPI app\n\n` +
-          `After payment, type:\n` +
-          `*PAID* - to enter transaction ID`
         );
         
       } else if (selectedMethod === 'cod') {
@@ -1911,7 +2099,7 @@ app.get('/health', async (req, res) => {
       sessions: sessions.size,
       restaurants: restaurantCache.length,
       testMode: TEST_MODE,
-      version: '6.0-MULTI-PAYMENT',
+      version: '6.1-CLICKABLE-PAYMENT-LINKS',
       paymentGateways: {
         razorpay: process.env.RAZORPAY_KEY_ID ? 'Configured' : 'Not set',
         phonepe: process.env.PHONEPE_MERCHANT_ID ? 'Configured' : 'Not set',
@@ -1960,147 +2148,6 @@ app.post('/reload-cache', (req, res) => {
   }));
 });
 
-// ═══════════════════════════════════════════════════════════
-// BOOKING PAYMENT ADMIN ENDPOINTS
-// ═══════════════════════════════════════════════════════════
-
-// Toggle booking payment for a restaurant
-app.post('/admin/booking-payment/toggle', async (req, res) => {
-  if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
-    return res.status(401).json({ error: 'Unauthorized' });
-  
-  try {
-    const { restaurantId, enabled } = req.body;
-    
-    await pool.query(
-      'UPDATE restaurants SET booking_payment_required = $1 WHERE id = $2',
-      [enabled, restaurantId]
-    );
-    
-    await loadRestaurants(true);
-    
-    res.json({
-      success: true,
-      restaurantId,
-      bookingPaymentEnabled: enabled,
-      message: `Booking payment ${enabled ? 'enabled' : 'disabled'} for restaurant #${restaurantId}`
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Update booking fee amount
-app.post('/admin/booking-payment/set-fee', async (req, res) => {
-  if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
-    return res.status(401).json({ error: 'Unauthorized' });
-  
-  try {
-    const { restaurantId, feeAmount } = req.body;
-    
-    await pool.query(
-      'UPDATE restaurants SET booking_fee_amount = $1 WHERE id = $2',
-      [feeAmount, restaurantId]
-    );
-    
-    await loadRestaurants(true);
-    
-    res.json({
-      success: true,
-      restaurantId,
-      bookingFeeAmount: feeAmount,
-      message: `Booking fee set to ₹${feeAmount} for restaurant #${restaurantId}`
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Update UPI details
-app.post('/admin/booking-payment/set-upi', async (req, res) => {
-  if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
-    return res.status(401).json({ error: 'Unauthorized' });
-  
-  try {
-    const { restaurantId, upiId, upiName } = req.body;
-    
-    await pool.query(
-      'UPDATE restaurants SET upi_id = $1, upi_name = $2 WHERE id = $3',
-      [upiId, upiName, restaurantId]
-    );
-    
-    await loadRestaurants(true);
-    
-    res.json({
-      success: true,
-      restaurantId,
-      upiId,
-      upiName,
-      message: `UPI details updated for restaurant #${restaurantId}`
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get booking payment settings for all restaurants
-app.get('/admin/booking-payment/settings', async (req, res) => {
-  if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
-    return res.status(401).json({ error: 'Unauthorized' });
-  
-  try {
-    const { rows } = await pool.query(
-      `SELECT 
-        id, 
-        name, 
-        booking_payment_required, 
-        booking_fee_amount, 
-        upi_id, 
-        upi_name
-      FROM restaurants
-      ORDER BY id`
-    );
-    
-    res.json({
-      success: true,
-      restaurants: rows
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get booking payment statistics
-app.get('/admin/booking-payment/stats', async (req, res) => {
-  if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
-    return res.status(401).json({ error: 'Unauthorized' });
-  
-  try {
-    const { rows } = await pool.query(
-      `SELECT 
-        r.id as restaurant_id,
-        r.name as restaurant_name,
-        r.booking_fee_amount,
-        COUNT(b.id) as total_bookings,
-        SUM(CASE WHEN b.booking_fee_paid THEN 1 ELSE 0 END) as paid_bookings,
-        SUM(CASE WHEN NOT b.booking_fee_paid THEN 1 ELSE 0 END) as unpaid_bookings,
-        SUM(CASE WHEN b.booking_fee_paid THEN r.booking_fee_amount ELSE 0 END) as total_collected
-      FROM restaurants r
-      LEFT JOIN table_bookings b ON r.id = b.restaurant_id
-      WHERE r.booking_payment_required = true
-      GROUP BY r.id, r.name, r.booking_fee_amount
-      ORDER BY r.id`
-    );
-    
-    res.json({
-      success: true,
-      statistics: rows
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // ─── Test Endpoints ──────────────────────────
 app.get('/test/messages/:phone', (req, res) => {
   const msgs = testMessages.get(req.params.phone) || [];
@@ -2133,8 +2180,8 @@ async function startServer() {
     app.listen(PORT, () => {
       console.log(`
 ╔═══════════════════════════════════════════════╗
-║   🍽️  RESTAURANT WHATSAPP BOT v6.0           ║
-║   ✅ Multi-Payment Gateway Integration       ║
+║   🍽️  RESTAURANT WHATSAPP BOT v6.1           ║
+║   ✅ Clickable Payment Links                 ║
 ║   ✅ Table Booking System                    ║
 ╠═══════════════════════════════════════════════╣
 ║  Port:           ${String(PORT).padEnd(28)}║
@@ -2148,11 +2195,13 @@ async function startServer() {
 ║  3️⃣ Paytm:       ${String(process.env.PAYTM_MERCHANT_ID ? '✅ Configured' : '⚠️  Not set').padEnd(28)}║
 ║  4️⃣ COD:         ✅ Always available          ║
 ╠═══════════════════════════════════════════════╣
-║  📅 TABLE BOOKING                             ║
-║     ✅ Date Selection (TODAY/TOMORROW/Date)   ║
-║     ✅ Time Selection (24hr/LUNCH/DINNER)     ║
-║     ✅ Guest Count (1-20)                     ║
-║     ✅ Owner Notifications                    ║
+║  📅 TABLE BOOKING PAYMENTS                    ║
+║     ✅ PhonePe - Clickable Links              ║
+║     ✅ Google Pay - Clickable Links           ║
+║     ✅ Paytm - Clickable Links                ║
+║     ✅ Generic UPI - Clickable Links          ║
+║     ✅ QR Code Payment                        ║
+║     ✅ Pay at Restaurant (COD)                ║
 ╠═══════════════════════════════════════════════╣
 ║  📊 Google Sheets:                            ║
 ║     ${String(process.env.GOOGLE_APPS_SCRIPT_URL ? '✅ Enabled' : '⚠️  Not configured').padEnd(42)}║

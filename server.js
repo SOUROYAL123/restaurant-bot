@@ -1,7 +1,7 @@
 // ============================================
-// RESTAURANT WHATSAPP BOT v8.0 - COMPLETE
-// Multi-Restaurant | COD | Real-time Menu Management
-// Instant Menu Updates via WhatsApp/Web/API
+// RESTAURANT WHATSAPP BOT v6.0 - MULTI-PAYMENT
+// Multi-Restaurant | Multi-Payment Gateway | Google Sheets
+// Razorpay | PhonePe | Paytm | COD
 // ============================================
 
 require('dotenv').config();
@@ -9,27 +9,23 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const twilio = require('twilio');
 const { Pool } = require('pg');
-const path = require('path');
+const crypto = require('crypto');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || 'production';
 const TEST_MODE = process.env.TEST_MODE === 'true';
 
-// ═══════════════════════════════════════════════════════
-// MIDDLEWARE
-// ═══════════════════════════════════════════════════════
+// ─── Middleware ──────────────────────────────
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 app.set('trust proxy', true);
-app.use(express.static('public'));
 
-// ═══════════════════════════════════════════════════════
-// TWILIO SETUP
-// ═══════════════════════════════════════════════════════
-const accountSid = process.env.TWILIO_ACCOUNT_SID;
-const authToken = process.env.TWILIO_AUTH_TOKEN;
-const wabaNumber = process.env.WABA_NUMBER;
+// ─── Twilio Setup ────────────────────────────
+const accountSid  = process.env.TWILIO_ACCOUNT_SID;
+const authToken   = process.env.TWILIO_AUTH_TOKEN;
+const wabaNumber  = process.env.WABA_NUMBER;
 
 let twilioClient = null;
 if (!TEST_MODE) {
@@ -42,12 +38,10 @@ if (!TEST_MODE) {
   console.log('🧪 TEST MODE ON — Twilio calls mocked');
 }
 
-// ═══════════════════════════════════════════════════════
-// DATABASE POOL
-// ═══════════════════════════════════════════════════════
+// ─── Database Pool ───────────────────────────
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false, require: true },
+  ssl:              { rejectUnauthorized: false, require: true },
   connectionTimeoutMillis: 10000,
   max: 10,
   min: 0,
@@ -58,7 +52,7 @@ const pool = new Pool({
 let dbConnected = false;
 pool.on('connect', () => { dbConnected = true; });
 pool.on('error', (e) => {
-  console.warn('⚠️  Pool idle connection terminated:', e.message);
+  console.warn('⚠️  Pool idle connection terminated (expected with Neon):', e.message);
 });
 
 async function connectDatabase(retries = 5) {
@@ -76,17 +70,14 @@ async function connectDatabase(retries = 5) {
       if (i < retries) await new Promise(r => setTimeout(r, Math.min(1000 * (2 ** i), 10000)));
     }
   }
-  console.error('❌ FATAL: DB connection failed');
-  process.exit(1);
+  console.error('❌ FATAL: DB connection failed'); process.exit(1);
 }
 
-// ═══════════════════════════════════════════════════════
-// IN-MEMORY STORES
-// ═══════════════════════════════════════════════════════
-const sessions = new Map();
-const testMessages = new Map();
+// ─── In-Memory Stores ────────────────────────
+const sessions        = new Map();
+const pendingPayments = new Map();
+const testMessages    = new Map();
 
-// Session cleanup (30 min timeout)
 setInterval(() => {
   const now = Date.now();
   for (const [phone, s] of sessions) {
@@ -97,32 +88,346 @@ setInterval(() => {
   }
 }, 300000);
 
-// ═══════════════════════════════════════════════════════
-// RESTAURANT CACHE
-// ═══════════════════════════════════════════════════════
-let restaurantCache = [];
-let menuCache = new Map();
-let lastCacheUpdate = 0;
-const CACHE_TTL = 300000; // 5 minutes
+// ─── Restaurant Cache ────────────────────────
+let restaurantCache = [], lastCacheUpdate = 0;
+const CACHE_TTL = 300000;
 
-// ═══════════════════════════════════════════════════════
-// STATES
-// ═══════════════════════════════════════════════════════
+// ─── States ──────────────────────────────────
 const S = {
-  SELECT_SERVICE: 'SELECT_SERVICE',
-  BROWSE_MENU: 'BROWSE_MENU',
-  ADD_ADDRESS: 'ADD_ADDRESS',
+  SELECT_SERVICE:   'SELECT_SERVICE',
+  BROWSE_MENU:      'BROWSE_MENU',
+  ADD_ADDRESS:      'ADD_ADDRESS',
   ADD_INSTRUCTIONS: 'ADD_INSTRUCTIONS',
-  CONFIRM_ORDER: 'CONFIRM_ORDER',
-  BOOKING_DATE: 'BOOKING_DATE',
-  BOOKING_TIME: 'BOOKING_TIME',
-  BOOKING_GUESTS: 'BOOKING_GUESTS',
-  BOOKING_CONFIRM: 'BOOKING_CONFIRM'
+  CHOOSE_PAYMENT:   'CHOOSE_PAYMENT',
+  AWAITING_PAYMENT: 'AWAITING_PAYMENT',
+  CONFIRM_ORDER:    'CONFIRM_ORDER',
+  BOOKING_DATE:     'BOOKING_DATE',
+  BOOKING_TIME:     'BOOKING_TIME',
+  BOOKING_GUESTS:   'BOOKING_GUESTS',
+  BOOKING_CONFIRM:  'BOOKING_CONFIRM'
 };
 
-// ═══════════════════════════════════════════════════════
-// HELPER FUNCTIONS
-// ═══════════════════════════════════════════════════════
+// ════════════════════════════════════════════
+// PAYMENT GATEWAY INTEGRATIONS
+// ════════════════════════════════════════════
+
+// ─── RAZORPAY ────────────────────────────────
+async function createRazorpayPayment(orderData) {
+  try {
+    const Razorpay = require('razorpay');
+    const razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET
+    });
+
+    const options = {
+      amount: Math.round(orderData.amount * 100),
+      currency: 'INR',
+      accept_partial: false,
+      description: `Order from ${orderData.restaurantName}`,
+      customer: {
+        contact: orderData.phone,
+        name: orderData.customerName || 'Customer'
+      },
+      notify: { sms: true, whatsapp: true },
+      reminder_enable: true,
+      callback_url: `${process.env.BASE_URL}/payment/razorpay/callback`,
+      callback_method: 'get'
+    };
+
+    const paymentLink = await razorpay.paymentLink.create(options);
+    console.log(`✅ Razorpay payment created: ${paymentLink.short_url}`);
+
+    return {
+      success: true,
+      gateway: 'razorpay',
+      paymentId: paymentLink.id,
+      paymentUrl: paymentLink.short_url,
+      orderId: paymentLink.order_id || paymentLink.id
+    };
+  } catch (error) {
+    console.error('❌ Razorpay Error:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+async function verifyRazorpayPayment(paymentId) {
+  try {
+    const Razorpay = require('razorpay');
+    const razorpay = new Razorpay({
+      key_id: process.env.RAZORPAY_KEY_ID,
+      key_secret: process.env.RAZORPAY_KEY_SECRET
+    });
+    
+    const paymentLink = await razorpay.paymentLink.fetch(paymentId);
+    return {
+      success: true,
+      verified: paymentLink.status === 'paid'
+    };
+  } catch (error) {
+    console.error('❌ Razorpay Verify Error:', error.message);
+    return { success: false, verified: false };
+  }
+}
+
+// ─── PHONEPE ─────────────────────────────────
+async function createPhonePePayment(orderData) {
+  try {
+    const merchantId = process.env.PHONEPE_MERCHANT_ID;
+    const saltKey = process.env.PHONEPE_SALT_KEY;
+    const saltIndex = process.env.PHONEPE_SALT_INDEX || '1';
+    const mode = process.env.PHONEPE_MODE || 'UAT';
+    
+    if (!merchantId || !saltKey) {
+      return { success: false, error: 'PhonePe credentials not configured' };
+    }
+    
+    const baseUrl = mode === 'PRODUCTION' 
+      ? 'https://api.phonepe.com/apis/hermes'
+      : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
+
+    const merchantTransactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    const payload = {
+      merchantId: merchantId,
+      merchantTransactionId: merchantTransactionId,
+      merchantUserId: orderData.phone.replace(/\D/g, '').substr(-10),
+      amount: Math.round(orderData.amount * 100),
+      redirectUrl: `${process.env.BASE_URL}/payment/phonepe/callback`,
+      redirectMode: 'GET',
+      callbackUrl: `${process.env.BASE_URL}/payment/phonepe/webhook`,
+      mobileNumber: orderData.phone.replace(/\D/g, '').substr(-10),
+      paymentInstrument: { type: 'PAY_PAGE' }
+    };
+
+    const base64Payload = Buffer.from(JSON.stringify(payload)).toString('base64');
+    const checksumString = base64Payload + '/pg/v1/pay' + saltKey;
+    const checksum = crypto.createHash('sha256').update(checksumString).digest('hex') + '###' + saltIndex;
+
+    const response = await axios.post(
+      `${baseUrl}/pg/v1/pay`,
+      { request: base64Payload },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-VERIFY': checksum
+        }
+      }
+    );
+
+    if (response.data.success) {
+      console.log(`✅ PhonePe payment created: ${merchantTransactionId}`);
+      return {
+        success: true,
+        gateway: 'phonepe',
+        paymentId: merchantTransactionId,
+        paymentUrl: response.data.data.instrumentResponse.redirectInfo.url,
+        orderId: merchantTransactionId
+      };
+    } else {
+      return { success: false, error: response.data.message };
+    }
+  } catch (error) {
+    console.error('❌ PhonePe Error:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+async function verifyPhonePePayment(merchantTransactionId) {
+  try {
+    const merchantId = process.env.PHONEPE_MERCHANT_ID;
+    const saltKey = process.env.PHONEPE_SALT_KEY;
+    const saltIndex = process.env.PHONEPE_SALT_INDEX || '1';
+    const mode = process.env.PHONEPE_MODE || 'UAT';
+    
+    const baseUrl = mode === 'PRODUCTION'
+      ? 'https://api.phonepe.com/apis/hermes'
+      : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
+
+    const checksumString = `/pg/v1/status/${merchantId}/${merchantTransactionId}` + saltKey;
+    const checksum = crypto.createHash('sha256').update(checksumString).digest('hex') + '###' + saltIndex;
+
+    const response = await axios.get(
+      `${baseUrl}/pg/v1/status/${merchantId}/${merchantTransactionId}`,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'X-VERIFY': checksum,
+          'X-MERCHANT-ID': merchantId
+        }
+      }
+    );
+
+    return {
+      success: true,
+      verified: response.data.success && response.data.code === 'PAYMENT_SUCCESS'
+    };
+  } catch (error) {
+    console.error('❌ PhonePe Verify Error:', error.message);
+    return { success: false, verified: false };
+  }
+}
+
+// ─── PAYTM ───────────────────────────────────
+async function createPaytmPayment(orderData) {
+  try {
+    const PaytmChecksum = require('paytmchecksum');
+    const merchantId = process.env.PAYTM_MERCHANT_ID;
+    const merchantKey = process.env.PAYTM_MERCHANT_KEY;
+    const website = process.env.PAYTM_WEBSITE || 'WEBSTAGING';
+    
+    if (!merchantId || !merchantKey) {
+      return { success: false, error: 'Paytm credentials not configured' };
+    }
+    
+    const orderId = `ORDER_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    const paytmParams = {
+      body: {
+        requestType: 'Payment',
+        mid: merchantId,
+        websiteName: website,
+        orderId: orderId,
+        callbackUrl: `${process.env.BASE_URL}/payment/paytm/callback`,
+        txnAmount: {
+          value: orderData.amount.toFixed(2),
+          currency: 'INR'
+        },
+        userInfo: {
+          custId: orderData.phone.replace(/\D/g, '').substr(-10)
+        }
+      }
+    };
+
+    const checksum = await PaytmChecksum.generateSignature(
+      JSON.stringify(paytmParams.body),
+      merchantKey
+    );
+
+    paytmParams.head = { signature: checksum };
+
+    const baseUrl = website === 'WEBSTAGING'
+      ? 'https://securegw-stage.paytm.in'
+      : 'https://securegw.paytm.in';
+
+    const response = await axios.post(
+      `${baseUrl}/theia/api/v1/initiateTransaction?mid=${merchantId}&orderId=${orderId}`,
+      paytmParams,
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+
+    if (response.data.body.resultInfo.resultStatus === 'S') {
+      const txnToken = response.data.body.txnToken;
+      const paymentUrl = `${baseUrl}/theia/api/v1/showPaymentPage?mid=${merchantId}&orderId=${orderId}`;
+      
+      console.log(`✅ Paytm payment created: ${orderId}`);
+      return {
+        success: true,
+        gateway: 'paytm',
+        paymentId: orderId,
+        paymentUrl: paymentUrl,
+        txnToken: txnToken,
+        orderId: orderId
+      };
+    } else {
+      return { success: false, error: response.data.body.resultInfo.resultMsg };
+    }
+  } catch (error) {
+    console.error('❌ Paytm Error:', error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+async function verifyPaytmPayment(orderId) {
+  try {
+    const PaytmChecksum = require('paytmchecksum');
+    const merchantId = process.env.PAYTM_MERCHANT_ID;
+    const merchantKey = process.env.PAYTM_MERCHANT_KEY;
+    const website = process.env.PAYTM_WEBSITE || 'WEBSTAGING';
+
+    const paytmParams = {
+      body: {
+        mid: merchantId,
+        orderId: orderId
+      }
+    };
+
+    const checksum = await PaytmChecksum.generateSignature(
+      JSON.stringify(paytmParams.body),
+      merchantKey
+    );
+
+    paytmParams.head = { signature: checksum };
+
+    const baseUrl = website === 'WEBSTAGING'
+      ? 'https://securegw-stage.paytm.in'
+      : 'https://securegw.paytm.in';
+
+    const response = await axios.post(
+      `${baseUrl}/v3/order/status`,
+      paytmParams,
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+
+    return {
+      success: true,
+      verified: response.data.body.resultInfo.resultStatus === 'TXN_SUCCESS'
+    };
+  } catch (error) {
+    console.error('❌ Paytm Verify Error:', error.message);
+    return { success: false, verified: false };
+  }
+}
+
+// ─── UNIFIED PAYMENT FUNCTIONS ───────────────
+async function createPayment(gateway, orderData) {
+  console.log(`💳 Creating ${gateway} payment for ₹${orderData.amount}`);
+  
+  if (TEST_MODE) {
+    return {
+      success: true,
+      gateway: gateway,
+      paymentId: `test_${gateway}_${Date.now()}`,
+      paymentUrl: `https://test-payment.com/${gateway}`,
+      orderId: `test_order_${Date.now()}`
+    };
+  }
+  
+  switch (gateway) {
+    case 'razorpay':
+      return await createRazorpayPayment(orderData);
+    case 'phonepe':
+      return await createPhonePePayment(orderData);
+    case 'paytm':
+      return await createPaytmPayment(orderData);
+    default:
+      return { success: false, error: 'Invalid payment gateway' };
+  }
+}
+
+async function verifyPayment(gateway, paymentId) {
+  console.log(`🔍 Verifying ${gateway} payment: ${paymentId}`);
+  
+  if (TEST_MODE) {
+    const s = Array.from(sessions.values()).find(sess => sess.paymentId === paymentId);
+    return { success: true, verified: s?.testPaymentPaid === true };
+  }
+  
+  switch (gateway) {
+    case 'razorpay':
+      return await verifyRazorpayPayment(paymentId);
+    case 'phonepe':
+      return await verifyPhonePePayment(paymentId);
+    case 'paytm':
+      return await verifyPaytmPayment(paymentId);
+    default:
+      return { success: false, verified: false };
+  }
+}
+
+// ════════════════════════════════════════════
+// HELPERS
+// ════════════════════════════════════════════
 
 async function sendMessage(to, body) {
   if (!testMessages.has(to)) testMessages.set(to, []);
@@ -133,10 +438,10 @@ async function sendMessage(to, body) {
     return { sid: 'test_' + Date.now() };
   }
   try {
-    const msg = await twilioClient.messages.create({
-      from: wabaNumber,
-      to: `whatsapp:${to}`,
-      body
+    const msg = await twilioClient.messages.create({ 
+      from: wabaNumber, 
+      to: `whatsapp:${to}`, 
+      body 
     });
     console.log(`✅ Sent → ${to}: ${msg.sid}`);
     return msg;
@@ -152,7 +457,7 @@ async function loadRestaurants(force = false) {
   try {
     const { rows } = await pool.query(`SELECT * FROM restaurants ORDER BY name`);
     const hasActive = rows.length > 0 && 'active' in rows[0];
-    restaurantCache = hasActive ? rows.filter(r => r.active !== false) : rows;
+    restaurantCache = hasActive ? rows.filter(r => r.active) : rows;
     lastCacheUpdate = Date.now();
     if (rows.length > 0) {
       console.log(`📋 Cached ${restaurantCache.length} restaurants`);
@@ -164,37 +469,18 @@ async function loadRestaurants(force = false) {
   }
 }
 
-async function getMenuItems(restaurantId, forceRefresh = false) {
-  if (!forceRefresh && menuCache.has(restaurantId)) {
-    const cached = menuCache.get(restaurantId);
-    if (Date.now() - cached.timestamp < CACHE_TTL) {
-      return cached.items;
-    }
-  }
-
+async function getMenuItems(restaurantId) {
   try {
     const { rows } = await pool.query(
-      `SELECT id, name, description, price, category, is_vegetarian, 
-              COALESCE(available, is_available, true) as available
-       FROM menu_items 
-       WHERE restaurant_id = $1 
-       ORDER BY category, name`,
+      `SELECT * FROM menu_items WHERE restaurant_id = $1 ORDER BY category, name`,
       [restaurantId]
     );
-    
-    // Filter only available items
-    const filtered = rows.filter(r => r.available !== false);
-    
-    // Cache the results
-    menuCache.set(restaurantId, {
-      items: filtered,
-      timestamp: Date.now()
-    });
-    
+    const hasAvailable = rows.length > 0 && 'available' in rows[0];
+    const filtered = hasAvailable ? rows.filter(r => r.available) : rows;
     return filtered;
   } catch (e) {
     console.error('❌ getMenuItems:', e.message);
-    return menuCache.has(restaurantId) ? menuCache.get(restaurantId).items : [];
+    return [];
   }
 }
 
@@ -219,8 +505,7 @@ function formatCart(cart, deliveryFee = 0) {
   if (!cart || !cart.length) return '🛒 Your cart is empty';
   let m = '🛒 *Your Cart:*\n\n', sub = 0;
   cart.forEach((item, i) => {
-    const t = item.price * item.quantity;
-    sub += t;
+    const t = item.price * item.quantity; sub += t;
     m += `${i + 1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price} = ₹${t}\n\n`;
   });
   m += `Subtotal: ₹${sub}\nDelivery Fee: ₹${deliveryFee}\n*Total: ₹${Number(sub) + Number(deliveryFee)}*`;
@@ -234,30 +519,36 @@ async function saveOrder(session) {
     const { rows } = await client.query(
       `INSERT INTO orders (
          restaurant_id, customer_phone, delivery_address, special_instructions,
-         total_amount, status, payment_status, payment_method, created_at, confirmed_at
-       ) VALUES ($1,$2,$3,$4,$5,'CONFIRMED','COD','cod',NOW(),NOW()) RETURNING id`,
+         total_amount, status, payment_status, payment_method, payment_gateway,
+         gateway_transaction_id, gateway_order_id, created_at, confirmed_at
+       ) VALUES ($1,$2,$3,$4,$5,'CONFIRMED',$6,$7,$8,$9,$10,NOW(),NOW()) RETURNING id`,
       [
         session.restaurantId, session.phone, session.deliveryAddress,
-        session.specialInstructions || '', session.total
+        session.specialInstructions || '', session.total,
+        session.paymentMethod === 'online' ? 'PAID' : 'COD',
+        session.paymentMethod,
+        session.paymentGateway || 'cod',
+        session.paymentId || null,
+        session.gatewayOrderId || null
       ]
     );
     const orderId = rows[0].id;
-
+    
     for (const item of session.cart) {
       await client.query(
         'INSERT INTO order_items (order_id, menu_item_id, quantity, price, subtotal) VALUES ($1,$2,$3,$4,$5)',
         [orderId, item.id, item.quantity, item.price, item.price * item.quantity]
       );
     }
-
+    
     await client.query('COMMIT');
-    console.log(`✅ Order #${orderId} saved (COD)`);
+    console.log(`✅ Order #${orderId} saved (${session.paymentGateway})`);
     return orderId;
   } catch (e) {
     await client.query('ROLLBACK');
     throw e;
-  } finally {
-    client.release();
+  } finally { 
+    client.release(); 
   }
 }
 
@@ -268,21 +559,29 @@ async function notifyOwner(session, orderId) {
       [session.restaurantId]
     );
     if (!rows[0] || rows[0].notify_on_order === false) return;
-
+    
     const ownerWA = rows[0].whatsapp_number;
     if (!ownerWA) return;
-
+    
+    const gatewayName = session.paymentGateway === 'razorpay' ? 'Razorpay' :
+                       session.paymentGateway === 'phonepe' ? 'PhonePe' :
+                       session.paymentGateway === 'paytm' ? 'Paytm' : 'COD';
+    
+    const payLabel = session.paymentMethod === 'online' 
+      ? `💳 ONLINE PAID (${gatewayName})` 
+      : '💵 CASH ON DELIVERY';
+    
     let m = `🔔 *NEW ORDER #${orderId}*\n\n🏪 ${session.restaurantName}\n📱 Customer: ${session.phone}\n📍 Address: ${session.deliveryAddress}\n\n🛒 *Items:*\n`;
     session.cart.forEach(i => { m += `• ${i.quantity}× ${i.name} — ₹${i.price * i.quantity}\n`; });
-    m += `\n💰 *Total: ₹${session.total}*\n💵 CASH ON DELIVERY`;
+    m += `\n💰 *Total: ₹${session.total}*\n${payLabel}`;
     if (session.specialInstructions && session.specialInstructions.toLowerCase() !== 'no')
       m += `\n📝 Instructions: ${session.specialInstructions}`;
     m += `\n⏰ ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}`;
-
+    
     await sendMessage(ownerWA, m);
     console.log(`✅ Owner notified at ${ownerWA}`);
-  } catch (e) {
-    console.error('❌ notifyOwner:', e.message);
+  } catch (e) { 
+    console.error('❌ notifyOwner:', e.message); 
   }
 }
 
@@ -307,8 +606,9 @@ async function logOrderToGoogleSheets(session, orderId) {
       subtotal: session.subtotal,
       deliveryFee: session.deliveryFee,
       total: session.total,
-      paymentMethod: 'cod',
-      paymentStatus: 'COD',
+      paymentMethod: session.paymentMethod,
+      paymentGateway: session.paymentGateway || 'cod',
+      paymentStatus: session.paymentMethod === 'online' ? 'PAID' : 'COD',
       deliveryAddress: session.deliveryAddress,
       specialInstructions: session.specialInstructions || 'None'
     };
@@ -330,9 +630,17 @@ async function logOrderToGoogleSheets(session, orderId) {
 
 function buildOrderConfirmation(session, orderId) {
   const cart = session.cart.map((item, i) =>
-    `${i + 1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price} = ₹${item.price * item.quantity}`
+    `${i+1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price} = ₹${item.price * item.quantity}`
   ).join('\n\n');
-
+  
+  const gatewayName = session.paymentGateway === 'razorpay' ? 'Razorpay' :
+                     session.paymentGateway === 'phonepe' ? 'PhonePe' :
+                     session.paymentGateway === 'paytm' ? 'Paytm' : 'Cash';
+  
+  const pay = session.paymentMethod === 'online'
+    ? `💳 Payment: Online (${gatewayName} - PAID)`
+    : '💵 Payment: Cash on Delivery';
+    
   return (
     `🎉 *Order Confirmed!*\n\n` +
     `Order ID: #${orderId}\n` +
@@ -340,10 +648,10 @@ function buildOrderConfirmation(session, orderId) {
     `🛒 Your Cart:\n${cart}\n\n` +
     `Subtotal: ₹${session.subtotal}\n` +
     `Delivery Fee: ₹${session.deliveryFee}\n` +
-    `*Total: ₹${session.total}*\n\n` +
+    `Total: ₹${session.total}\n\n` +
     `📍 Delivery Address:\n${session.deliveryAddress}\n\n` +
-    `💵 *Payment: CASH ON DELIVERY*\n` +
-    `💰 Please keep ₹${session.total} ready in cash\n\n` +
+    `${pay}\n` +
+    `💰 Total: ₹${session.total}\n\n` +
     `⏱️ Estimated Delivery: 45 minutes\n\n` +
     `The restaurant has been notified and is preparing your food.\n\n` +
     `Thank you for your order! 🍽️\n\n` +
@@ -351,314 +659,16 @@ function buildOrderConfirmation(session, orderId) {
   );
 }
 
-// ═══════════════════════════════════════════════════════
-// OWNER MENU MANAGEMENT FUNCTIONS
-// ═══════════════════════════════════════════════════════
-
-async function isRestaurantOwner(phone) {
-  try {
-    const result = await pool.query(
-      'SELECT id, name, owner_api_key FROM restaurants WHERE whatsapp_number = $1',
-      [phone]
-    );
-
-    if (result.rows.length > 0) {
-      return {
-        isOwner: true,
-        restaurantId: result.rows[0].id,
-        restaurantName: result.rows[0].name,
-        apiKey: result.rows[0].owner_api_key
-      };
-    }
-
-    return { isOwner: false };
-  } catch (error) {
-    console.error('Owner check error:', error);
-    return { isOwner: false };
-  }
-}
-
-async function processOwnerCommand(phone, text, ownerInfo) {
-  try {
-    const upper = text.toUpperCase().trim();
-    const restaurantId = ownerInfo.restaurantId;
-
-    // Command: MENU or STATUS
-    if (upper === 'MENU' || upper === 'STATUS') {
-      const items = await pool.query(
-        `SELECT id, name, category, price, 
-                COALESCE(available, is_available, true) as available
-         FROM menu_items
-         WHERE restaurant_id = $1
-         ORDER BY category, name`,
-        [restaurantId]
-      );
-
-      if (items.rows.length === 0) {
-        return '❌ No menu items found';
-      }
-
-      let msg = `📋 *MENU STATUS - ${ownerInfo.restaurantName}*\n\n`;
-      
-      const available = items.rows.filter(i => i.available !== false);
-      const unavailable = items.rows.filter(i => i.available === false);
-      
-      msg += `✅ Available: ${available.length}\n`;
-      msg += `❌ Out of Stock: ${unavailable.length}\n\n`;
-      
-      const grouped = {};
-      items.rows.forEach(i => {
-        (grouped[i.category] = grouped[i.category] || []).push(i);
-      });
-
-      Object.keys(grouped).sort().forEach(cat => {
-        msg += `*${cat}*\n`;
-        grouped[cat].forEach(item => {
-          const status = item.available !== false ? '✅' : '❌';
-          msg += `${status} ${item.id}. ${item.name} - ₹${item.price}\n`;
-        });
-        msg += '\n';
-      });
-
-      msg += `💡 *Commands:*\n`;
-      msg += `OUT [id] - Mark unavailable\n`;
-      msg += `IN [id] - Mark available\n`;
-      msg += `STOCK [id] - Toggle availability\n`;
-      msg += `MENU - View this status`;
-
-      return msg;
-    }
-
-    // Command: OUT [item_id]
-    const outMatch = upper.match(/^(OUT|UNAVAILABLE)\s+(\d+)$/);
-    if (outMatch) {
-      const itemId = parseInt(outMatch[2]);
-
-      const result = await pool.query(
-        `UPDATE menu_items 
-         SET available = false, is_available = false
-         WHERE id = $1 AND restaurant_id = $2
-         RETURNING name`,
-        [itemId, restaurantId]
-      );
-
-      if (result.rows.length > 0) {
-        menuCache.delete(restaurantId);
-        return `❌ *${result.rows[0].name}* marked as OUT OF STOCK\n\nCustomers will no longer see this item.`;
-      }
-      return `❌ Item #${itemId} not found`;
-    }
-
-    // Command: IN [item_id]
-    const inMatch = upper.match(/^(IN|AVAILABLE)\s+(\d+)$/);
-    if (inMatch) {
-      const itemId = parseInt(inMatch[2]);
-
-      const result = await pool.query(
-        `UPDATE menu_items 
-         SET available = true, is_available = true
-         WHERE id = $1 AND restaurant_id = $2
-         RETURNING name`,
-        [itemId, restaurantId]
-      );
-
-      if (result.rows.length > 0) {
-        menuCache.delete(restaurantId);
-        return `✅ *${result.rows[0].name}* marked as AVAILABLE\n\nCustomers can now order this item.`;
-      }
-      return `❌ Item #${itemId} not found`;
-    }
-
-    // Command: STOCK [item_id]
-    const stockMatch = upper.match(/^STOCK\s+(\d+)$/);
-    if (stockMatch) {
-      const itemId = parseInt(stockMatch[1]);
-
-      const result = await pool.query(
-        `UPDATE menu_items 
-         SET available = NOT COALESCE(available, true),
-             is_available = NOT COALESCE(is_available, true)
-         WHERE id = $1 AND restaurant_id = $2
-         RETURNING name, COALESCE(available, is_available, true) as available`,
-        [itemId, restaurantId]
-      );
-
-      if (result.rows.length > 0) {
-        menuCache.delete(restaurantId);
-        const item = result.rows[0];
-        const status = item.available ? '✅ AVAILABLE' : '❌ OUT OF STOCK';
-        return `${item.available ? '✅' : '❌'} *${item.name}* toggled to ${status}`;
-      }
-      return `❌ Item #${itemId} not found`;
-    }
-
-    // Command: HELP
-    if (upper === 'HELP' || upper === 'COMMANDS') {
-      return (
-        `🔧 *OWNER COMMANDS*\n\n` +
-        `📋 *View Menu:*\n` +
-        `  MENU or STATUS\n\n` +
-        `❌ *Mark Unavailable:*\n` +
-        `  OUT [id]\n` +
-        `  Example: OUT 15\n\n` +
-        `✅ *Mark Available:*\n` +
-        `  IN [id]\n` +
-        `  Example: IN 15\n\n` +
-        `🔄 *Toggle Status:*\n` +
-        `  STOCK [id]\n` +
-        `  Example: STOCK 15\n\n` +
-        `💡 Changes are instant!`
-      );
-    }
-
-    return null;
-
-  } catch (error) {
-    console.error('Owner command error:', error);
-    return '❌ Error processing command';
-  }
-}
-
-// ═══════════════════════════════════════════════════════
-// MENU MANAGEMENT API ENDPOINTS
-// ═══════════════════════════════════════════════════════
-
-app.post('/api/menu/toggle/:itemId', async (req, res) => {
-  try {
-    const { itemId } = req.params;
-    const { restaurantId, ownerKey } = req.body;
-
-    console.log(`🔄 Toggle: Item ${itemId}, Restaurant ${restaurantId}`);
-
-    const restaurant = await pool.query(
-      'SELECT owner_api_key, name FROM restaurants WHERE id = $1',
-      [restaurantId]
-    );
-
-    if (!restaurant.rows[0] || restaurant.rows[0].owner_api_key !== ownerKey) {
-      console.log('❌ Auth failed');
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const result = await pool.query(
-      `UPDATE menu_items 
-       SET available = NOT COALESCE(available, true),
-           is_available = NOT COALESCE(is_available, true)
-       WHERE id = $1 AND restaurant_id = $2
-       RETURNING id, name, COALESCE(available, is_available, true) as available`,
-      [itemId, restaurantId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Item not found' });
-    }
-
-    const item = result.rows[0];
-    menuCache.delete(restaurantId);
-    
-    console.log(`✅ ${item.name}: ${item.available ? 'AVAILABLE' : 'OUT'}`);
-
-    res.json({
-      success: true,
-      itemId: item.id,
-      itemName: item.name,
-      available: item.available,
-      status: item.available ? 'Available' : 'Out of Stock'
-    });
-
-  } catch (error) {
-    console.error('❌ Toggle error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/menu/status/:restaurantId', async (req, res) => {
-  try {
-    const { restaurantId } = req.params;
-
-    const restaurant = await pool.query(
-      'SELECT name FROM restaurants WHERE id = $1',
-      [restaurantId]
-    );
-
-    if (restaurant.rows.length === 0) {
-      return res.status(404).json({ error: 'Restaurant not found' });
-    }
-
-    const items = await pool.query(
-      `SELECT id, name, category, price, is_vegetarian,
-              COALESCE(available, is_available, true) as available
-       FROM menu_items
-       WHERE restaurant_id = $1
-       ORDER BY category, name`,
-      [restaurantId]
-    );
-
-    const available = items.rows.filter(i => i.available !== false).length;
-    const unavailable = items.rows.filter(i => i.available === false).length;
-
-    res.json({
-      success: true,
-      restaurantName: restaurant.rows[0].name,
-      total: items.rows.length,
-      available,
-      unavailable,
-      items: items.rows
-    });
-
-  } catch (error) {
-    console.error('Status error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.post('/api/menu/bulk-update', async (req, res) => {
-  try {
-    const { restaurantId, ownerKey, itemIds, available } = req.body;
-
-    const restaurant = await pool.query(
-      'SELECT owner_api_key, name FROM restaurants WHERE id = $1',
-      [restaurantId]
-    );
-
-    if (!restaurant.rows[0] || restaurant.rows[0].owner_api_key !== ownerKey) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    const result = await pool.query(
-      `UPDATE menu_items 
-       SET available = $1, is_available = $1
-       WHERE id = ANY($2) AND restaurant_id = $3
-       RETURNING id, name`,
-      [available, itemIds, restaurantId]
-    );
-
-    menuCache.delete(restaurantId);
-
-    console.log(`✅ ${result.rows.length} items updated for ${restaurant.rows[0].name}`);
-
-    res.json({
-      success: true,
-      updated: result.rows.length,
-      items: result.rows
-    });
-
-  } catch (error) {
-    console.error('Bulk update error:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ═══════════════════════════════════════════════════════
+// ════════════════════════════════════════════
 // MAIN WEBHOOK
-// ═══════════════════════════════════════════════════════
+// ════════════════════════════════════════════
 app.post('/webhook', async (req, res) => {
   try {
     const { From, Body } = req.body;
     if (!From || !Body) return res.status(400).send('Missing params');
 
     const phone = From.replace('whatsapp:', '');
-    const text = Body.trim();
+    const text  = Body.trim();
     const upper = text.toUpperCase();
 
     console.log(`\n📱 [${phone}] → "${text}"`);
@@ -674,59 +684,53 @@ app.post('/webhook', async (req, res) => {
 
     await loadRestaurants();
 
-    // Check if user is restaurant owner
-    const ownerInfo = await isRestaurantOwner(phone);
-    
-    if (ownerInfo.isOwner) {
-      const ownerResponse = await processOwnerCommand(phone, text, ownerInfo);
-      
-      if (ownerResponse) {
-        await sendMessage(phone, ownerResponse);
-        console.log(`✅ Owner command processed for ${ownerInfo.restaurantName}`);
-        return res.status(200).send('OK');
-      }
-    }
-
-    // Check for restaurant keyword
+    // ═══════════════════════════════════════════════════════════
+    // PRIORITY: Check for restaurant keyword FIRST
+    // ═══════════════════════════════════════════════════════════
     const restaurant = restaurantCache.find(r =>
       r.qr_keyword && upper.includes(r.qr_keyword.toUpperCase())
     );
-
+    
     if (restaurant) {
       const old = sessions.get(phone);
       if (old?.confirmTimeout) clearTimeout(old.confirmTimeout);
+      const paymentTimeout = pendingPayments.get(phone);
+      if (paymentTimeout) {
+        clearTimeout(paymentTimeout);
+        pendingPayments.delete(phone);
+      }
 
       const canDeliver = restaurant.delivery_available !== false;
-      const canBook = restaurant.table_booking_available !== false;
+      const canBook    = restaurant.table_booking_available !== false;
 
       sessions.set(phone, {
         phone, state: S.SELECT_SERVICE,
-        restaurantId: restaurant.id,
+        restaurantId: restaurant.id, 
         restaurantName: restaurant.name,
-        deliveryFee: restaurant.delivery_fee || 30,
-        minOrder: restaurant.min_delivery_amount || 0,
+        deliveryFee:  restaurant.delivery_fee || 30,
+        minOrder:     restaurant.min_delivery_amount || 0,
         canDeliver, canBook,
         createdAt: Date.now()
       });
 
       let options = '', idx = 0;
       if (canDeliver) { idx++; options += `${idx}️⃣ Order Delivery\n`; }
-      if (canBook) { idx++; options += `${idx}️⃣ Book a Table\n`; }
+      if (canBook)    { idx++; options += `${idx}️⃣ Book a Table\n`; }
 
       await sendMessage(phone,
         `🎉 Welcome to *${restaurant.name}*!\n\n` +
         `What would you like to do?\n\n` +
         options + `\nReply with ${idx === 1 ? '1' : '1 or 2'}`
       );
-
+      
       console.log(`✅ Session reset for ${phone} - Restaurant: ${restaurant.name}`);
       return res.status(200).send('OK');
     }
 
     let session = sessions.get(phone);
-
+    
     if (!session) {
-      const isGreeting = ['hi', 'hello', 'hey', 'start', 'menu', 'help'].some(w => text.toLowerCase().includes(w));
+      const isGreeting = ['hi','hello','hey','start','menu','help'].some(w => text.toLowerCase().includes(w));
       await sendMessage(phone, isGreeting
         ? `👋 *Welcome!*\n\nScan the QR code to start ordering!`
         : `👋 Scan the QR code to start ordering!`
@@ -734,7 +738,10 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).send('OK');
     }
 
+    // ═══════════════════════════════════════════
     // STATE MACHINE
+    // ═══════════════════════════════════════════
+
     if (session.state === S.SELECT_SERVICE) {
       let action = null;
       if (session.canDeliver && session.canBook) {
@@ -747,30 +754,23 @@ app.post('/webhook', async (req, res) => {
       }
 
       if (action === 'delivery') {
-        session.state = S.BROWSE_MENU;
-        session.serviceType = 'delivery';
+        session.state = S.BROWSE_MENU; 
+        session.serviceType = 'delivery'; 
         session.cart = [];
         session.menuItems = await getMenuItems(session.restaurantId);
-        
-        if (session.menuItems.length === 0) {
-          await sendMessage(phone, '⚠️ Menu is currently unavailable. Please try again later.');
-          sessions.delete(phone);
-          return res.status(200).send('OK');
-        }
-        
         sessions.set(phone, session);
         await sendMessage(phone, formatMenu(session.menuItems, session.restaurantName));
         return res.status(200).send('OK');
       }
-
+      
       if (action === 'booking') {
-        session.state = S.BOOKING_DATE;
+        session.state = S.BOOKING_DATE; 
         session.serviceType = 'booking';
         sessions.set(phone, session);
         await sendMessage(phone, `📅 When would you like to book?\n\nType:\n• TODAY or TOMORROW\n• DD/MM/YYYY`);
         return res.status(200).send('OK');
       }
-
+      
       await sendMessage(phone, `❌ Invalid choice.\n\nPlease reply with:\n${session.canDeliver ? '1️⃣ for Order Delivery\n' : ''}${session.canBook ? '2️⃣ for Book a Table' : ''}`);
       return res.status(200).send('OK');
     }
@@ -780,36 +780,36 @@ app.post('/webhook', async (req, res) => {
         await sendMessage(phone, session.cart.length ? formatCart(session.cart, session.deliveryFee) : '🛒 Cart is empty.\n\nAdd items: item_id quantity');
         return res.status(200).send('OK');
       }
-
+      
       if (upper === 'DONE') {
-        if (!session.cart.length) {
-          await sendMessage(phone, '🛒 Cart is empty. Add items first!');
-          return res.status(200).send('OK');
+        if (!session.cart.length) { 
+          await sendMessage(phone, '🛒 Cart is empty. Add items first!'); 
+          return res.status(200).send('OK'); 
         }
-        const sub = session.cart.reduce((s, i) => s + i.price * i.quantity, 0);
-        if (sub < session.minOrder) {
-          await sendMessage(phone, `⚠️ Minimum order: ₹${session.minOrder}\nCurrent: ₹${sub}`);
-          return res.status(200).send('OK');
+        const sub = session.cart.reduce((s,i) => s + i.price * i.quantity, 0);
+        if (sub < session.minOrder) { 
+          await sendMessage(phone, `⚠️ Minimum order: ₹${session.minOrder}\nCurrent: ₹${sub}`); 
+          return res.status(200).send('OK'); 
         }
-        session.subtotal = sub;
-        session.total = Number(sub) + Number(session.deliveryFee);
+        session.subtotal = sub; 
+        session.total = Number(sub) + Number(session.deliveryFee); 
         session.state = S.ADD_ADDRESS;
         sessions.set(phone, session);
         await sendMessage(phone, `${formatCart(session.cart, session.deliveryFee)}\n\n📍 Please enter your delivery address:`);
         return res.status(200).send('OK');
       }
-
+      
       const match = text.match(/^(\d+)\s+(\d+)$/);
       if (match) {
         const id = parseInt(match[1]), qty = parseInt(match[2]);
         const item = session.menuItems.find(m => m.id === id);
-        if (!item) {
-          await sendMessage(phone, `❌ Item #${id} not found or unavailable.`);
-          return res.status(200).send('OK');
+        if (!item) { 
+          await sendMessage(phone, `❌ Item #${id} not found.`); 
+          return res.status(200).send('OK'); 
         }
-        if (qty < 1 || qty > 99) {
-          await sendMessage(phone, '❌ Qty must be 1–99');
-          return res.status(200).send('OK');
+        if (qty < 1 || qty > 99) { 
+          await sendMessage(phone, '❌ Qty must be 1–99'); 
+          return res.status(200).send('OK'); 
         }
         const ex = session.cart.find(c => c.id === id);
         if (ex) ex.quantity += qty;
@@ -818,50 +818,191 @@ app.post('/webhook', async (req, res) => {
         await sendMessage(phone, `✅ Added to cart!\n\n${formatCart(session.cart, session.deliveryFee)}\n\nAdd more items or type "done" to proceed.`);
         return res.status(200).send('OK');
       }
-
+      
       await sendMessage(phone, '❌ Use: item_id quantity (e.g., "15 2")');
       return res.status(200).send('OK');
     }
 
     if (session.state === S.ADD_ADDRESS) {
-      session.deliveryAddress = text;
+      session.deliveryAddress = text; 
       session.state = S.ADD_INSTRUCTIONS;
       sessions.set(phone, session);
       await sendMessage(phone, `✅ Address saved!\n\nAny special instructions? (Type "no" if none)`);
       return res.status(200).send('OK');
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // ADD_INSTRUCTIONS → CHOOSE_PAYMENT (Show 4 payment options)
+    // ═══════════════════════════════════════════════════════════
     if (session.state === S.ADD_INSTRUCTIONS) {
       session.specialInstructions = text;
-      session.state = S.CONFIRM_ORDER;
-      session.confirmTimeout = setTimeout(async () => {
-        if (sessions.get(phone)?.state === S.CONFIRM_ORDER) {
-          sessions.delete(phone);
-          await sendMessage(phone, '⏱️ Confirmation timeout. Start over.');
-        }
-      }, 600000);
+      session.state = S.CHOOSE_PAYMENT;
       sessions.set(phone, session);
 
-      const lines = session.cart.map(i => `${i.quantity}× ${i.name} — ₹${i.price * i.quantity}`).join('\n');
+      const lines = session.cart.map(i => `  ${i.quantity}× ${i.name} — ₹${i.price * i.quantity}`).join('\n');
 
       await sendMessage(phone,
-        `📋 *CONFIRM YOUR ORDER*\n\n` +
-        `🏪 ${session.restaurantName}\n\n` +
-        `*Your Order:*\n${lines}\n\n` +
-        `💰 Total: ₹${session.total}\n` +
+        `💳 *Choose Payment Method*\n\n` +
+        `🛒 *Your Order:*\n${lines}\n\n` +
+        `Subtotal: ₹${session.subtotal}\n` +
+        `Delivery Fee: ₹${session.deliveryFee}\n` +
+        `💰 *Total: ₹${session.total}*\n\n` +
         `📍 Delivery: ${session.deliveryAddress}\n\n` +
-        `💵 *PAYMENT: CASH ON DELIVERY*\n\n` +
-        `⚠️ *IMPORTANT:*\n` +
-        `✅ Pay ₹${session.total} in CASH\n` +
-        `✅ Have exact change ready\n` +
-        `✅ Be available at address\n\n` +
-        `Type *CONFIRM* to place order\n` +
-        `Type *CANCEL* to cancel\n\n` +
-        `⏱️ You have 10 minutes`
+        `Select payment method:\n\n` +
+        `1️⃣ Razorpay\n` +
+        `    💳 Cards, UPI, Wallets, NetBanking\n\n` +
+        `2️⃣ PhonePe\n` +
+        `    📱 PhonePe UPI & Wallet\n\n` +
+        `3️⃣ Paytm\n` +
+        `    💳 Paytm Wallet & UPI\n\n` +
+        `4️⃣ Cash on Delivery (COD)\n` +
+        `    💵 Pay when food arrives\n\n` +
+        `Reply with *1*, *2*, *3*, or *4*`
       );
       return res.status(200).send('OK');
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // CHOOSE_PAYMENT State Handler - MULTI-GATEWAY
+    // ═══════════════════════════════════════════════════════════
+    if (session.state === S.CHOOSE_PAYMENT) {
+      // ─── Options 1, 2, 3: Online Payment Gateways ──────────────────────
+      if (text === '1' || text === '2' || text === '3') {
+        let gateway = null;
+        if (text === '1') gateway = 'razorpay';
+        if (text === '2') gateway = 'phonepe';
+        if (text === '3') gateway = 'paytm';
+
+        session.paymentMethod = 'online';
+        session.paymentGateway = gateway;
+        session.state = S.AWAITING_PAYMENT;
+        sessions.set(phone, session);
+
+        const orderData = {
+          amount: session.total,
+          restaurantName: session.restaurantName,
+          phone: session.phone,
+          customerName: session.customerName || 'Customer'
+        };
+
+        const paymentResult = await createPayment(gateway, orderData);
+
+        if (!paymentResult.success) {
+          session.state = S.CHOOSE_PAYMENT;
+          sessions.set(phone, session);
+          await sendMessage(phone, 
+            `❌ ${gateway} payment unavailable.\n\n` +
+            `Try:\n1️⃣ Razorpay\n2️⃣ PhonePe\n3️⃣ Paytm\n4️⃣ Cash on Delivery`
+          );
+          return res.status(200).send('OK');
+        }
+
+        session.paymentId = paymentResult.paymentId;
+        session.paymentLink = paymentResult.paymentUrl;
+        session.gatewayOrderId = paymentResult.orderId;
+        sessions.set(phone, session);
+
+        pendingPayments.set(phone, setTimeout(async () => {
+          if (sessions.get(phone)?.state === S.AWAITING_PAYMENT) {
+            sessions.delete(phone);
+            await sendMessage(phone, '⏱️ Payment timeout. Type restaurant name to start over.');
+          }
+        }, 900000));
+
+        const gatewayName = gateway === 'razorpay' ? 'Razorpay' :
+                           gateway === 'phonepe' ? 'PhonePe' : 'Paytm';
+
+        await sendMessage(phone,
+          `💳 *${gatewayName} Payment*\n\n` +
+          `Amount: ₹${session.total}\n\n` +
+          `Click to pay securely:\n${paymentResult.paymentUrl}\n\n` +
+          `After payment:\n` +
+          `• Type *CHECK* to verify\n` +
+          `• Type *CANCEL* to cancel\n\n` +
+          `⏱️ Link expires in 15 minutes`
+        );
+        return res.status(200).send('OK');
+      }
+
+      // ─── Option 4: Cash on Delivery ────────────────────
+      if (text === '4') {
+        session.paymentMethod = 'cod';
+        session.paymentGateway = 'cod';
+        session.state = S.CONFIRM_ORDER;
+        session.confirmTimeout = setTimeout(async () => {
+          if (sessions.get(phone)?.state === S.CONFIRM_ORDER) {
+            sessions.delete(phone);
+            await sendMessage(phone, '⏱️ Confirmation timeout. Start over.');
+          }
+        }, 600000);
+        sessions.set(phone, session);
+
+        const lines = session.cart.map(i => `${i.quantity}× ${i.name} — ₹${i.price * i.quantity}`).join('\n');
+
+        await sendMessage(phone,
+          `📋 *CONFIRM YOUR ORDER*\n\n` +
+          `🏪 ${session.restaurantName}\n\n` +
+          `*Your Order:*\n${lines}\n\n` +
+          `💰 Total: ₹${session.total}\n` +
+          `📍 Delivery: ${session.deliveryAddress}\n\n` +
+          `💵 *PAYMENT: CASH ON DELIVERY*\n\n` +
+          `⚠️ *IMPORTANT:*\n` +
+          `✅ Pay ₹${session.total} in CASH\n` +
+          `✅ Have exact change ready\n` +
+          `✅ Be available at address\n\n` +
+          `Type *CONFIRM* to place order\n` +
+          `Type *CANCEL* to cancel\n\n` +
+          `⏱️ You have 10 minutes`
+        );
+        return res.status(200).send('OK');
+      }
+
+      await sendMessage(phone, `❌ Invalid choice.\n\nReply *1*, *2*, *3*, or *4*`);
+      return res.status(200).send('OK');
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // AWAITING_PAYMENT - Multi-Gateway Verification
+    // ═══════════════════════════════════════════════════════════
+    if (session.state === S.AWAITING_PAYMENT) {
+      if (upper === 'CHECK') {
+        const result = await verifyPayment(session.paymentGateway, session.paymentId);
+
+        if (result.success && result.verified) {
+          const t = pendingPayments.get(phone);
+          if (t) clearTimeout(t);
+          pendingPayments.delete(phone);
+
+          const orderId = await saveOrder(session);
+          await notifyOwner(session, orderId);
+          await logOrderToGoogleSheets(session, orderId);
+          sessions.delete(phone);
+          await sendMessage(phone, buildOrderConfirmation(session, orderId));
+          return res.status(200).send('OK');
+        }
+
+        await sendMessage(phone, 
+          `⏳ Payment not received yet.\n\n` +
+          `Complete payment via the link, then type *CHECK* again.\n` +
+          `Or type *CANCEL* to cancel.`
+        );
+        return res.status(200).send('OK');
+      }
+
+      if (upper === 'CANCEL') {
+        const t = pendingPayments.get(phone);
+        if (t) clearTimeout(t);
+        pendingPayments.delete(phone);
+        sessions.delete(phone);
+        await sendMessage(phone, '❌ Order cancelled. Type restaurant name to start over.');
+        return res.status(200).send('OK');
+      }
+
+      await sendMessage(phone, 'Type *CHECK* to verify payment or *CANCEL* to cancel.');
+      return res.status(200).send('OK');
+    }
+
+    // ─── CONFIRM_ORDER (COD) ─────────────────
     if (session.state === S.CONFIRM_ORDER) {
       if (upper === 'CONFIRM') {
         if (session.confirmTimeout) clearTimeout(session.confirmTimeout);
@@ -887,35 +1028,182 @@ app.post('/webhook', async (req, res) => {
     await sendMessage(phone, '❌ Something went wrong. Type restaurant name to restart.');
     return res.status(200).send('OK');
 
+  } catch (e) { 
+    console.error('❌ Webhook:', e); 
+    res.status(500).send('Error'); 
+  }
+});
+
+// ════════════════════════════════════════════
+// PAYMENT WEBHOOKS & CALLBACKS
+// ════════════════════════════════════════════
+
+// ─── Razorpay Webhook ────────────────────────
+app.post('/payment/razorpay/webhook', async (req, res) => {
+  try {
+    const event  = req.body.event;
+    const entity = req.body.payload?.payment_link?.entity || req.body.payload?.payment?.entity;
+    if (!entity) return res.status(400).send('No entity');
+
+    let phone = null;
+    for (const [p, s] of sessions) {
+      if (s.paymentId === entity.id) {
+        phone = p;
+        break;
+      }
+    }
+    if (!phone) return res.status(200).send('OK');
+
+    if (event === 'payment.captured' || event === 'payment_link.paid') {
+      const session = sessions.get(phone);
+      const t = pendingPayments.get(phone);
+      if (t) clearTimeout(t);
+      pendingPayments.delete(phone);
+      
+      const orderId = await saveOrder(session);
+      await notifyOwner(session, orderId);
+      await logOrderToGoogleSheets(session, orderId);
+      await sendMessage(phone, buildOrderConfirmation(session, orderId));
+      sessions.delete(phone);
+    }
+    res.status(200).send('OK');
   } catch (e) {
-    console.error('❌ Webhook:', e);
+    console.error('❌ Razorpay webhook:', e.message);
     res.status(500).send('Error');
   }
 });
 
-// ═══════════════════════════════════════════════════════
-// STANDARD API ENDPOINTS
-// ═══════════════════════════════════════════════════════
+app.get('/payment/razorpay/callback', (req, res) => {
+  res.send(`<!DOCTYPE html><html><head><title>Payment Success</title>
+<style>body{font-family:Arial;text-align:center;padding:60px;background:#f0faf0}.ck{font-size:80px}h1{color:#2e7d32}p{color:#555;font-size:18px}</style></head>
+<body><div class="ck">✅</div><h1>Payment Successful!</h1>
+<p>Return to WhatsApp and type <b>CHECK</b> to confirm your order.</p></body></html>`);
+});
+
+// ─── PhonePe Webhook ─────────────────────────
+app.post('/payment/phonepe/webhook', async (req, res) => {
+  try {
+    const response = req.body.response;
+    if (!response) return res.status(400).send('No response');
+
+    const decodedResponse = Buffer.from(response, 'base64').toString('utf-8');
+    const data = JSON.parse(decodedResponse);
+
+    if (data.success && data.code === 'PAYMENT_SUCCESS') {
+      const merchantTransactionId = data.data.merchantTransactionId;
+      
+      let phone = null;
+      for (const [p, s] of sessions) {
+        if (s.paymentId === merchantTransactionId) {
+          phone = p;
+          break;
+        }
+      }
+      
+      if (phone) {
+        const session = sessions.get(phone);
+        const t = pendingPayments.get(phone);
+        if (t) clearTimeout(t);
+        pendingPayments.delete(phone);
+        
+        const orderId = await saveOrder(session);
+        await notifyOwner(session, orderId);
+        await logOrderToGoogleSheets(session, orderId);
+        await sendMessage(phone, buildOrderConfirmation(session, orderId));
+        sessions.delete(phone);
+      }
+    }
+    res.status(200).send('OK');
+  } catch (e) {
+    console.error('❌ PhonePe webhook:', e.message);
+    res.status(500).send('Error');
+  }
+});
+
+app.get('/payment/phonepe/callback', (req, res) => {
+  res.send(`<!DOCTYPE html><html><head><title>Payment Success</title>
+<style>body{font-family:Arial;text-align:center;padding:60px;background:#f0faf0}.ck{font-size:80px}h1{color:#2e7d32}p{color:#555;font-size:18px}</style></head>
+<body><div class="ck">✅</div><h1>Payment Successful!</h1>
+<p>Return to WhatsApp and type <b>CHECK</b> to confirm your order.</p></body></html>`);
+});
+
+// ─── Paytm Webhook ───────────────────────────
+app.post('/payment/paytm/callback', async (req, res) => {
+  try {
+    const PaytmChecksum = require('paytmchecksum');
+    const paytmParams = {};
+    
+    for (let key in req.body) {
+      if (key !== 'CHECKSUMHASH') {
+        paytmParams[key] = req.body[key];
+      }
+    }
+
+    const checksumHash = req.body.CHECKSUMHASH;
+    const isValidChecksum = PaytmChecksum.verifySignature(
+      paytmParams,
+      process.env.PAYTM_MERCHANT_KEY,
+      checksumHash
+    );
+
+    if (isValidChecksum && req.body.STATUS === 'TXN_SUCCESS') {
+      const orderId = req.body.ORDERID;
+      
+      let phone = null;
+      for (const [p, s] of sessions) {
+        if (s.paymentId === orderId) {
+          phone = p;
+          break;
+        }
+      }
+      
+      if (phone) {
+        const session = sessions.get(phone);
+        const t = pendingPayments.get(phone);
+        if (t) clearTimeout(t);
+        pendingPayments.delete(phone);
+        
+        const dbOrderId = await saveOrder(session);
+        await notifyOwner(session, dbOrderId);
+        await logOrderToGoogleSheets(session, dbOrderId);
+        await sendMessage(phone, buildOrderConfirmation(session, dbOrderId));
+        sessions.delete(phone);
+      }
+    }
+    
+    res.send(`<!DOCTYPE html><html><head><title>Payment Success</title>
+<style>body{font-family:Arial;text-align:center;padding:60px;background:#f0faf0}.ck{font-size:80px}h1{color:#2e7d32}p{color:#555;font-size:18px}</style></head>
+<body><div class="ck">✅</div><h1>Payment Successful!</h1>
+<p>Return to WhatsApp and type <b>CHECK</b> to confirm your order.</p></body></html>`);
+  } catch (e) {
+    console.error('❌ Paytm callback:', e.message);
+    res.status(500).send('Error');
+  }
+});
+
+// ════════════════════════════════════════════
+// API ENDPOINTS
+// ════════════════════════════════════════════
 
 app.get('/health', async (req, res) => {
   try {
     await pool.query('SELECT 1');
     res.json({
-      status: 'OK',
-      database: 'Connected',
+      status:'OK',
+      database:'Connected',
       sessions: sessions.size,
       restaurants: restaurantCache.length,
-      menuCacheSize: menuCache.size,
       testMode: TEST_MODE,
-      version: '8.0-MENU-MANAGEMENT',
-      features: {
-        payment: 'Cash on Delivery Only',
-        menuUpdates: 'Real-time via WhatsApp/API/Web',
-        googleSheets: process.env.GOOGLE_APPS_SCRIPT_URL ? 'Enabled' : 'Not configured'
-      }
+      version: '6.0-MULTI-PAYMENT',
+      paymentGateways: {
+        razorpay: process.env.RAZORPAY_KEY_ID ? 'Configured' : 'Not set',
+        phonepe: process.env.PHONEPE_MERCHANT_ID ? 'Configured' : 'Not set',
+        paytm: process.env.PAYTM_MERCHANT_ID ? 'Configured' : 'Not set'
+      },
+      googleSheets: process.env.GOOGLE_APPS_SCRIPT_URL ? 'Enabled' : 'Not configured'
     });
   } catch {
-    res.status(503).json({ status: 'ERROR', database: 'Disconnected' });
+    res.status(503).json({ status:'ERROR', database:'Disconnected' });
   }
 });
 
@@ -925,108 +1213,92 @@ app.get('/restaurants', async (req, res) => {
 });
 
 app.get('/menu/:restaurantId', async (req, res) => {
-  const items = await getMenuItems(parseInt(req.params.restaurantId), true);
+  const items = await getMenuItems(parseInt(req.params.restaurantId));
   res.json({ restaurantId: req.params.restaurantId, items });
 });
 
 app.get('/test-session/:phone', (req, res) => {
   const s = sessions.get(req.params.phone);
   res.json(s ? {
-    found: true,
-    state: s.state,
-    restaurantName: s.restaurantName,
-    cartSize: s.cart?.length || 0
-  } : { found: false });
+    found:true,
+    state:s.state,
+    restaurantName:s.restaurantName,
+    cartSize: s.cart?.length||0,
+    paymentGateway: s.paymentGateway
+  } : { found:false });
 });
 
 app.post('/admin/clear-sessions', (req, res) => {
   if (req.headers['x-api-key'] !== process.env.ADMIN_API_KEY)
-    return res.status(401).json({ error: 'Unauthorized' });
+    return res.status(401).json({ error:'Unauthorized' });
   sessions.forEach(s => { if (s.confirmTimeout) clearTimeout(s.confirmTimeout); });
   sessions.clear();
   res.json({ cleared: true });
 });
 
-app.post('/reload-cache', async (req, res) => {
-  await loadRestaurants(true);
-  menuCache.clear();
-  res.json({
-    reloaded: true,
-    restaurantCount: restaurantCache.length,
-    menuCacheCleared: true
-  });
+app.post('/reload-cache', (req, res) => {
+  loadRestaurants(true).then(() => res.json({
+    reloaded:true,
+    count: restaurantCache.length
+  }));
 });
 
+// ─── Test Endpoints ──────────────────────────
 app.get('/test/messages/:phone', (req, res) => {
   const msgs = testMessages.get(req.params.phone) || [];
   testMessages.delete(req.params.phone);
   res.json({ messages: msgs });
 });
 
-app.get('/menu-updater', (req, res) => {
-  res.sendFile(path.join(__dirname, 'menu-updater.html'));
+app.post('/test/simulate-payment/:phone', (req, res) => {
+  const s = sessions.get(req.params.phone);
+  if (s && s.state === S.AWAITING_PAYMENT) {
+    s.testPaymentPaid = true;
+    sessions.set(req.params.phone, s);
+    res.json({ success: true, paymentId: s.paymentId, gateway: s.paymentGateway });
+  } else {
+    res.json({ success: false, reason: 'No pending payment session' });
+  }
 });
 
-// ═══════════════════════════════════════════════════════
-// ERROR HANDLERS
-// ═══════════════════════════════════════════════════════
-process.on('uncaughtException', e => console.error('❌ Uncaught:', e));
+// ─── Handlers ────────────────────────────────
+process.on('uncaughtException', e  => console.error('❌ Uncaught:', e));
 process.on('unhandledRejection', e => console.error('❌ Unhandled:', e));
 process.on('SIGTERM', async () => { await pool.end(); process.exit(0); });
-process.on('SIGINT', async () => { await pool.end(); process.exit(0); });
+process.on('SIGINT',  async () => { await pool.end(); process.exit(0); });
 
-// ═══════════════════════════════════════════════════════
-// SERVER STARTUP
-// ═══════════════════════════════════════════════════════
+// ─── Startup ─────────────────────────────────
 async function startServer() {
   try {
     await connectDatabase();
     await loadRestaurants();
-    
     app.listen(PORT, () => {
       console.log(`
-╔═══════════════════════════════════════════════════════╗
-║   🍽️  RESTAURANT WHATSAPP BOT v8.0                   ║
-║   💵 COD + Real-time Menu Management                 ║
-╠═══════════════════════════════════════════════════════╣
-║  Port:              ${String(PORT).padEnd(33)}║
-║  Test Mode:         ${String(TEST_MODE ? '🧪 ON' : '🚀 OFF').padEnd(33)}║
-║  Database:          ${String(dbConnected ? '✅ Connected' : '❌ Disconnected').padEnd(33)}║
-║  Restaurants:       ${String(restaurantCache.length).padEnd(33)}║
-╠═══════════════════════════════════════════════════════╣
-║  🆕 MENU MANAGEMENT FEATURES                          ║
-║     ✅ Instant availability updates                   ║
-║     ✅ Owner commands via WhatsApp                    ║
-║     ✅ Web-based menu manager                         ║
-║     ✅ REST API for integrations                      ║
-╠═══════════════════════════════════════════════════════╣
-║  📱 OWNER WHATSAPP COMMANDS                           ║
-║     MENU or STATUS  - View all items                  ║
-║     OUT [id]        - Mark unavailable                ║
-║     IN [id]         - Mark available                  ║
-║     STOCK [id]      - Toggle status                   ║
-║     HELP            - Show commands                   ║
-╠═══════════════════════════════════════════════════════╣
-║  🌐 WEB INTERFACE                                     ║
-║     http://localhost:${PORT}/menu-updater             ║
-╠═══════════════════════════════════════════════════════╣
-║  🔌 API ENDPOINTS                                     ║
-║     POST /api/menu/toggle/:id                         ║
-║     GET  /api/menu/status/:restaurantId               ║
-║     POST /api/menu/bulk-update                        ║
-╠═══════════════════════════════════════════════════════╣
-║  💵 PAYMENT: Cash on Delivery Only                    ║
-║  📊 Google Sheets: ${String(process.env.GOOGLE_APPS_SCRIPT_URL ? '✅ Enabled' : '⚠️  Not configured').padEnd(30)}║
-╠═══════════════════════════════════════════════════════╣
-║  ⚡ Ready for production!                             ║
-╚═══════════════════════════════════════════════════════╝
+╔═══════════════════════════════════════════════╗
+║   🍽️  RESTAURANT WHATSAPP BOT v6.0           ║
+║   ✅ Multi-Payment Gateway Integration       ║
+╠═══════════════════════════════════════════════╣
+║  Port:           ${String(PORT).padEnd(28)}║
+║  Test Mode:      ${String(TEST_MODE ? '🧪 ON' : '🚀 OFF').padEnd(28)}║
+║  Database:       ${String(dbConnected ? '✅ Connected' : '❌ Disconnected').padEnd(28)}║
+║  Restaurants:    ${String(restaurantCache.length).padEnd(28)}║
+╠═══════════════════════════════════════════════╣
+║  💳 PAYMENT GATEWAYS                          ║
+║  1️⃣ Razorpay:    ${String(process.env.RAZORPAY_KEY_ID ? '✅ Configured' : '⚠️  Not set').padEnd(28)}║
+║  2️⃣ PhonePe:     ${String(process.env.PHONEPE_MERCHANT_ID ? '✅ Configured' : '⚠️  Not set').padEnd(28)}║
+║  3️⃣ Paytm:       ${String(process.env.PAYTM_MERCHANT_ID ? '✅ Configured' : '⚠️  Not set').padEnd(28)}║
+║  4️⃣ COD:         ✅ Always available          ║
+╠═══════════════════════════════════════════════╣
+║  📊 Google Sheets:                            ║
+║     ${String(process.env.GOOGLE_APPS_SCRIPT_URL ? '✅ Enabled' : '⚠️  Not configured').padEnd(42)}║
+╠═══════════════════════════════════════════════╣
+║  🔄 Flow: Trigger → Menu → Address →         ║
+║          Instructions → PAYMENT CHOICE →      ║
+║          [1: Razorpay] [2: PhonePe]          ║
+║          [3: Paytm] [4: COD] →               ║
+║          Payment/Confirmation → Order Saved   ║
+╚═══════════════════════════════════════════════╝
       `);
-      
-      console.log('📋 Quick Start:');
-      console.log('   1. Customers: Scan QR → Start ordering');
-      console.log('   2. Owners: Text commands → Update menu');
-      console.log('   3. Web: http://localhost:' + PORT + '/menu-updater');
-      console.log('   4. Health: http://localhost:' + PORT + '/health\n');
     });
   } catch (e) {
     console.error('❌ Startup failed:', e);

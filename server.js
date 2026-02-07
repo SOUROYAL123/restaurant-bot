@@ -1131,23 +1131,23 @@ app.post('/webhook', async (req, res) => {
       // ─── Options 1-4: UPI Direct Payment Links ──────────────────────
       if (text === '1' || text === '2' || text === '3' || text === '4') {
         let method = null;
-        let upiSuffix = '';
+        let upiId = '';
         
         if (text === '1') { 
           method = 'phonepe'; 
-          upiSuffix = '@ybl';
+          upiId = '7980407413@ibl';  // CORRECT PhonePe UPI ID
         }
         if (text === '2') { 
           method = 'gpay'; 
-          upiSuffix = '@okaxis';
+          upiId = 'soumation24-1@oksbi';  // CORRECT Google Pay UPI ID
         }
         if (text === '3') { 
           method = 'paytm'; 
-          upiSuffix = '@paytm';
+          upiId = '7980407413@paytm';  // Paytm UPI ID
         }
         if (text === '4') { 
           method = 'upi'; 
-          upiSuffix = '@ybl';
+          upiId = '7980407413@ibl';  // Generic UPI (use PhonePe ID)
         }
 
         session.paymentMethod = 'upi_direct';
@@ -1159,8 +1159,6 @@ app.post('/webhook', async (req, res) => {
         session.tempOrderId = tempOrderId;
         sessions.set(phone, session);
 
-        const upiNumber = '7980407413'; // Your UPI number
-        const upiId = `${upiNumber}${upiSuffix}`;
         const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempOrderId}?amount=${session.total}&upiId=${upiId}&name=${encodeURIComponent(session.restaurantName)}&method=${method}`;
         
         const methodName = method === 'phonepe' ? 'PhonePe' 
@@ -1650,12 +1648,13 @@ app.post('/webhook', async (req, res) => {
       // Generate payment instructions based on selected method
       if (selectedMethod === 'phonepe') {
         const pp = session.paymentDetails.phonepe;
-        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${pp.number}@ybl&name=${encodeURIComponent(pp.name)}&method=phonepe`;
+        const upiId = '7980407413@ibl';  // CORRECT PhonePe UPI ID
+        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${upiId}&name=${encodeURIComponent(pp.name)}&method=phonepe`;
         
         await sendMessage(phone,
           `📱 *PhonePe Payment*\n\n` +
           `Amount: ₹${amount}\n` +
-          `UPI ID: ${pp.number}@ybl\n` +
+          `UPI ID: ${upiId}\n` +
           `Name: ${pp.name}\n\n` +
           `🔗 *Click to Pay:*\n` +
           `${paymentUrl}\n\n` +
@@ -1665,12 +1664,13 @@ app.post('/webhook', async (req, res) => {
         
       } else if (selectedMethod === 'gpay') {
         const gp = session.paymentDetails.gpay;
-        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${gp.number}@okaxis&name=${encodeURIComponent(gp.name)}&method=gpay`;
+        const upiId = 'soumation24-1@oksbi';  // CORRECT Google Pay UPI ID
+        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${upiId}&name=${encodeURIComponent(gp.name)}&method=gpay`;
         
         await sendMessage(phone,
           `📱 *Google Pay Payment*\n\n` +
           `Amount: ₹${amount}\n` +
-          `UPI ID: ${gp.number}@okaxis\n` +
+          `UPI ID: ${upiId}\n` +
           `Name: ${gp.name}\n\n` +
           `🔗 *Click to Pay:*\n` +
           `${paymentUrl}\n\n` +
@@ -1680,12 +1680,13 @@ app.post('/webhook', async (req, res) => {
         
       } else if (selectedMethod === 'paytm') {
         const pt = session.paymentDetails.paytm;
-        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${pt.number}@paytm&name=${encodeURIComponent(pt.name)}&method=paytm`;
+        const upiId = '7980407413@paytm';  // Paytm UPI ID
+        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${upiId}&name=${encodeURIComponent(pt.name)}&method=paytm`;
         
         await sendMessage(phone,
           `📱 *Paytm Payment*\n\n` +
           `Amount: ₹${amount}\n` +
-          `UPI ID: ${pt.number}@paytm\n` +
+          `UPI ID: ${upiId}\n` +
           `Name: ${pt.name}\n\n` +
           `🔗 *Click to Pay:*\n` +
           `${paymentUrl}\n\n` +
@@ -1695,16 +1696,17 @@ app.post('/webhook', async (req, res) => {
         
       } else if (selectedMethod === 'upi') {
         const upi = session.paymentDetails.upi;
-        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${upi.id}&name=${encodeURIComponent(upi.name)}&method=upi`;
+        const upiId = '7980407413@ibl';  // Generic UPI (use PhonePe ID)
+        const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${upiId}&name=${encodeURIComponent(upi.name)}&method=upi`;
         
         await sendMessage(phone,
           `📱 *UPI Payment*\n\n` +
           `Amount: ₹${amount}\n` +
-          `UPI ID: ${upi.id}\n` +
+          `UPI ID: ${upiId}\n` +
           `Name: ${upi.name}\n\n` +
           `🔗 *Click to Pay:*\n` +
           `${paymentUrl}\n\n` +
-          `Or copy UPI ID: ${upi.id}\n\n` +
+          `Or copy UPI ID: ${upiId}\n\n` +
           `After payment, type:\n` +
           `*PAID* - to enter transaction ID`
         );

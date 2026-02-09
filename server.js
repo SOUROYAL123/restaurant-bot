@@ -1,6 +1,8 @@
 // ============================================
-// RESTAURANT WHATSAPP BOT v6.2 - DATABASE-DEPENDENT UPI PAYMENTS
+// RESTAURANT WHATSAPP BOT v6.3 - 12-HOUR TIME FORMAT
 // Multi-Restaurant | Database-Driven UPI IDs | Clickable Deep Links
+// ✅ NEW: 12-hour time format for table bookings (6:00 PM instead of 1800)
+// ✅ NEW: Google Sheets logging for both orders and bookings
 // Each restaurant can have unique UPI IDs stored in database
 // Hardcoded fallbacks ensure system never fails
 // ============================================
@@ -929,6 +931,7 @@ async function logOrderToGoogleSheets(session, orderId) {
     }
 
     const orderData = {
+      type: 'order',
       secret: process.env.GOOGLE_APPS_SCRIPT_SECRET,
       orderId: orderId,
       timestamp: new Date().toISOString(),
@@ -962,6 +965,44 @@ async function logOrderToGoogleSheets(session, orderId) {
     }
   } catch (e) {
     console.error('❌ logOrderToGoogleSheets:', e.message);
+  }
+}
+
+async function logBookingToGoogleSheets(session, bookingId) {
+  try {
+    if (!process.env.GOOGLE_APPS_SCRIPT_URL || !process.env.GOOGLE_APPS_SCRIPT_SECRET) {
+      console.log('⏭️  Google Sheets booking logging skipped');
+      return;
+    }
+
+    const bookingData = {
+      type: 'booking',
+      secret: process.env.GOOGLE_APPS_SCRIPT_SECRET,
+      bookingId: bookingId,
+      timestamp: new Date().toISOString(),
+      restaurantName: session.restaurantName,
+      customerName: session.customerName,
+      customerPhone: session.phone,
+      bookingDate: session.bookingDate,
+      bookingTime: session.bookingTime,
+      numberOfGuests: session.numberOfGuests,
+      paymentStatus: session.bookingFeePaid ? 'PAID' : 'PENDING',
+      transactionId: session.paymentTransactionId || null,
+      specialRequests: session.specialRequests || 'None'
+    };
+
+    const response = await fetch(process.env.GOOGLE_APPS_SCRIPT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bookingData)
+    });
+
+    const result = await response.json();
+    if (result.success) {
+      console.log(`✅ Booking #${bookingId} logged to Google Sheets`);
+    }
+  } catch (e) {
+    console.error('❌ logBookingToGoogleSheets:', e.message);
   }
 }
 
@@ -1491,16 +1532,18 @@ app.post('/webhook', async (req, res) => {
       await sendMessage(phone,
         `✅ Booking for: ${dateStr}\n\n` +
         `⏰ What time?\n\n` +
-        `Type time in 24-hour format:\n` +
-        `• 1800 (for 6:00 PM)\n` +
-        `• 1930 (for 7:30 PM)\n` +
-        `• 2015 (for 8:15 PM)\n\n` +
+        `Type time in 12-hour format:\n` +
+        `• 6:00 PM\n` +
+        `• 7:30 PM\n` +
+        `• 8:15 PM\n\n` +
         `Or type: LUNCH or DINNER`
       );
       return res.status(200).send('OK');
     }
     
-    // ─── BOOKING_TIME State ─────────────────
+    // ═══════════════════════════════════════════════════════════
+    // ✅ BOOKING_TIME State (12-HOUR FORMAT) - CRITICAL UPDATE
+    // ═══════════════════════════════════════════════════════════
     if (session.state === S.BOOKING_TIME) {
       let bookingTime = null;
       
@@ -1509,16 +1552,28 @@ app.post('/webhook', async (req, res) => {
       } else if (upper === 'DINNER') {
         bookingTime = '20:00';
       } else {
-        const timeMatch = text.match(/^(\d{2})(\d{2})$/);
+        // ✅ Parse 12-hour format: "6:00 PM", "6 PM", "7:30 PM", etc.
+        const timeMatch = text.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
+        
         if (timeMatch) {
-          const hours = parseInt(timeMatch[1]);
-          const minutes = parseInt(timeMatch[2]);
+          let hours = parseInt(timeMatch[1]);
+          const minutes = timeMatch[2] ? parseInt(timeMatch[2]) : 0;
+          const period = timeMatch[3].toUpperCase();
           
-          if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
-            await sendMessage(phone, '❌ Invalid time. Hours: 00-23, Minutes: 00-59\n\nExample: 1830 for 6:30 PM');
+          // Validate hours and minutes
+          if (hours < 1 || hours > 12 || minutes < 0 || minutes > 59) {
+            await sendMessage(phone, '❌ Invalid time. Hours: 1-12, Minutes: 00-59\n\nExample: 6:30 PM');
             return res.status(200).send('OK');
           }
           
+          // ✅ Convert to 24-hour format
+          if (period === 'PM' && hours !== 12) {
+            hours += 12;
+          } else if (period === 'AM' && hours === 12) {
+            hours = 0;
+          }
+          
+          // Check restaurant operating hours (11 AM - 11 PM)
           if (hours < 11 || hours >= 23) {
             await sendMessage(phone, '⚠️ Restaurant is open 11:00 AM - 11:00 PM\n\nPlease select a time within operating hours.');
             return res.status(200).send('OK');
@@ -1526,7 +1581,7 @@ app.post('/webhook', async (req, res) => {
           
           bookingTime = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
         } else {
-          await sendMessage(phone, '❌ Invalid format.\n\nType:\n• 1830 (for 6:30 PM)\n• LUNCH or DINNER');
+          await sendMessage(phone, '❌ Invalid format.\n\nType:\n• 6:00 PM\n• 7:30 PM\n• LUNCH or DINNER');
           return res.status(200).send('OK');
         }
       }
@@ -2071,6 +2126,9 @@ app.post('/webhook', async (req, res) => {
             }
           }
           
+          // ✅ LOG BOOKING TO GOOGLE SHEETS
+          await logBookingToGoogleSheets(session, bookingId);
+          
           try {
             const { rows } = await pool.query(
               'SELECT whatsapp_number FROM restaurants WHERE id = $1',
@@ -2313,12 +2371,12 @@ app.get('/health', async (req, res) => {
       sessions: sessions.size,
       restaurants: restaurantCache.length,
       testMode: TEST_MODE,
-      version: '6.2-DATABASE-DEPENDENT-UPI',
-      paymentSystem: {
-        type: 'Database-driven with hardcoded fallbacks',
-        upiPayments: 'Restaurant-specific from database',
-        deepLinks: 'Enabled (PhonePe, GPay, Paytm, UPI)',
-        fallback: 'Hardcoded defaults if database fails'
+      version: '6.3-12HOUR-TIME-FORMAT',
+      features: {
+        bookingTimeFormat: '12-hour (6:00 PM, 7:30 PM)',
+        googleSheets: 'Orders + Bookings',
+        upiPayments: 'Database-dependent with fallbacks',
+        deepLinks: 'PhonePe, GPay, Paytm, Generic UPI'
       },
       paymentGateways: {
         razorpay: process.env.RAZORPAY_KEY_ID ? 'Configured' : 'Not set',
@@ -2401,16 +2459,24 @@ async function startServer() {
     app.listen(PORT, () => {
       console.log(`
 ╔═══════════════════════════════════════════════╗
-║   🍽️  RESTAURANT WHATSAPP BOT v6.2           ║
+║   🍽️  RESTAURANT WHATSAPP BOT v6.3           ║
+║   ✅ 12-Hour Time Format for Bookings        ║
 ║   ✅ Database-Dependent UPI IDs              ║
 ║   ✅ Multi-Restaurant Support                ║
 ║   ✅ Clickable Deep Links                    ║
+║   ✅ Google Sheets Integration               ║
 ║   ✅ Hardcoded Fallbacks                     ║
 ╠═══════════════════════════════════════════════╣
 ║  Port:           ${String(PORT).padEnd(28)}║
 ║  Test Mode:      ${String(TEST_MODE ? '🧪 ON' : '🚀 OFF').padEnd(28)}║
 ║  Database:       ${String(dbConnected ? '✅ Connected' : '❌ Disconnected').padEnd(28)}║
 ║  Restaurants:    ${String(restaurantCache.length).padEnd(28)}║
+╠═══════════════════════════════════════════════╣
+║  ⏰ BOOKING TIME FORMAT UPDATE v6.3           ║
+║     ✅ NEW: 12-hour time input               ║
+║     ✅ Accepts: 6:00 PM, 7:30 PM, etc.       ║
+║     ✅ Keywords: LUNCH, DINNER               ║
+║     ❌ Old format (1800, 1930) removed       ║
 ╠═══════════════════════════════════════════════╣
 ║  💳 UPI PAYMENT SYSTEM v6.2                   ║
 ║     ✅ Database-driven (per restaurant)       ║
@@ -2425,6 +2491,12 @@ async function startServer() {
 ║  4️⃣ Generic UPI: ✅ Dynamic UPI ID            ║
 ║  5️⃣ COD:         ✅ Always available          ║
 ╠═══════════════════════════════════════════════╣
+║  📊 GOOGLE SHEETS LOGGING                     ║
+║     ✅ Order logging with dual flow          ║
+║     ✅ Booking logging with dual flow        ║
+║     ✅ Real-time dashboard updates           ║
+║     ✅ Payment status tracking               ║
+╠═══════════════════════════════════════════════╣
 ║  🔧 CONFIGURATION                             ║
 ║     Each restaurant can have unique UPI IDs   ║
 ║     Fetched from database automatically       ║
@@ -2437,12 +2509,21 @@ async function startServer() {
 ║     ✅ Error handling & fallbacks            ║
 ║     ✅ Multi-restaurant support              ║
 ║     ✅ Zero-downtime UPI ID updates          ║
+║     ✅ 12-hour time format (bookings)        ║
+║     ✅ Google Sheets dual logging            ║
 ╚═══════════════════════════════════════════════╝
 
 🚀 Server ready for production!
 📊 Run /health endpoint to verify system status
 📱 UPI IDs are now database-dependent per restaurant
 🔄 Fallbacks ensure system never fails
+⏰ Table bookings now use 12-hour time format:
+   • Input examples: 6:00 PM, 7:30 PM, LUNCH, DINNER
+   • Display format: 6:00 PM, 7:30 PM
+   • Stored in DB: 18:00, 19:30 (24-hour format)
+📋 Google Sheets logging enabled for:
+   • Orders (type: 'order')
+   • Bookings (type: 'booking')
       `);
     });
   } catch (e) {

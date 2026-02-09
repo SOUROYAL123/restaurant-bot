@@ -1,3 +1,4 @@
+
 // ============================================
 // RESTAURANT WHATSAPP BOT v6.3 - 12-HOUR TIME FORMAT
 // Multi-Restaurant | Database-Driven UPI IDs | Clickable Deep Links
@@ -969,14 +970,26 @@ async function logOrderToGoogleSheets(session, orderId) {
 }
 
 async function logBookingToGoogleSheets(session, bookingId) {
+  console.log(`\n📊 [BOOKING LOGGER] Starting Google Sheets logging for Booking #${bookingId}`);
+  
   try {
-    if (!process.env.GOOGLE_APPS_SCRIPT_URL || !process.env.GOOGLE_APPS_SCRIPT_SECRET) {
-      console.log('⏭️  Google Sheets booking logging skipped');
+    // ─── Check Configuration ───────────────────────────────────
+    if (!process.env.GOOGLE_APPS_SCRIPT_URL) {
+      console.log('⚠️  [BOOKING LOGGER] GOOGLE_APPS_SCRIPT_URL not configured in .env');
+      return;
+    }
+    
+    if (!process.env.GOOGLE_APPS_SCRIPT_SECRET) {
+      console.log('⚠️  [BOOKING LOGGER] GOOGLE_APPS_SCRIPT_SECRET not configured in .env');
       return;
     }
 
+    console.log(`✅ [BOOKING LOGGER] Configuration found`);
+    console.log(`   URL: ${process.env.GOOGLE_APPS_SCRIPT_URL.substring(0, 50)}...`);
+
+    // ─── Prepare Booking Data ──────────────────────────────────
     const bookingData = {
-      type: 'booking',
+      type: 'booking',  // ✅ CRITICAL: This must be 'booking'
       secret: process.env.GOOGLE_APPS_SCRIPT_SECRET,
       bookingId: bookingId,
       timestamp: new Date().toISOString(),
@@ -991,50 +1004,69 @@ async function logBookingToGoogleSheets(session, bookingId) {
       specialRequests: session.specialRequests || 'None'
     };
 
+    console.log(`📦 [BOOKING LOGGER] Prepared data:`);
+    console.log(`   Type: ${bookingData.type}`);
+    console.log(`   Booking ID: ${bookingData.bookingId}`);
+    console.log(`   Restaurant: ${bookingData.restaurantName}`);
+    console.log(`   Customer: ${bookingData.customerName}`);
+    console.log(`   Date: ${bookingData.bookingDate}`);
+    console.log(`   Time: ${bookingData.bookingTime}`);
+    console.log(`   Guests: ${bookingData.numberOfGuests}`);
+    console.log(`   Payment: ${bookingData.paymentStatus}`);
+
+    // ─── Send to Google Apps Script ────────────────────────────
+    console.log(`🌐 [BOOKING LOGGER] Sending POST request...`);
+    
     const response = await fetch(process.env.GOOGLE_APPS_SCRIPT_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify(bookingData)
     });
 
-    const result = await response.json();
-    if (result.success) {
-      console.log(`✅ Booking #${bookingId} logged to Google Sheets`);
-    }
-  } catch (e) {
-    console.error('❌ logBookingToGoogleSheets:', e.message);
-  }
-}
+    console.log(`📡 [BOOKING LOGGER] Response received:`);
+    console.log(`   Status: ${response.status} ${response.statusText}`);
 
-function buildOrderConfirmation(session, orderId) {
-  const cart = session.cart.map((item, i) =>
-    `${i+1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price} = ₹${item.price * item.quantity}`
-  ).join('\n\n');
-  
-  const gatewayName = session.paymentGateway === 'razorpay' ? 'Razorpay' :
-                     session.paymentGateway === 'phonepe' ? 'PhonePe' :
-                     session.paymentGateway === 'paytm' ? 'Paytm' : 'Cash';
-  
-  const pay = session.paymentMethod === 'online' || session.paymentMethod === 'upi_direct'
-    ? `💳 Payment: Online (${gatewayName} - PAID)`
-    : '💵 Payment: Cash on Delivery';
+    // ─── Parse Response ─────────────────────────────────────────
+    const responseText = await response.text();
+    console.log(`📄 [BOOKING LOGGER] Raw response: ${responseText.substring(0, 200)}`);
+
+    let result;
+    try {
+      result = JSON.parse(responseText);
+      console.log(`✅ [BOOKING LOGGER] Parsed JSON response:`, result);
+    } catch (parseError) {
+      console.error(`❌ [BOOKING LOGGER] Failed to parse JSON response`);
+      console.error(`   Error: ${parseError.message}`);
+      console.error(`   Raw text: ${responseText}`);
+      return;
+    }
+
+    // ─── Check Success ──────────────────────────────────────────
+    if (result.success) {
+      console.log(`✅✅✅ [BOOKING LOGGER] SUCCESS! Booking #${bookingId} logged to Google Sheets`);
+      if (result.message) {
+        console.log(`   Message: ${result.message}`);
+      }
+    } else {
+      console.error(`❌ [BOOKING LOGGER] Google Apps Script returned success: false`);
+      console.error(`   Error: ${result.error || 'No error message provided'}`);
+      if (result.details) {
+        console.error(`   Details:`, result.details);
+      }
+    }
+
+  } catch (e) {
+    console.error(`❌❌❌ [BOOKING LOGGER] Exception occurred:`);
+    console.error(`   Error: ${e.message}`);
+    console.error(`   Stack: ${e.stack}`);
     
-  return (
-    `🎉 *Order Confirmed!*\n\n` +
-    `Order ID: #${orderId}\n` +
-    `Restaurant: ${session.restaurantName}\n\n` +
-    `🛒 Your Cart:\n${cart}\n\n` +
-    `Subtotal: ₹${session.subtotal}\n` +
-    `Delivery Fee: ₹${session.deliveryFee}\n` +
-    `Total: ₹${session.total}\n\n` +
-    `📍 Delivery Address:\n${session.deliveryAddress}\n\n` +
-    `${pay}\n` +
-    `💰 Total: ₹${session.total}\n\n` +
-    `⏱️ Estimated Delivery: 45 minutes\n\n` +
-    `The restaurant has been notified and is preparing your food.\n\n` +
-    `Thank you for your order! 🍽️\n\n` +
-    `Scan QR code to place another order.`
-  );
+    // Additional debugging info
+    if (e.cause) {
+      console.error(`   Cause:`, e.cause);
+    }
+  }
 }
 
 // ════════════════════════════════════════════

@@ -1,9 +1,10 @@
 // ============================================
-// RESTAURANT WHATSAPP BOT v6.4 - BUGFIX RELEASE
+// RESTAURANT WHATSAPP BOT v6.3 - 12-HOUR TIME FORMAT
 // Multi-Restaurant | Database-Driven UPI IDs | Clickable Deep Links
-// ✅ FIX 1: logBookingToGoogleSheets field names match Apps Script
-// ✅ FIX 2: Added missing buildOrderConfirmation() function
-// ✅ FIX 3: UPI order transaction ID flow - new AWAITING_TXN_ID state
+// ✅ NEW: 12-hour time format for table bookings (6:00 PM instead of 1800)
+// ✅ NEW: Google Sheets logging for both orders and bookings
+// Each restaurant can have unique UPI IDs stored in database
+// Hardcoded fallbacks ensure system never fails
 // ============================================
 
 require('dotenv').config();
@@ -102,7 +103,6 @@ const S = {
   ADD_INSTRUCTIONS: 'ADD_INSTRUCTIONS',
   CHOOSE_PAYMENT:   'CHOOSE_PAYMENT',
   AWAITING_PAYMENT: 'AWAITING_PAYMENT',
-  AWAITING_TXN_ID:  'AWAITING_TXN_ID',    // ✅ FIX 3: New state for transaction ID capture
   CONFIRM_ORDER:    'CONFIRM_ORDER',
   BOOKING_NAME:     'BOOKING_NAME',
   BOOKING_DATE:     'BOOKING_DATE',
@@ -134,9 +134,16 @@ async function loadRestaurants(force = false) {
 
 // ════════════════════════════════════════════
 // DATABASE-DEPENDENT UPI ID FETCHING
+// Professional implementation with hardcoded fallbacks
 // ════════════════════════════════════════════
 
+/**
+ * Fetch restaurant-specific UPI IDs from database
+ * @param {number} restaurantId - Restaurant ID
+ * @returns {Promise<object>} UPI IDs object with phonepe, gpay, paytm, generic
+ */
 async function getRestaurantUPIIds(restaurantId) {
+  // ─── Default/Fallback UPI IDs ───────────────────────
   const DEFAULT_UPI_IDS = {
     phonepe: '7980407413@ibl',
     gpay: 'soumation24-1@oksbi',
@@ -145,6 +152,7 @@ async function getRestaurantUPIIds(restaurantId) {
   };
 
   try {
+    // ─── Fetch from Database ────────────────────────────
     const { rows } = await pool.query(
       `SELECT 
         phonepe_upi_id, 
@@ -164,6 +172,7 @@ async function getRestaurantUPIIds(restaurantId) {
 
     const restaurant = rows[0];
     
+    // ─── Build UPI IDs with Fallbacks ──────────────────
     const upiIds = {
       phonepe: restaurant.phonepe_upi_id || DEFAULT_UPI_IDS.phonepe,
       gpay: restaurant.gpay_upi_id || DEFAULT_UPI_IDS.gpay,
@@ -171,6 +180,7 @@ async function getRestaurantUPIIds(restaurantId) {
       generic: restaurant.generic_upi_id || DEFAULT_UPI_IDS.generic
     };
 
+    // ─── Log for Monitoring ─────────────────────────────
     const hasCustomUPI = restaurant.phonepe_upi_id || restaurant.gpay_upi_id;
     if (hasCustomUPI) {
       console.log(`✅ [${restaurant.name}] Using custom UPI IDs from database`);
@@ -181,6 +191,7 @@ async function getRestaurantUPIIds(restaurantId) {
     return upiIds;
     
   } catch (error) {
+    // ─── Database Error - Use Fallbacks ────────────────
     console.error(`❌ Error fetching UPI IDs for restaurant ${restaurantId}:`, error.message);
     console.log(`🔄 Using default UPI IDs as fallback`);
     return DEFAULT_UPI_IDS;
@@ -513,16 +524,21 @@ app.get('/pay/:restaurantId/:bookingId', (req, res) => {
   const { restaurantId, bookingId } = req.params;
   const { amount, upiId, name, method } = req.query;
   
+  // Generate UPI Intent URLs that work from browsers
   const upiParams = `pa=${upiId}&pn=${encodeURIComponent(name)}&am=${amount}&cu=INR&tn=Payment-${bookingId}`;
   
+  // App package names for Android intent
   const packages = {
     phonepe: 'com.phonepe.app',
     gpay: 'com.google.android.apps.nbu.paisa.user',
     paytm: 'net.one97.paytm'
   };
   
+  // Android Intent URL (works in all browsers on Android)
   const packageName = packages[method] || packages.phonepe;
   const androidIntentUrl = `intent://pay?${upiParams}#Intent;scheme=upi;package=${packageName};end`;
+  
+  // Generic UPI URL (works on iOS and as fallback)
   const genericUpiUrl = `upi://pay?${upiParams}`;
   
   const methodName = method === 'phonepe' ? 'PhonePe' 
@@ -709,8 +725,10 @@ app.get('/pay/:restaurantId/:bookingId', (req, res) => {
       showStatus('Opening ${methodName}...', 'success');
       
       if (isAndroid) {
+        // Use Android Intent URL
         window.location.href = androidIntentUrl;
       } else {
+        // Use generic UPI for iOS and desktop
         window.location.href = genericUpiUrl;
       }
       
@@ -745,6 +763,7 @@ app.get('/pay/:restaurantId/:bookingId', (req, res) => {
       });
     }
     
+    // Auto-open payment app after 2 seconds
     setTimeout(() => {
       openPaymentApp();
     }, 2000);
@@ -825,52 +844,6 @@ function formatCart(cart, deliveryFee = 0) {
   return m;
 }
 
-// ════════════════════════════════════════════
-// ✅ FIX 2: buildOrderConfirmation (WAS MISSING)
-// ════════════════════════════════════════════
-
-function buildOrderConfirmation(session, orderId) {
-  const lines = session.cart.map(i => `  ${i.quantity}× ${i.name} — ₹${i.price * i.quantity}`).join('\n');
-  
-  const gatewayName = session.paymentGateway === 'razorpay' ? 'Razorpay' :
-                     session.paymentGateway === 'phonepe' ? 'PhonePe' :
-                     session.paymentGateway === 'gpay' ? 'Google Pay' :
-                     session.paymentGateway === 'paytm' ? 'Paytm' :
-                     session.paymentGateway === 'upi' ? 'UPI' : 'COD';
-
-  const payLabel = (session.paymentMethod === 'online' || session.paymentMethod === 'upi_direct')
-    ? `💳 PAID via ${gatewayName}`
-    : '💵 Cash on Delivery';
-  
-  let msg = `🎉 *Order Confirmed!*\n\n` +
-    `Order ID: #${orderId}\n` +
-    `🏪 ${session.restaurantName}\n\n` +
-    `*Your Order:*\n${lines}\n\n` +
-    `Subtotal: ₹${session.subtotal}\n` +
-    `Delivery Fee: ₹${session.deliveryFee}\n` +
-    `💰 *Total: ₹${session.total}*\n\n` +
-    `📍 Delivery: ${session.deliveryAddress}\n` +
-    `${payLabel}\n`;
-  
-  if (session.paymentTransactionId && session.paymentTransactionId !== 'manual_verification_pending') {
-    msg += `Transaction ID: ${session.paymentTransactionId}\n`;
-  }
-  
-  if (session.specialInstructions && session.specialInstructions.toLowerCase() !== 'no') {
-    msg += `📝 Instructions: ${session.specialInstructions}\n`;
-  }
-  
-  msg += `\n✅ Your order is being prepared!\n` +
-    `⏰ ${new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}\n\n` +
-    `Thank you for ordering! 🍽️`;
-  
-  return msg;
-}
-
-// ════════════════════════════════════════════
-// DATABASE & NOTIFICATION FUNCTIONS
-// ════════════════════════════════════════════
-
 async function saveOrder(session) {
   const client = await pool.connect();
   try {
@@ -893,6 +866,7 @@ async function saveOrder(session) {
     );
     const orderId = rows[0].id;
     
+    // ✅ LOG UPI ID USED (for audit trail)
     if (session.upiIdUsed) {
       console.log(`📝 Order #${orderId} - UPI ID used: ${session.upiIdUsed}`);
     }
@@ -994,105 +968,73 @@ async function logOrderToGoogleSheets(session, orderId) {
   }
 }
 
-// ════════════════════════════════════════════
-// ✅ FIX 1: logBookingToGoogleSheets - FIELD NAMES NOW MATCH APPS SCRIPT
-// ════════════════════════════════════════════
-// 
-// BEFORE (BROKEN):  sent "paymentStatus", "transactionId"
-// AFTER  (FIXED):   sends "bookingFeePaid" (boolean), "paymentMethod", "paymentTransactionId", "status"
-//
-// The Apps Script logToAllBookings() expects:
-//   data.bookingFeePaid       → boolean → "✅ PAID" or "💵 PENDING"
-//   data.paymentMethod        → string  → "phonepe", "gpay", etc.
-//   data.paymentTransactionId → string  → transaction ID or "N/A"
-//   data.specialRequests      → string  → special requests text
-//   data.status               → string  → "CONFIRMED"
-// ════════════════════════════════════════════
-
 async function logBookingToGoogleSheets(session, bookingId) {
-  console.log(`\n📊 [BOOKING LOGGER] Starting Google Sheets logging for Booking #${bookingId}`);
-  
   try {
-    if (!process.env.GOOGLE_APPS_SCRIPT_URL) {
-      console.log('⚠️  [BOOKING LOGGER] GOOGLE_APPS_SCRIPT_URL not configured in .env');
-      return;
-    }
-    
-    if (!process.env.GOOGLE_APPS_SCRIPT_SECRET) {
-      console.log('⚠️  [BOOKING LOGGER] GOOGLE_APPS_SCRIPT_SECRET not configured in .env');
+    if (!process.env.GOOGLE_APPS_SCRIPT_URL || !process.env.GOOGLE_APPS_SCRIPT_SECRET) {
+      console.log('⏭️  Google Sheets booking logging skipped');
       return;
     }
 
-    console.log(`✅ [BOOKING LOGGER] Configuration found`);
-
-    // ════════════════════════════════════════════════════════
-    // ✅ FIX 1: Field names now match what Apps Script expects
-    // ════════════════════════════════════════════════════════
     const bookingData = {
-      type: 'booking',                                          // ✅ Routes to logBooking() in Apps Script
-      secret: process.env.GOOGLE_APPS_SCRIPT_SECRET,            // ✅ Auth
-      bookingId: bookingId,                                     // ✅ Matches: data.bookingId
-      restaurantName: session.restaurantName,                   // ✅ Matches: data.restaurantName
-      customerPhone: session.phone,                             // ✅ Matches: data.customerPhone
-      customerName: session.customerName,                       // ✅ Matches: data.customerName
-      bookingDate: session.bookingDate,                         // ✅ Matches: data.bookingDate (YYYY-MM-DD)
-      bookingTime: session.bookingTime,                         // ✅ Matches: data.bookingTime
-      numberOfGuests: session.numberOfGuests,                   // ✅ Matches: data.numberOfGuests
-      bookingFeePaid: session.bookingFeePaid || false,          // ✅ FIX: was "paymentStatus" string, now boolean
-      paymentMethod: session.paymentMethod || 'Not specified',  // ✅ FIX: was missing entirely
-      paymentTransactionId: session.paymentTransactionId || 'N/A', // ✅ FIX: was "transactionId"
-      specialRequests: session.specialRequests || 'None',       // ✅ Matches: data.specialRequests
-      status: 'CONFIRMED'                                       // ✅ FIX: was missing entirely
+      type: 'booking',
+      secret: process.env.GOOGLE_APPS_SCRIPT_SECRET,
+      bookingId: bookingId,
+      timestamp: new Date().toISOString(),
+      restaurantName: session.restaurantName,
+      customerName: session.customerName,
+      customerPhone: session.phone,
+      bookingDate: session.bookingDate,
+      bookingTime: session.bookingTime,
+      numberOfGuests: session.numberOfGuests,
+      paymentStatus: session.bookingFeePaid ? 'PAID' : 'PENDING',
+      transactionId: session.paymentTransactionId || null,
+      specialRequests: session.specialRequests || 'None'
     };
 
-    console.log(`📦 [BOOKING LOGGER] Prepared data:`);
-    console.log(`   Type: ${bookingData.type}`);
-    console.log(`   Booking ID: ${bookingData.bookingId}`);
-    console.log(`   Restaurant: ${bookingData.restaurantName}`);
-    console.log(`   Customer: ${bookingData.customerName}`);
-    console.log(`   Date: ${bookingData.bookingDate}`);
-    console.log(`   Time: ${bookingData.bookingTime}`);
-    console.log(`   Guests: ${bookingData.numberOfGuests}`);
-    console.log(`   bookingFeePaid: ${bookingData.bookingFeePaid}`);
-    console.log(`   paymentMethod: ${bookingData.paymentMethod}`);
-    console.log(`   paymentTransactionId: ${bookingData.paymentTransactionId}`);
-
-    console.log(`🌐 [BOOKING LOGGER] Sending POST request...`);
-    
     const response = await fetch(process.env.GOOGLE_APPS_SCRIPT_URL, {
       method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(bookingData)
     });
 
-    console.log(`📡 [BOOKING LOGGER] Response status: ${response.status} ${response.statusText}`);
-
-    const responseText = await response.text();
-    console.log(`📄 [BOOKING LOGGER] Raw response: ${responseText.substring(0, 200)}`);
-
-    let result;
-    try {
-      result = JSON.parse(responseText);
-      console.log(`✅ [BOOKING LOGGER] Parsed response:`, result);
-    } catch (parseError) {
-      console.error(`❌ [BOOKING LOGGER] Failed to parse JSON: ${parseError.message}`);
-      console.error(`   Raw text: ${responseText}`);
-      return;
-    }
-
+    const result = await response.json();
     if (result.success) {
-      console.log(`✅✅✅ [BOOKING LOGGER] SUCCESS! Booking #${bookingId} logged to Google Sheets`);
-    } else {
-      console.error(`❌ [BOOKING LOGGER] Google Apps Script returned success: false`);
-      console.error(`   Error: ${result.error || 'No error message'}`);
+      console.log(`✅ Booking #${bookingId} logged to Google Sheets`);
     }
-
   } catch (e) {
-    console.error(`❌❌❌ [BOOKING LOGGER] Exception: ${e.message}`);
-    console.error(`   Stack: ${e.stack}`);
+    console.error('❌ logBookingToGoogleSheets:', e.message);
   }
+}
+
+function buildOrderConfirmation(session, orderId) {
+  const cart = session.cart.map((item, i) =>
+    `${i+1}. ${item.name}\n   Qty: ${item.quantity} × ₹${item.price} = ₹${item.price * item.quantity}`
+  ).join('\n\n');
+  
+  const gatewayName = session.paymentGateway === 'razorpay' ? 'Razorpay' :
+                     session.paymentGateway === 'phonepe' ? 'PhonePe' :
+                     session.paymentGateway === 'paytm' ? 'Paytm' : 'Cash';
+  
+  const pay = session.paymentMethod === 'online' || session.paymentMethod === 'upi_direct'
+    ? `💳 Payment: Online (${gatewayName} - PAID)`
+    : '💵 Payment: Cash on Delivery';
+    
+  return (
+    `🎉 *Order Confirmed!*\n\n` +
+    `Order ID: #${orderId}\n` +
+    `Restaurant: ${session.restaurantName}\n\n` +
+    `🛒 Your Cart:\n${cart}\n\n` +
+    `Subtotal: ₹${session.subtotal}\n` +
+    `Delivery Fee: ₹${session.deliveryFee}\n` +
+    `Total: ₹${session.total}\n\n` +
+    `📍 Delivery Address:\n${session.deliveryAddress}\n\n` +
+    `${pay}\n` +
+    `💰 Total: ₹${session.total}\n\n` +
+    `⏱️ Estimated Delivery: 45 minutes\n\n` +
+    `The restaurant has been notified and is preparing your food.\n\n` +
+    `Thank you for your order! 🍽️\n\n` +
+    `Scan QR code to place another order.`
+  );
 }
 
 // ════════════════════════════════════════════
@@ -1268,7 +1210,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // ADD_INSTRUCTIONS → CHOOSE_PAYMENT
+    // ADD_INSTRUCTIONS → CHOOSE_PAYMENT (Show UPI Direct Payment Options)
     // ═══════════════════════════════════════════════════════════
     if (session.state === S.ADD_INSTRUCTIONS) {
       session.specialInstructions = text;
@@ -1298,12 +1240,13 @@ app.post('/webhook', async (req, res) => {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // CHOOSE_PAYMENT State Handler
+    // CHOOSE_PAYMENT State Handler - DATABASE-DEPENDENT UPI PAYMENTS
     // ═══════════════════════════════════════════════════════════
     if (session.state === S.CHOOSE_PAYMENT) {
-      // ─── Options 1-4: UPI Direct Payment Links ────
+      // ─── Options 1-4: UPI Direct Payment Links (DATABASE-DEPENDENT) ────
       if (text === '1' || text === '2' || text === '3' || text === '4') {
         
+        // ✅ FETCH UPI IDs FROM DATABASE (with hardcoded fallbacks)
         const upiIds = await getRestaurantUPIIds(session.restaurantId);
         
         let method = null;
@@ -1312,36 +1255,39 @@ app.post('/webhook', async (req, res) => {
         
         if (text === '1') { 
           method = 'phonepe';
-          upiId = upiIds.phonepe;
+          upiId = upiIds.phonepe;  // ✅ Database-dependent
           methodName = 'PhonePe';
         }
         else if (text === '2') { 
           method = 'gpay';
-          upiId = upiIds.gpay;
+          upiId = upiIds.gpay;  // ✅ Database-dependent
           methodName = 'Google Pay';
         }
         else if (text === '3') { 
           method = 'paytm';
-          upiId = upiIds.paytm;
+          upiId = upiIds.paytm;  // ✅ Database-dependent
           methodName = 'Paytm';
         }
         else if (text === '4') { 
           method = 'upi';
-          upiId = upiIds.generic;
+          upiId = upiIds.generic;  // ✅ Database-dependent
           methodName = 'UPI App';
         }
 
         session.paymentMethod = 'upi_direct';
         session.paymentGateway = method;
-        session.upiIdUsed = upiId;
+        session.upiIdUsed = upiId;  // ✅ Store for logging
         session.state = S.AWAITING_PAYMENT;
         
+        // Generate temporary order ID for payment link
         const tempOrderId = `OD${Date.now().toString().slice(-8)}`;
         session.tempOrderId = tempOrderId;
         sessions.set(phone, session);
 
+        // ✅ Generate deep link payment URL with database UPI ID
         const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempOrderId}?amount=${session.total}&upiId=${encodeURIComponent(upiId)}&name=${encodeURIComponent(session.restaurantName)}&method=${method}`;
         
+        // ✅ Professional Logging
         console.log(`💳 [Order Payment] Restaurant: ${session.restaurantName} (ID: ${session.restaurantId})`);
         console.log(`   Method: ${methodName} | UPI: ${upiId} | Amount: ₹${session.total}`);
 
@@ -1361,6 +1307,7 @@ app.post('/webhook', async (req, res) => {
           `⏱️ Link valid for 15 minutes`
         );
         
+        // Set payment timeout
         pendingPayments.set(phone, setTimeout(async () => {
           if (sessions.get(phone)?.state === S.AWAITING_PAYMENT) {
             sessions.delete(phone);
@@ -1411,18 +1358,57 @@ app.post('/webhook', async (req, res) => {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // AWAITING_PAYMENT - User types PAID → move to AWAITING_TXN_ID
-    // ✅ FIX 3: Separated into its own state so txn ID capture works
+    // AWAITING_PAYMENT - UPI Direct Payment Verification
     // ═══════════════════════════════════════════════════════════
     if (session.state === S.AWAITING_PAYMENT) {
       if (upper === 'PAID') {
-        // ✅ FIX 3: Move to dedicated AWAITING_TXN_ID state (not CONFIRM_ORDER)
-        session.state = S.AWAITING_TXN_ID;
+        session.state = S.CONFIRM_ORDER;
+        session.awaitingTransactionId = true;
         sessions.set(phone, session);
         
         await sendMessage(phone,
           `✅ Great! Please enter your *Transaction ID*\n\n` +
           `(Usually 10-12 digit number from payment app)\n\n` +
+          `Example: 435623789012`
+        );
+        return res.status(200).send('OK');
+      }
+      
+      // If awaiting transaction ID
+      if (session.awaitingTransactionId) {
+        const txnId = text.trim();
+        if (txnId.length >= 10 && /^[0-9A-Za-z]+$/.test(txnId)) {
+          session.paymentTransactionId = txnId;
+          session.paymentMethod = 'upi_direct';
+          session.state = S.CONFIRM_ORDER;
+          delete session.awaitingTransactionId;
+          
+          const t = pendingPayments.get(phone);
+          if (t) clearTimeout(t);
+          pendingPayments.delete(phone);
+          
+          sessions.set(phone, session);
+          
+          const lines = session.cart.map(i => `${i.quantity}× ${i.name} — ₹${i.price * i.quantity}`).join('\n');
+          
+          await sendMessage(phone,
+            `✅ Transaction ID recorded: ${txnId}\n\n` +
+            `📋 *CONFIRM YOUR ORDER*\n\n` +
+            `🏪 ${session.restaurantName}\n\n` +
+            `*Your Order:*\n${lines}\n\n` +
+            `💰 Total: ₹${session.total}\n` +
+            `📍 Delivery: ${session.deliveryAddress}\n\n` +
+            `💳 Payment: UPI PAID\n` +
+            `Transaction: ${txnId}\n\n` +
+            `Type *CONFIRM* to place order\n` +
+            `Type *CANCEL* to cancel`
+          );
+          return res.status(200).send('OK');
+        }
+        
+        await sendMessage(phone,
+          `❌ Invalid transaction ID format\n\n` +
+          `Please enter a valid Transaction ID (10+ characters)\n` +
           `Example: 435623789012`
         );
         return res.status(200).send('OK');
@@ -1441,60 +1427,7 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // ✅ FIX 3: AWAITING_TXN_ID - Dedicated state for transaction ID capture
-    // Previously this logic was unreachable inside AWAITING_PAYMENT
-    // ═══════════════════════════════════════════════════════════
-    if (session.state === S.AWAITING_TXN_ID) {
-      const txnId = text.trim();
-      
-      if (upper === 'CANCEL') {
-        const t = pendingPayments.get(phone);
-        if (t) clearTimeout(t);
-        pendingPayments.delete(phone);
-        sessions.delete(phone);
-        await sendMessage(phone, '❌ Order cancelled. Type restaurant name to start over.');
-        return res.status(200).send('OK');
-      }
-      
-      if (txnId.length >= 10 && /^[0-9A-Za-z]+$/.test(txnId)) {
-        session.paymentTransactionId = txnId;
-        session.paymentMethod = 'upi_direct';
-        session.state = S.CONFIRM_ORDER;
-        
-        const t = pendingPayments.get(phone);
-        if (t) clearTimeout(t);
-        pendingPayments.delete(phone);
-        
-        sessions.set(phone, session);
-        
-        const lines = session.cart.map(i => `${i.quantity}× ${i.name} — ₹${i.price * i.quantity}`).join('\n');
-        
-        await sendMessage(phone,
-          `✅ Transaction ID recorded: ${txnId}\n\n` +
-          `📋 *CONFIRM YOUR ORDER*\n\n` +
-          `🏪 ${session.restaurantName}\n\n` +
-          `*Your Order:*\n${lines}\n\n` +
-          `💰 Total: ₹${session.total}\n` +
-          `📍 Delivery: ${session.deliveryAddress}\n\n` +
-          `💳 Payment: UPI PAID\n` +
-          `Transaction: ${txnId}\n\n` +
-          `Type *CONFIRM* to place order\n` +
-          `Type *CANCEL* to cancel`
-        );
-        return res.status(200).send('OK');
-      }
-      
-      await sendMessage(phone,
-        `❌ Invalid transaction ID format\n\n` +
-        `Please enter a valid Transaction ID (10+ characters)\n` +
-        `Example: 435623789012\n\n` +
-        `Or type *CANCEL* to cancel`
-      );
-      return res.status(200).send('OK');
-    }
-
-    // ─── CONFIRM_ORDER ─────────────────
+    // ─── CONFIRM_ORDER (COD) ─────────────────
     if (session.state === S.CONFIRM_ORDER) {
       if (upper === 'CONFIRM') {
         if (session.confirmTimeout) clearTimeout(session.confirmTimeout);
@@ -1518,7 +1451,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // BOOKING FLOW - TABLE BOOKING STATES
+    // BOOKING FLOW - TABLE BOOKING STATES (with DATABASE UPI IDs)
     // ═══════════════════════════════════════════════════════════
     
     // ─── BOOKING_NAME State ─────────────────
@@ -1608,7 +1541,9 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).send('OK');
     }
     
-    // ─── BOOKING_TIME State (12-HOUR FORMAT) ─────
+    // ═══════════════════════════════════════════════════════════
+    // ✅ BOOKING_TIME State (12-HOUR FORMAT) - CRITICAL UPDATE
+    // ═══════════════════════════════════════════════════════════
     if (session.state === S.BOOKING_TIME) {
       let bookingTime = null;
       
@@ -1617,6 +1552,7 @@ app.post('/webhook', async (req, res) => {
       } else if (upper === 'DINNER') {
         bookingTime = '20:00';
       } else {
+        // ✅ Parse 12-hour format: "6:00 PM", "6 PM", "7:30 PM", etc.
         const timeMatch = text.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)$/i);
         
         if (timeMatch) {
@@ -1624,17 +1560,20 @@ app.post('/webhook', async (req, res) => {
           const minutes = timeMatch[2] ? parseInt(timeMatch[2]) : 0;
           const period = timeMatch[3].toUpperCase();
           
+          // Validate hours and minutes
           if (hours < 1 || hours > 12 || minutes < 0 || minutes > 59) {
             await sendMessage(phone, '❌ Invalid time. Hours: 1-12, Minutes: 00-59\n\nExample: 6:30 PM');
             return res.status(200).send('OK');
           }
           
+          // ✅ Convert to 24-hour format
           if (period === 'PM' && hours !== 12) {
             hours += 12;
           } else if (period === 'AM' && hours === 12) {
             hours = 0;
           }
           
+          // Check restaurant operating hours (11 AM - 11 PM)
           if (hours < 11 || hours >= 23) {
             await sendMessage(phone, '⚠️ Restaurant is open 11:00 AM - 11:00 PM\n\nPlease select a time within operating hours.');
             return res.status(200).send('OK');
@@ -1817,7 +1756,9 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).send('OK');
     }
     
-    // ─── BOOKING_SELECT_PAYMENT_METHOD ──────
+    // ═══════════════════════════════════════════════════════════
+    // BOOKING_SELECT_PAYMENT_METHOD - DATABASE-DEPENDENT UPI IDs
+    // ═══════════════════════════════════════════════════════════
     if (session.state === S.BOOKING_SELECT_PAYMENT_METHOD) {
       const choice = text.trim();
       const selectedMethod = session.paymentOptionMap?.[choice];
@@ -1836,11 +1777,16 @@ app.post('/webhook', async (req, res) => {
       
       const amount = session.bookingFeeAmount;
       
+      // ✅ FETCH UPI IDs FROM DATABASE (with hardcoded fallbacks)
       const upiIds = await getRestaurantUPIIds(session.restaurantId);
+      
+      // ═══════════════════════════════════════════════════════════
+      // DATABASE-DEPENDENT UPI IDS FOR EACH PAYMENT METHOD
+      // ═══════════════════════════════════════════════════════════
       
       if (selectedMethod === 'phonepe') {
         const pp = session.paymentDetails.phonepe;
-        const upiId = upiIds.phonepe;
+        const upiId = upiIds.phonepe;  // ✅ Database-dependent
         
         const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${encodeURIComponent(upiId)}&name=${encodeURIComponent(pp.name)}&method=phonepe`;
         
@@ -1864,7 +1810,7 @@ app.post('/webhook', async (req, res) => {
         
       } else if (selectedMethod === 'gpay') {
         const gp = session.paymentDetails.gpay;
-        const upiId = upiIds.gpay;
+        const upiId = upiIds.gpay;  // ✅ Database-dependent
         
         const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${encodeURIComponent(upiId)}&name=${encodeURIComponent(gp.name)}&method=gpay`;
         
@@ -1888,7 +1834,7 @@ app.post('/webhook', async (req, res) => {
         
       } else if (selectedMethod === 'paytm') {
         const pt = session.paymentDetails.paytm;
-        const upiId = upiIds.paytm;
+        const upiId = upiIds.paytm;  // ✅ Database-dependent
         
         const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${encodeURIComponent(upiId)}&name=${encodeURIComponent(pt.name)}&method=paytm`;
         
@@ -1912,7 +1858,7 @@ app.post('/webhook', async (req, res) => {
         
       } else if (selectedMethod === 'upi') {
         const upi = session.paymentDetails.upi;
-        const upiId = upiIds.generic;
+        const upiId = upiIds.generic;  // ✅ Database-dependent
         
         const paymentUrl = `${process.env.BASE_URL}/pay/${session.restaurantId}/${tempBookingId}?amount=${amount}&upiId=${encodeURIComponent(upiId)}&name=${encodeURIComponent(upi.name)}&method=upi`;
         
@@ -2180,7 +2126,7 @@ app.post('/webhook', async (req, res) => {
             }
           }
           
-          // ✅ LOG BOOKING TO GOOGLE SHEETS (with fixed field names)
+          // ✅ LOG BOOKING TO GOOGLE SHEETS
           await logBookingToGoogleSheets(session, bookingId);
           
           try {
@@ -2425,15 +2371,10 @@ app.get('/health', async (req, res) => {
       sessions: sessions.size,
       restaurants: restaurantCache.length,
       testMode: TEST_MODE,
-      version: '6.4-BUGFIX',
-      fixes: {
-        fix1: 'logBookingToGoogleSheets field names match Apps Script',
-        fix2: 'buildOrderConfirmation function added',
-        fix3: 'AWAITING_TXN_ID state for UPI order txn ID capture'
-      },
+      version: '6.3-12HOUR-TIME-FORMAT',
       features: {
         bookingTimeFormat: '12-hour (6:00 PM, 7:30 PM)',
-        googleSheets: 'Orders + Bookings (FIXED)',
+        googleSheets: 'Orders + Bookings',
         upiPayments: 'Database-dependent with fallbacks',
         deepLinks: 'PhonePe, GPay, Paytm, Generic UPI'
       },
@@ -2518,29 +2459,71 @@ async function startServer() {
     app.listen(PORT, () => {
       console.log(`
 ╔═══════════════════════════════════════════════╗
-║   🍽️  RESTAURANT WHATSAPP BOT v6.4           ║
-║   🐛 BUGFIX RELEASE                          ║
-╠═══════════════════════════════════════════════╣
-║  ✅ FIX 1: Booking Google Sheets logging     ║
-║     Field names now match Apps Script:        ║
-║     • bookingFeePaid (boolean, was string)    ║
-║     • paymentMethod (was missing)             ║
-║     • paymentTransactionId (was transactionId)║
-║     • status (was missing)                    ║
-╠═══════════════════════════════════════════════╣
-║  ✅ FIX 2: buildOrderConfirmation added      ║
-║     Function was called but never defined     ║
-║     Order flow would crash without it         ║
-╠═══════════════════════════════════════════════╣
-║  ✅ FIX 3: UPI txn ID capture fixed          ║
-║     New AWAITING_TXN_ID state added           ║
-║     Previously unreachable code block         ║
+║   🍽️  RESTAURANT WHATSAPP BOT v6.3           ║
+║   ✅ 12-Hour Time Format for Bookings        ║
+║   ✅ Database-Dependent UPI IDs              ║
+║   ✅ Multi-Restaurant Support                ║
+║   ✅ Clickable Deep Links                    ║
+║   ✅ Google Sheets Integration               ║
+║   ✅ Hardcoded Fallbacks                     ║
 ╠═══════════════════════════════════════════════╣
 ║  Port:           ${String(PORT).padEnd(28)}║
 ║  Test Mode:      ${String(TEST_MODE ? '🧪 ON' : '🚀 OFF').padEnd(28)}║
 ║  Database:       ${String(dbConnected ? '✅ Connected' : '❌ Disconnected').padEnd(28)}║
 ║  Restaurants:    ${String(restaurantCache.length).padEnd(28)}║
+╠═══════════════════════════════════════════════╣
+║  ⏰ BOOKING TIME FORMAT UPDATE v6.3           ║
+║     ✅ NEW: 12-hour time input               ║
+║     ✅ Accepts: 6:00 PM, 7:30 PM, etc.       ║
+║     ✅ Keywords: LUNCH, DINNER               ║
+║     ❌ Old format (1800, 1930) removed       ║
+╠═══════════════════════════════════════════════╣
+║  💳 UPI PAYMENT SYSTEM v6.2                   ║
+║     ✅ Database-driven (per restaurant)       ║
+║     ✅ Hardcoded fallbacks (reliability)      ║
+║     ✅ Deep link support (all UPI apps)       ║
+║     ✅ Professional logging & monitoring      ║
+╠═══════════════════════════════════════════════╣
+║  📱 SUPPORTED PAYMENT METHODS                 ║
+║  1️⃣ PhonePe:     ✅ Dynamic UPI ID            ║
+║  2️⃣ Google Pay:  ✅ Dynamic UPI ID            ║
+║  3️⃣ Paytm:       ✅ Dynamic UPI ID            ║
+║  4️⃣ Generic UPI: ✅ Dynamic UPI ID            ║
+║  5️⃣ COD:         ✅ Always available          ║
+╠═══════════════════════════════════════════════╣
+║  📊 GOOGLE SHEETS LOGGING                     ║
+║     ✅ Order logging with dual flow          ║
+║     ✅ Booking logging with dual flow        ║
+║     ✅ Real-time dashboard updates           ║
+║     ✅ Payment status tracking               ║
+╠═══════════════════════════════════════════════╣
+║  🔧 CONFIGURATION                             ║
+║     Each restaurant can have unique UPI IDs   ║
+║     Fetched from database automatically       ║
+║     Falls back to defaults if not set         ║
+║     Update via SQL - no code changes needed   ║
+╠═══════════════════════════════════════════════╣
+║  📊 FEATURES                                  ║
+║     ✅ Deep linking to payment apps          ║
+║     ✅ Professional logging                  ║
+║     ✅ Error handling & fallbacks            ║
+║     ✅ Multi-restaurant support              ║
+║     ✅ Zero-downtime UPI ID updates          ║
+║     ✅ 12-hour time format (bookings)        ║
+║     ✅ Google Sheets dual logging            ║
 ╚═══════════════════════════════════════════════╝
+
+🚀 Server ready for production!
+📊 Run /health endpoint to verify system status
+📱 UPI IDs are now database-dependent per restaurant
+🔄 Fallbacks ensure system never fails
+⏰ Table bookings now use 12-hour time format:
+   • Input examples: 6:00 PM, 7:30 PM, LUNCH, DINNER
+   • Display format: 6:00 PM, 7:30 PM
+   • Stored in DB: 18:00, 19:30 (24-hour format)
+📋 Google Sheets logging enabled for:
+   • Orders (type: 'order')
+   • Bookings (type: 'booking')
       `);
     });
   } catch (e) {

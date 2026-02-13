@@ -778,8 +778,9 @@ app.get('/pay/:restaurantId/:bookingId', (req, res) => {
 // ════════════════════════════════════════════
 // HELPERS
 // ════════════════════════════════════════════
-
 async function sendMessage(to, body) {
+  const MAX_LENGTH = 1500; // safe buffer under Twilio's 1600 limit
+
   if (!testMessages.has(to)) testMessages.set(to, []);
   testMessages.get(to).push({ body, timestamp: Date.now() });
 
@@ -787,14 +788,39 @@ async function sendMessage(to, body) {
     console.log(`📤 [TEST] → ${to}`);
     return { sid: 'test_' + Date.now() };
   }
+
+  // Split into chunks if body exceeds limit
+  const chunks = [];
+  if (body.length <= MAX_LENGTH) {
+    chunks.push(body);
+  } else {
+    // Split on newlines to avoid cutting mid-sentence
+    const lines = body.split('\n');
+    let current = '';
+    for (const line of lines) {
+      const candidate = current ? current + '\n' + line : line;
+      if (candidate.length > MAX_LENGTH) {
+        if (current) chunks.push(current);
+        current = line;
+      } else {
+        current = candidate;
+      }
+    }
+    if (current) chunks.push(current);
+  }
+
+  let lastMsg;
   try {
-    const msg = await twilioClient.messages.create({ 
-      from: wabaNumber, 
-      to: `whatsapp:${to}`, 
-      body 
-    });
-    console.log(`✅ Sent → ${to}: ${msg.sid}`);
-    return msg;
+    for (const chunk of chunks) {
+      lastMsg = await twilioClient.messages.create({
+        from: wabaNumber,
+        to: `whatsapp:${to}`,
+        body: chunk
+      });
+      console.log(`✅ Sent → ${to}: ${lastMsg.sid} (${chunk.length} chars)`);
+      if (chunks.length > 1) await new Promise(r => setTimeout(r, 300)); // avoid rate limits
+    }
+    return lastMsg;
   } catch (e) {
     console.error(`❌ Send failed → ${to}:`, e.message);
     throw e;
@@ -1019,23 +1045,16 @@ function buildOrderConfirmation(session, orderId) {
     ? `💳 Payment: Online (${gatewayName} - PAID)`
     : '💵 Payment: Cash on Delivery';
     
-  return (
-    `🎉 *Order Confirmed!*\n\n` +
-    `Order ID: #${orderId}\n` +
-    `Restaurant: ${session.restaurantName}\n\n` +
-    `🛒 Your Cart:\n${cart}\n\n` +
-    `Subtotal: ₹${session.subtotal}\n` +
-    `Delivery Fee: ₹${session.deliveryFee}\n` +
-    `Total: ₹${session.total}\n\n` +
-    `📍 Delivery Address:\n${session.deliveryAddress}\n\n` +
-    `${pay}\n` +
-    `💰 Total: ₹${session.total}\n\n` +
-    `⏱️ Estimated Delivery: 45 minutes\n\n` +
-    `The restaurant has been notified and is preparing your food.\n\n` +
-    `Thank you for your order! 🍽️\n\n` +
-    `Scan QR code to place another order.`
+return (
+    `🎉 *Order Confirmed! #${orderId}*\n\n` +
+    `🏪 ${session.restaurantName}\n\n` +
+    `🛒 *Items:*\n${cart}\n\n` +
+    `Subtotal: ₹${session.subtotal} | Delivery: ₹${session.deliveryFee}\n` +
+    `💰 *Total: ₹${session.total}*\n\n` +
+    `📍 ${session.deliveryAddress}\n\n` +
+    `${pay}\n\n` +
+    `⏱️ ~45 min delivery. Thank you! 🍽️`
   );
-}
 
 // ════════════════════════════════════════════
 // MAIN WEBHOOK

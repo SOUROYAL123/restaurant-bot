@@ -1,0 +1,11 @@
+# Core (required)
+numpy>=1.24
+python-dotenv>=1.0
+
+# Live data / trading (optional — only when using real brokers)
+requests>=2.31          # Upstox REST
+# smartapi-python>=1.4  # Angel One SmartAPI  (uncomment to enable)
+# pyotp>=2.9            # Angel One TOTP      (uncomment to enable)
+
+# Dev / test
+pytest>=7.4

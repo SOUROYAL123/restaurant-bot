@@ -346,7 +346,59 @@ async function verifyPaytmPayment(orderId) {
     }
 }
 
+// =====================================================
+// PHONEPE REFUND INTEGRATION
+// =====================================================
+async function refundPhonePePayment(originalTransactionId, amount) {
+    try {
+        const merchantId = process.env.PHONEPE_MERCHANT_ID;
+        const saltKey = process.env.PHONEPE_SALT_KEY;
+        const saltIndex = process.env.PHONEPE_SALT_INDEX || '1';
+        const mode = process.env.PHONEPE_MODE || 'UAT';
+        
+        const baseUrl = mode === 'PRODUCTION' 
+            ? 'https://api.phonepe.com/apis/hermes'
+            : 'https://api-preprod.phonepe.com/apis/pg-sandbox';
+
+        // Unique ID for the refund action itself
+        const refundTransactionId = `RFND_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+
+        const payload = {
+            merchantId: merchantId,
+            originalTransactionId: originalTransactionId, // The ID from the initial payment
+            merchantTransactionId: refundTransactionId,
+            amount: Math.round(amount * 100), // paise
+            callbackUrl: `${process.env.BASE_URL}/payment/phonepe/refund-webhook`
+        };
+
+        const base64Payload = Buffer.from(JSON.stringify(payload)).toString('base64');
+        const checksumString = base64Payload + '/pg/v1/refund' + saltKey;
+        const checksum = crypto.createHash('sha256').update(checksumString).digest('hex') + '###' + saltIndex;
+
+        const response = await axios.post(
+            `${baseUrl}/pg/v1/refund`,
+            { request: base64Payload },
+            {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-VERIFY': checksum
+                }
+            }
+        );
+
+        if (response.data.success) {
+            return { success: true, refundId: refundTransactionId, status: response.data.code };
+        } else {
+            return { success: false, error: response.data.message };
+        }
+    } catch (error) {
+        console.error('PhonePe Refund Error:', error.message);
+        return { success: false, error: error.message };
+    }
+}
+
 module.exports = {
     createPayment,
-    verifyPayment
+    verifyPayment,
+    refundPhonePePayment
 };
